@@ -2,81 +2,51 @@
 
 A collection of custom tools and extensions for [Pi](https://pi.dev).
 
-These extend Pi with capabilities that do not ship by default, and are built as Pi
-extensions using the extension API.
+These extend Pi with capabilities that do not ship by default, built as Pi extensions using the extension API.
 
-## Contents
+## Tools
 
-| Directory      | Description                                      |
-|----------------|--------------------------------------------------|
-| `plan-mode/`   | Planning loop with subagents, user questions, and deterministic plan files |
-| `web-search.ts`| Web search tool that delegates to OpenCode with Exa enabled |
+| Directory | Description |
+|-----------|-------------|
+| [`handoff/`](handoff/) | Transfer context to a new session using an LLM-generated handoff prompt |
+| [`plan-mode/`](plan-mode/) | Planning loop with subagents, user questions, and deterministic plan files |
+| [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |
 
-## Installation
-
-Symlink or copy into your Pi extensions directory:
-
-```bash
-# Global (all projects)
-ln -sf "$(pwd)/plan-mode" ~/.pi/agent/extensions/plan-mode
-ln -sf "$(pwd)/web-search.ts" ~/.pi/agent/extensions/web-search.ts
-
-# Project-local (per repo)
-mkdir -p .pi/extensions
-ln -sf "$(pwd)/plan-mode" .pi/extensions/plan-mode
-ln -sf "$(pwd)/web-search.ts" .pi/extensions/web-search.ts
-```
-
-Then reload Pi (`/reload`) or restart.
+See each tool's README for detailed usage, configuration, and requirements.
 
 ## Requirements
 
 - Pi (the terminal coding agent)
-- `opencode` CLI in PATH (for the web search tool)
-- GitHub Copilot provider (for Copilot-specific subagent header behavior)
+- Some tools have additional dependencies (see individual READMEs)
 
-## Configuration
+## Installation
 
-Plan mode supports global and project-local config with a 3-layer precedence:
-
-1. Built-in defaults (ships with the extension)
-2. Global config: `~/.pi/agent/plan-mode.json`
-3. Project config: `.pi/plan-mode.json`
+Use the install script to symlink all tools into your global Pi extensions directory:
 
 ```bash
-/plan-config global   # edit global config
-/plan-config project  # edit project config
-/plan-models          # show effective config
+./install.sh
 ```
 
-Example config:
+This copies each tool directory to `~/.pi/agent/extensions/` (as `<name>.ts/`). If an extension with the same name already exists, the script will skip it and print a warning.
 
-```json
-{
-  "subagentModels": {
-    "default": "github-copilot/gpt-5.4-mini",
-    "explore": "github-copilot/gemini-3-flash-preview",
-    "design": "github-copilot/gemini-3-flash-preview",
-    "risk": "github-copilot/claude-haiku-4-5",
-    "custom": "github-copilot/gpt-5-mini"
-  }
-}
+To install to a custom location:
+
+```bash
+./install.sh /path/to/extensions
 ```
 
-## How plan mode works
+To install manually (per-tool or project-local):
 
-1. Run `/plan <query>` to enter planning mode
-2. The agent loops using `plan_subagent` and `user_question` tools
-3. Parallel subagents (explore, design, risk roles) research the codebase
-4. The agent writes the plan to `.pi/plans/<query-slug>.plan.md`
-5. The agent calls `plan_exit`, which prompts you to:
-   - Execute the plan (with `[DONE:n]` step tracking)
-   - Stay in plan mode
-   - Refine the plan
+```bash
+# Global
+cp -r plan-mode ~/.pi/agent/extensions/plan-mode.ts
 
-In plan mode, `write` and `edit` are only allowed for `.pi/plans/*.plan.md`.
-Bash is restricted to read-only commands.
-`web_search` is available for external research.
+# Project-local
+mkdir -p .pi/extensions
+cp -r plan-mode .pi/extensions/plan-mode.ts
+```
+
+Then reload Pi (`/reload`) or restart.
 
 ## License
 

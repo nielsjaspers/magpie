@@ -42,11 +42,11 @@ When you run `/handoff <goal>`, it:
 
 ```bash
 # Global
-ln -sf "$(pwd)/handoff" ~/.pi/agent/extensions/handoff
+cp -r "$(pwd)/handoff" ~/.pi/agent/extensions/handoff.ts
 
 # Project-local
 mkdir -p .pi/extensions
-ln -sf "$(pwd)/handoff" .pi/extensions/handoff
+cp -r "$(pwd)/handoff" .pi/extensions/handoff.ts
 ```
 
 Then reload Pi (`/reload`) or restart.

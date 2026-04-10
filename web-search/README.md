@@ -37,11 +37,11 @@ if you need to adjust it.
 
 ```bash
 # Global
-ln -sf "$(pwd)/web-search" ~/.pi/agent/extensions/web-search
+cp -r "$(pwd)/web-search" ~/.pi/agent/extensions/web-search.ts
 
 # Project-local
 mkdir -p .pi/extensions
-ln -sf "$(pwd)/web-search" .pi/extensions/web-search
+cp -r "$(pwd)/web-search" .pi/extensions/web-search.ts
 ```
 
 Then reload Pi (`/reload`) or restart.
