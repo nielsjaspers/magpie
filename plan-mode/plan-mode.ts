@@ -24,8 +24,9 @@ const PLAN_MODE_TOOLS = [
 	"plan_exit",
 ];
 
-const NORMAL_MODE_TOOLS = ["read", "bash", "edit", "write"];
-const SUBAGENT_BUILTIN_TOOLS = "read,bash,grep,find,ls";
+const NORMAL_MODE_FALLBACK_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search"];
+const PLAN_ONLY_TOOLS = ["plan_subagent", "user_question", "plan_exit"];
+const SUBAGENT_BUILTIN_TOOLS = "read,bash,grep,find,ls,web_search";
 const MAX_SUBAGENTS = 4;
 const MAX_STRICT_LOOP_VIOLATIONS = 3;
 
@@ -375,6 +376,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 	let lastToolNameInTurn: string | undefined;
 	let strictLoopViolations = 0;
+	let normalModeTools = [...NORMAL_MODE_FALLBACK_TOOLS];
 
 	const plansDir = (cwd: string) => resolve(cwd, ".pi/plans");
 
@@ -452,7 +454,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 				"info",
 			);
 		} else {
-			applyToolSet(NORMAL_MODE_TOOLS);
+			applyToolSet(normalModeTools);
 			ctx.ui.notify("Plan mode disabled. Full access restored.", "info");
 		}
 		updateStatus(ctx);
@@ -983,7 +985,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			);
 			executionMode = false;
 			todoItems = [];
-			applyToolSet(NORMAL_MODE_TOOLS);
+			applyToolSet(normalModeTools);
 			updateStatus(ctx);
 			persistState();
 			return;
@@ -1026,7 +1028,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		if (choice?.startsWith("Execute")) {
 			planModeEnabled = false;
 			executionMode = true;
-			applyToolSet(NORMAL_MODE_TOOLS);
+			applyToolSet(normalModeTools);
 			updateStatus(ctx);
 			persistState();
 
@@ -1092,10 +1094,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			markCompletedSteps(allText, todoItems);
 		}
 
+		const availableTools = new Set(pi.getAllTools().map((t) => t.name));
+		const discoveredNormalModeTools = pi
+			.getActiveTools()
+			.filter((name) => !PLAN_ONLY_TOOLS.includes(name));
+		const fallbackAvailableTools = NORMAL_MODE_FALLBACK_TOOLS.filter((name) => availableTools.has(name));
+		normalModeTools = Array.from(new Set([...discoveredNormalModeTools, ...fallbackAvailableTools]));
+
 		if (planModeEnabled && !executionMode) {
 			applyToolSet(PLAN_MODE_TOOLS);
 		} else {
-			applyToolSet(NORMAL_MODE_TOOLS);
+			applyToolSet(normalModeTools);
 		}
 
 		updateStatus(ctx);

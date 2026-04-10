@@ -1,4 +1,4 @@
-# pi-tools
+# magpie
 
 A collection of custom tools and extensions for [Pi](https://pi.dev).
 
