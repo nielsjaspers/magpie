@@ -25,12 +25,12 @@ Project-local planning loop extension with subagents + user questions + determin
 
 ## Commands
 
-- `/plan [seed]` — toggle plan mode (optional seed controls slug)
-- `/plan-file` — show active plan file
-- `/plan-models` — show global/project/effective subagent model mapping
-- `/plan-config [global|project]` — edit global or project config
-- `/todos` — show execution progress
-- `Ctrl+Alt+P` — toggle plan mode
+- `/plan [seed]` -- toggle plan mode (optional seed controls slug)
+- `/plan-file` -- show active plan file
+- `/plan-models` -- show global/project/effective subagent model mapping
+- `/plan-config [global|project]` -- edit global or project config
+- `/todos` -- show execution progress
+- `Ctrl+Alt+P` -- toggle plan mode
 
 ## Plan Mode Restrictions
 

@@ -706,7 +706,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 				if (q.multiSelect) {
 					const optionList = options
-						.map((opt, idx) => `${idx + 1}. ${opt.label}${opt.description ? ` — ${opt.description}` : ""}`)
+						.map((opt, idx) => `${idx + 1}. ${opt.label}${opt.description ? ` - ${opt.description}` : ""}`)
 						.join("\n");
 					const inputPrompt = `${q.question}\n\n${optionList}\n\nEnter comma-separated option numbers${allowCustom ? " and/or custom text" : ""}.`;
 					const raw = await ctx.ui.input(params.title ?? `Question ${i + 1}`, inputPrompt);
