@@ -30,7 +30,7 @@ EXTENSIONS_DIR="${1:-$HOME/.pi/agent/extensions}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Directories to install. Entry point is <name>.ts inside each.
-TOOLS=(spinner custom-modes handoff session-query plan-mode web-search web-fetch btw)
+TOOLS=(spinner custom-modes handoff session-query plan-mode web-search web-fetch btw custom-provider-claude-agent-sdk custom-provider-codex-app-server)
 
 mkdir -p "$EXTENSIONS_DIR"
 
@@ -58,12 +58,23 @@ for tool in "${TOOLS[@]}"; do
         fi
     fi
 
-    cp -r "$src" "$dest"
+    # Copy without node_modules (we'll install fresh)
+    if [ -d "$src/node_modules" ]; then
+        rsync -a --exclude='node_modules' "$src/" "$dest/"
+    else
+        cp -r "$src" "$dest"
+    fi
 
     # Rename entry point to index.ts (Pi discovers <dir>/index.ts)
     entry="$dest/${tool}.ts"
     if [ -f "$entry" ]; then
         mv "$entry" "$dest/index.ts"
+    fi
+
+    # Install dependencies if package.json exists
+    if [ -f "$dest/package.json" ]; then
+        echo "  Installing dependencies for $tool..."
+        (cd "$dest" && bun install --production 2>/dev/null || npm install --production 2>/dev/null) || true
     fi
 
     if [ "$OVERWRITE" = true ]; then

@@ -17,6 +17,13 @@ These extend Pi with capabilities that do not ship by default, built as Pi exten
 | [`web-fetch/`](web-fetch/) | Fetch a web page and return its content as markdown via defuddle.md |
 | [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |
 
+## Providers
+
+| Directory | Description |
+|-----------|-------------|
+| [`custom-provider-claude-agent-sdk/`](custom-provider-claude-agent-sdk/) | Claude models via Agent SDK - uses your Anthropic subscription |
+| [`custom-provider-codex-app-server/`](custom-provider-codex-app-server/) | OpenAI models via Codex App Server - uses your ChatGPT/OpenAI subscription |
+
 
 See each tool's README for detailed usage, configuration, and requirements.
 

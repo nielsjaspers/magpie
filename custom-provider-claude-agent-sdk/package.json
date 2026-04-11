@@ -1,0 +1,13 @@
+{
+  "name": "custom-provider-claude-agent-sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.77"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "latest",
+    "@mariozechner/pi-coding-agent": "latest"
+  }
+}
