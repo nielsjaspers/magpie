@@ -34,6 +34,8 @@ export function defaultConfigText(): string {
 		{
 			aliases: {
 				study: "learn",
+				fast: "rush",
+				careful: "deep",
 			},
 			modes: {
 				learn: {
@@ -84,7 +86,7 @@ async function resolvePromptText(
 	};
 }
 
-async function materializeJsonMode(name: string, mode: JsonModeConfig, baseDir: string): Promise<Partial<ModeDefinition>> {
+async function materializeJsonMode(_name: string, mode: JsonModeConfig, baseDir: string): Promise<Partial<ModeDefinition>> {
 	const prompt = await resolvePromptText(mode.prompt, baseDir);
 	return {
 		description: mode.description,
@@ -92,6 +94,11 @@ async function materializeJsonMode(name: string, mode: JsonModeConfig, baseDir: 
 		tools: mode.tools,
 		promptStrategy: prompt.strategy,
 		promptText: prompt.text,
+		model: mode.model,
+		thinkingLevel: mode.thinkingLevel,
+		planBehavior: mode.planBehavior,
+		subagents: mode.subagents,
+		systemModels: mode.systemModels,
 	};
 }
 

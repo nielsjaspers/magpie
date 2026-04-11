@@ -1,7 +1,9 @@
 {
   "aliases": {
     "study": "learn",
-    "coach": "learn"
+    "coach": "learn",
+    "fast": "rush",
+    "careful": "deep"
   },
   "modes": {
     "learn": {
@@ -16,11 +18,25 @@
     "review": {
       "description": "Read-focused review mode.",
       "statusLabel": "🧪 review",
-      "tools": ["read", "grep", "find", "ls", "web_search"],
+      "tools": ["read", "grep", "find", "ls", "web_search", "session_query"],
       "prompt": {
         "strategy": "append",
         "text": "Prioritize finding risks, edge cases, and missing tests. Keep output concise and evidence-based."
       }
+    },
+    "rush": {
+      "description": "Fast model profile for quick iteration.",
+      "statusLabel": "⚡ rush",
+      "model": "anthropic/claude-haiku-4-5",
+      "thinkingLevel": "low",
+      "tools": ["@default"]
+    },
+    "deep": {
+      "description": "High-reasoning profile coordinated with planning workflow.",
+      "statusLabel": "🧭 deep",
+      "model": "openai-codex/gpt-5.3-codex",
+      "thinkingLevel": "high",
+      "planBehavior": "enter-plan"
     }
   }
 }

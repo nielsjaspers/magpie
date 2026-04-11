@@ -2,6 +2,29 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 export type PromptStrategy = "append" | "replace";
 export type ModeConfigScope = "global" | "project";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type PlanBehavior = "none" | "enter-plan";
+
+export type SubagentConceptName = "Search" | "Oracle" | "Librarian";
+
+export interface SubagentConceptDefinition {
+	description?: string;
+	whenToUse?: string;
+	preferredTools?: string[];
+	promptHint?: string;
+	modeHint?: string;
+	model?: string;
+}
+
+export type ModeSubagentConcepts = Partial<Record<SubagentConceptName, SubagentConceptDefinition>>;
+
+// Placeholder structure for future system-model routing.
+// Not applied at runtime yet (kept intentionally forward-compatible).
+export interface ModeSystemModelRefs {
+	lookAt?: string;
+	handoff?: string;
+	titling?: string;
+}
 
 export interface ModeHooks {
 	beforeAgentStart?: (event: { systemPrompt: string; prompt: string }, ctx: ExtensionContext) => Promise<
@@ -33,6 +56,11 @@ export interface ModeDefinition {
 	tools?: string[];
 	promptStrategy?: PromptStrategy;
 	promptText?: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	planBehavior?: PlanBehavior;
+	subagents?: ModeSubagentConcepts;
+	systemModels?: ModeSystemModelRefs;
 	hooks?: ModeHooks;
 }
 
@@ -47,6 +75,11 @@ export interface JsonModeConfig {
 	statusLabel?: string;
 	tools?: string[];
 	prompt?: JsonPromptConfig;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	planBehavior?: PlanBehavior;
+	subagents?: ModeSubagentConcepts;
+	systemModels?: ModeSystemModelRefs;
 }
 
 export interface JsonModesConfig {

@@ -11,7 +11,55 @@ import {
 	normalizeModeName,
 } from "./mode-definitions.js";
 import { buildPlanModeState, getPlanModeEnabled, getPlanModeState } from "./plan-state.js";
-import type { ModeConfigScope, ModeDefinition, PersistedModesState } from "./types.js";
+import type {
+	ModeConfigScope,
+	ModeDefinition,
+	ModeSubagentConcepts,
+	PersistedModesState,
+	SubagentConceptName,
+} from "./types.js";
+
+function parseModelRef(ref: string): { provider: string; modelId: string } | undefined {
+	const trimmed = ref.trim();
+	const separator = trimmed.indexOf("/");
+	if (separator <= 0 || separator === trimmed.length - 1) return undefined;
+	const provider = trimmed.slice(0, separator).trim();
+	const modelId = trimmed.slice(separator + 1).trim();
+	if (!provider || !modelId) return undefined;
+	return { provider, modelId };
+}
+
+function buildSubagentConceptPrompt(subagents: ModeSubagentConcepts | undefined): string | undefined {
+	if (!subagents) return undefined;
+	const names: SubagentConceptName[] = ["Search", "Oracle", "Librarian"];
+	const lines: string[] = [];
+
+	for (const name of names) {
+		const concept = subagents[name];
+		if (!concept) continue;
+		const parts: string[] = [];
+		if (concept.description) parts.push(concept.description);
+		if (concept.whenToUse) parts.push(`Use when: ${concept.whenToUse}`);
+		if (concept.preferredTools && concept.preferredTools.length > 0) {
+			parts.push(`Preferred tools: ${concept.preferredTools.join(", ")}`);
+		}
+		if (concept.promptHint) parts.push(`Guidance: ${concept.promptHint}`);
+		if (concept.modeHint) parts.push(`Mode hint: ${concept.modeHint}`);
+		if (concept.model) parts.push(`Model hint: ${concept.model}`);
+
+		if (parts.length > 0) {
+			lines.push(`- ${name}: ${parts.join(" ")}`);
+		}
+	}
+
+	if (lines.length === 0) return undefined;
+	return [
+		"Sub-agent concepts:",
+		...lines,
+		"Treat Search/Oracle/Librarian as behavioral roles, not tool names.",
+		"Use existing tools directly (e.g. grep/find/read, plan_subagent, web_search, session_query).",
+	].join("\n");
+}
 
 export default function customModesExtension(pi: ExtensionAPI): void {
 	let activeMode = "default";
@@ -37,6 +85,47 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 		return expanded;
 	};
 
+	const resolveProfileMode = (modeName: string): string => {
+		if (modeName === "default" || modeName === "build") return "smart";
+		return modeName;
+	};
+
+	const applyModeProfile = async (
+		ctx: ExtensionContext,
+		profileMode: string,
+		options?: { notifyErrors?: boolean },
+	): Promise<void> => {
+		const notifyErrors = options?.notifyErrors === true;
+		const def = definitions[profileMode];
+		if (!def) return;
+
+		if (def.model?.trim()) {
+			const parsed = parseModelRef(def.model);
+			if (!parsed) {
+				if (notifyErrors) ctx.ui.notify(`Mode ${profileMode} has invalid model ref: ${def.model}`, "warning");
+			} else {
+				const target = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
+				if (!target) {
+					if (notifyErrors) {
+						ctx.ui.notify(`Mode ${profileMode} model unavailable: ${parsed.provider}/${parsed.modelId}. Using current model.`, "warning");
+					}
+				} else {
+					const ok = await pi.setModel(target);
+					if (!ok && notifyErrors) {
+						ctx.ui.notify(
+							`Mode ${profileMode} model has no usable auth: ${parsed.provider}/${parsed.modelId}. Using current model.`,
+							"warning",
+						);
+					}
+				}
+			}
+		}
+
+		if (def.thinkingLevel) {
+			pi.setThinkingLevel(def.thinkingLevel);
+		}
+	};
+
 	const updateStatus = (ctx: ExtensionContext) => {
 		if (activeMode === "default") {
 			ctx.ui.setStatus(MODE_STATUS_KEY, undefined);
@@ -56,6 +145,29 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 		if (options?.persist !== false) persistState();
 	};
 
+	const setPlanModeEnabled = async (ctx: ExtensionContext, enabled: boolean, notice: string): Promise<void> => {
+		const currentPlanState = getPlanModeState(ctx);
+		pi.appendEntry(PLAN_STATE_CUSTOM_TYPE, buildPlanModeState(currentPlanState, enabled));
+		ctx.ui.notify(notice, "info");
+		await ctx.reload();
+	};
+
+	const activateDeepMode = async (ctx: ExtensionContext): Promise<void> => {
+		if (activeMode !== "default") {
+			deactivateCustomModeState(ctx);
+			applyToolSet(normalModeTools);
+		}
+
+		await applyModeProfile(ctx, "deep", { notifyErrors: true });
+
+		if (getPlanModeEnabled(ctx)) {
+			ctx.ui.notify("Deep mode profile applied while plan mode is active.", "info");
+			return;
+		}
+
+		await setPlanModeEnabled(ctx, true, "Starting deep mode (plan workflow + high-reasoning profile)...");
+	};
+
 	const applyMode = async (
 		ctx: ExtensionContext,
 		modeName: string,
@@ -72,20 +184,22 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 		activeMode = modeName;
 		applyToolSet(resolveModeTools(activeMode));
 		updateStatus(ctx);
+		await applyModeProfile(ctx, resolveProfileMode(activeMode), { notifyErrors: notify && modeName !== "default" });
 		if (persist) persistState();
 
 		if (notify) {
-			if (modeName === "default") ctx.ui.notify("Custom mode disabled. Default/build mode active.", "info");
+			if (modeName === "default") ctx.ui.notify("Custom mode disabled. Default/build (smart baseline) mode active.", "info");
 			else ctx.ui.notify(`Mode switched to: ${modeName}`, "info");
 		}
 		return true;
 	};
 
 	const listModes = (): string[] => {
+		const builtIn = ["smart", "rush", "deep"].filter((name) => Boolean(definitions[name]));
 		const custom = Object.keys(definitions)
-			.filter((name) => name !== "default" && name !== "plan")
+			.filter((name) => name !== "default" && name !== "plan" && !builtIn.includes(name))
 			.sort();
-		return ["default", "build", "plan", ...custom];
+		return ["default", "build", ...builtIn, "plan", ...custom];
 	};
 
 	const resolveModeArg = (rawArg: string): string => {
@@ -100,7 +214,7 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("mode", {
-		description: "Switch mode: /mode <default|build|learn|plan>",
+		description: "Switch mode: /mode <default|build|smart|rush|deep|learn|plan>",
 		getArgumentCompletions: (prefix: string) => {
 			const p = (prefix ?? "").trim().toLowerCase();
 			const options = listModes().map((name) => ({ value: name, label: name }));
@@ -119,41 +233,41 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 
 			if (requested === "plan") {
 				if (activeMode !== "default") {
-					if (getPlanModeEnabled(ctx)) deactivateCustomModeState(ctx);
-					else await applyMode(ctx, "default", { notify: false });
+					deactivateCustomModeState(ctx);
+					applyToolSet(normalModeTools);
 				}
 				if (getPlanModeEnabled(ctx)) {
 					ctx.ui.notify("Plan mode is already active.", "info");
 					return;
 				}
 
-				const currentPlanState = getPlanModeState(ctx);
-				pi.appendEntry(PLAN_STATE_CUSTOM_TYPE, buildPlanModeState(currentPlanState, true));
-				ctx.ui.notify("Starting plan mode...", "info");
-				await ctx.reload();
+				await setPlanModeEnabled(ctx, true, "Starting plan mode...");
 				return;
 			}
 
 			if (requested === "default") {
 				if (getPlanModeEnabled(ctx)) {
 					if (activeMode !== "default") deactivateCustomModeState(ctx);
-					const currentPlanState = getPlanModeState(ctx);
-					pi.appendEntry(PLAN_STATE_CUSTOM_TYPE, buildPlanModeState(currentPlanState, false));
-					ctx.ui.notify("Stopping plan mode...", "info");
-					await ctx.reload();
+					await applyModeProfile(ctx, "smart", { notifyErrors: false });
+					await setPlanModeEnabled(ctx, false, "Stopping plan mode...");
 					return;
 				}
 				await applyMode(ctx, "default", { notify: true });
 				return;
 			}
 
-			if (getPlanModeEnabled(ctx)) {
-				ctx.ui.notify("Plan mode is active. Run /mode default (or /plan) first.", "warning");
+			if (!definitions[requested]) {
+				ctx.ui.notify(`Unknown mode: ${requested}`, "error");
 				return;
 			}
 
-			if (!definitions[requested]) {
-				ctx.ui.notify(`Unknown mode: ${requested}`, "error");
+			if (definitions[requested]?.planBehavior === "enter-plan") {
+				await activateDeepMode(ctx);
+				return;
+			}
+
+			if (getPlanModeEnabled(ctx)) {
+				ctx.ui.notify("Plan mode is active. Run /mode default (or /plan) first.", "warning");
 				return;
 			}
 
@@ -248,6 +362,11 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 				: `${event.systemPrompt}\n\n${def.promptText}`;
 		}
 
+		const conceptPrompt = buildSubagentConceptPrompt(def.subagents);
+		if (conceptPrompt) {
+			nextSystemPrompt = `${nextSystemPrompt}\n\n${conceptPrompt}`;
+		}
+
 		const hookResult = await def.hooks?.beforeAgentStart?.({ systemPrompt: nextSystemPrompt, prompt: event.prompt }, ctx);
 		const message = hookResult?.message ?? {
 			customType: "custom-mode-context",
@@ -296,6 +415,9 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 
 		if (activeMode !== "default") {
 			applyToolSet(resolveModeTools(activeMode));
+			await applyModeProfile(ctx, resolveProfileMode(activeMode), { notifyErrors: false });
+		} else {
+			await applyModeProfile(ctx, "smart", { notifyErrors: false });
 		}
 		updateStatus(ctx);
 	});
