@@ -231,6 +231,16 @@ export default function customModesExtension(pi: ExtensionAPI): void {
 
 			const requested = resolveModeArg(raw.split(/\s+/)[0] ?? raw);
 
+			const thinkingFlag = "--thinking-level";
+			const flagIndex = raw.indexOf(thinkingFlag);
+			if (flagIndex !== -1) {
+				const afterFlag = raw.slice(flagIndex + thinkingFlag.length).trim();
+				const level = afterFlag.split(/\s+/)[0];
+				if (level) {
+					pi.setThinkingLevel(level as ThinkingLevel);
+				}
+			}
+
 			if (requested === "plan") {
 				if (activeMode !== "default") {
 					deactivateCustomModeState(ctx);

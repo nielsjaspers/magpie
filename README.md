@@ -11,6 +11,7 @@ These extend Pi with capabilities that do not ship by default, built as Pi exten
 | [`custom-modes/`](custom-modes/) | Single-active-mode manager with `/mode`, Amp-like smart/rush/deep semantics, and JSON-configurable custom modes |
 | [`handoff/`](handoff/) | Transfer context to a new session using an LLM-generated handoff prompt |
 | [`session-query/`](session-query/) | Query previous Pi sessions for decisions, file changes, and historical context |
+| [`btw/`](btw/) | Background single-task subagent command (`/btw`) with rush-by-default mode routing |
 | [`plan-mode/`](plan-mode/) | Planning loop with subagents, user questions, and deterministic plan files |
 | [`spinner/`](spinner/) | Spinner that shows random verbs during streaming |
 | [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |

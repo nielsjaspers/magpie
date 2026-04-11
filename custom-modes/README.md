@@ -128,6 +128,7 @@ These are **behavioral prompts**, not tool names. The extension injects concise 
 
 - Default fallback tool discovery now includes `session_query` when installed.
 - Handoff + parent-session metadata flows remain unchanged; this extension does not alter handoff session-switch logic.
+- The separate `/btw` command uses the same custom-modes config files for its rush/smart/deep model routing, but it does not change the active mode state.
 
 ## Extension structure
 
