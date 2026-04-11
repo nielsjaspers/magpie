@@ -11,7 +11,9 @@ These extend Pi with capabilities that do not ship by default, built as Pi exten
 | [`custom-modes/`](custom-modes/) | Single-active-mode manager with `/mode` and JSON-configurable custom modes |
 | [`handoff/`](handoff/) | Transfer context to a new session using an LLM-generated handoff prompt |
 | [`plan-mode/`](plan-mode/) | Planning loop with subagents, user questions, and deterministic plan files |
+| [`spinner/`](spinner/) | Spinner that shows random verbs during streaming |
 | [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |
+
 
 See each tool's README for detailed usage, configuration, and requirements.
 

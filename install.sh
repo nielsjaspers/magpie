@@ -30,7 +30,7 @@ EXTENSIONS_DIR="${1:-$HOME/.pi/agent/extensions}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Directories to install. Entry point is <name>.ts inside each.
-TOOLS=(custom-modes handoff plan-mode web-search)
+TOOLS=(spinner custom-modes handoff plan-mode web-search)
 
 mkdir -p "$EXTENSIONS_DIR"
 
