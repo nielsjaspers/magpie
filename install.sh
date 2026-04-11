@@ -4,11 +4,27 @@ set -euo pipefail
 # Install script for pi-tools
 # Copies each tool directory into the Pi extensions folder.
 #
+# Usage: ./install.sh [--overwrite] [EXTENSIONS_DIR]
+#   --overwrite   Overwrite existing extensions instead of skipping them.
+#
 # Pi auto-discovers extensions as:
 #   ~/.pi/agent/extensions/*.ts       (single-file)
 #   ~/.pi/agent/extensions/*/index.ts  (directory)
 #
 # Each tool is installed as <name>.ts/ with entry point renamed to index.ts.
+
+OVERWRITE=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --overwrite|-f)
+            OVERWRITE=true
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 EXTENSIONS_DIR="${1:-$HOME/.pi/agent/extensions}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -33,9 +49,13 @@ for tool in "${TOOLS[@]}"; do
     fi
 
     if [ -e "$dest" ]; then
-        echo "SKIP: $tool (already exists at $dest)"
-        skipped=$((skipped + 1))
-        continue
+        if [ "$OVERWRITE" = true ]; then
+            rm -rf "$dest"
+        else
+            echo "SKIP: $tool (already exists at $dest, use --overwrite to replace)"
+            skipped=$((skipped + 1))
+            continue
+        fi
     fi
 
     cp -r "$src" "$dest"
@@ -46,7 +66,11 @@ for tool in "${TOOLS[@]}"; do
         mv "$entry" "$dest/index.ts"
     fi
 
-    echo "COPY: $tool -> $dest"
+    if [ "$OVERWRITE" = true ]; then
+        echo "OVERWRITE: $tool -> $dest"
+    else
+        echo "COPY: $tool -> $dest"
+    fi
     installed=$((installed + 1))
 done
 
