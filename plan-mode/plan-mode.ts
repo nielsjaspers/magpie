@@ -377,6 +377,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	let lastToolNameInTurn: string | undefined;
 	let strictLoopViolations = 0;
 	let normalModeTools = [...NORMAL_MODE_FALLBACK_TOOLS];
+	let latestCtx: ExtensionContext | undefined;
 
 	const plansDir = (cwd: string) => resolve(cwd, ".pi/plans");
 
@@ -437,6 +438,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	};
 
 	const setPlanModeEnabled = async (ctx: ExtensionContext, enabled: boolean, seed?: string) => {
+		latestCtx = ctx;
 		planModeEnabled = enabled;
 		executionMode = false;
 		pendingApproval = false;
@@ -462,6 +464,17 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 		persistState();
 	};
+
+	pi.events.on("magpie:handoff:set-mode", (payload: { mode?: "plan" | "default"; seed?: string } | undefined) => {
+		if (!latestCtx || !payload?.mode) return;
+		if (payload.mode === "plan") {
+			void setPlanModeEnabled(latestCtx, true, payload.seed);
+			return;
+		}
+		if (payload.mode === "default") {
+			void setPlanModeEnabled(latestCtx, false);
+		}
+	});
 
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (subagents + user questions + deterministic plan file)",
@@ -979,6 +992,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
+		latestCtx = ctx;
 		if (executionMode && todoItems.length > 0 && todoItems.every((t) => t.completed)) {
 			const completedList = todoItems.map((t) => `~~${t.text}~~`).join("\n");
 			pi.sendMessage(
@@ -1052,6 +1066,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		latestCtx = ctx;
 		if (pi.getFlag("plan") === true) {
 			planModeEnabled = true;
 		}
