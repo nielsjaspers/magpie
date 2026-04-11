@@ -19,12 +19,13 @@ const PLAN_MODE_TOOLS = [
 	"write",
 	"edit",
 	"web_search",
+	"session_query",
 	"plan_subagent",
 	"user_question",
 	"plan_exit",
 ];
 
-const NORMAL_MODE_FALLBACK_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search"];
+const NORMAL_MODE_FALLBACK_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "session_query"];
 const PLAN_ONLY_TOOLS = ["plan_subagent", "user_question", "plan_exit"];
 const SUBAGENT_BUILTIN_TOOLS = "read,bash,grep,find,ls,web_search";
 const MAX_SUBAGENTS = 4;

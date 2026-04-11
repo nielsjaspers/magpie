@@ -9,13 +9,15 @@
  * - Command path uses ctx.newSession() (full runtime session switch).
  * - Tool path cannot call ctx.newSession(), so it defers a low-level
  *   session switch to agent_end, then sends the generated prompt.
+ * - Tool-path coordination and parent-session metadata pattern are
+ *   inspired by pi-amplike.
  */
 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { complete, type Message } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
 import { BorderedLoader, convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -299,6 +301,27 @@ async function generateHandoffPrompt(
 	return { prompt: result, options: effectiveOptions };
 }
 
+function buildFinalHandoffPrompt(goal: string, generatedPrompt: string, parentSession: string | undefined): string {
+	const sections: string[] = [];
+	const trimmedGoal = goal.trim();
+	if (trimmedGoal.length > 0) {
+		sections.push(trimmedGoal);
+	}
+
+	if (parentSession) {
+		sections.push(
+			`If you need details from the previous thread, use the session_query tool.\n\n**Parent session:** \`${parentSession}\``,
+		);
+	}
+
+	const trimmedGenerated = generatedPrompt.trim();
+	if (trimmedGenerated.length > 0) {
+		sections.push(trimmedGenerated);
+	}
+
+	return sections.join("\n\n");
+}
+
 async function applyPostSwitchPreferences(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -421,13 +444,14 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const editedPrompt = await ctx.ui.editor("Edit handoff prompt", generated.prompt);
+			const parentSession = ctx.sessionManager.getSessionFile();
+			const handoffDraft = buildFinalHandoffPrompt(parsed.goal, generated.prompt, parentSession);
+			const editedPrompt = await ctx.ui.editor("Edit handoff prompt", handoffDraft);
 			if (editedPrompt === undefined) {
 				ctx.ui.notify("Cancelled", "info");
 				return;
 			}
 
-			const parentSession = ctx.sessionManager.getSessionFile();
 			const newSessionResult = await ctx.newSession({ parentSession });
 			if (newSessionResult.cancelled) {
 				ctx.ui.notify("New session cancelled", "info");
@@ -481,14 +505,15 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			const editedPrompt = await ctx.ui.editor("Edit handoff prompt", generated.prompt);
+			const parentSession = ctx.sessionManager.getSessionFile();
+			const handoffDraft = buildFinalHandoffPrompt(goal, generated.prompt, parentSession);
+			const editedPrompt = await ctx.ui.editor("Edit handoff prompt", handoffDraft);
 			if (editedPrompt === undefined) {
 				return {
 					content: [{ type: "text", text: "Handoff cancelled." }],
 				};
 			}
 
-			const parentSession = ctx.sessionManager.getSessionFile();
 			pendingToolHandoff = {
 				goal,
 				prompt: editedPrompt,

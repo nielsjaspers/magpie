@@ -35,7 +35,7 @@ Project-local planning loop extension with subagents + user questions + determin
 ## Plan Mode Restrictions
 
 - Allowed tools in plan mode:
-  - `read`, `bash`, `grep`, `find`, `ls`, `web_search`
+  - `read`, `bash`, `grep`, `find`, `ls`, `web_search`, `session_query`
   - `write`, `edit` **only** for `.pi/plans/*.plan.md`
   - `plan_subagent`, `user_question`, `plan_exit`
 - Bash is allowlisted to read-only commands.
