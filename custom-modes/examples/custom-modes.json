@@ -1,0 +1,26 @@
+{
+  "aliases": {
+    "study": "learn",
+    "coach": "learn"
+  },
+  "modes": {
+    "learn": {
+      "description": "Collaborative learning mode for codebase understanding and coding guidance.",
+      "statusLabel": "🎓 learn",
+      "tools": ["@default"],
+      "prompt": {
+        "strategy": "append",
+        "file": "./learn.md"
+      }
+    },
+    "review": {
+      "description": "Read-focused review mode.",
+      "statusLabel": "🧪 review",
+      "tools": ["read", "grep", "find", "ls", "web_search"],
+      "prompt": {
+        "strategy": "append",
+        "text": "Prioritize finding risks, edge cases, and missing tests. Keep output concise and evidence-based."
+      }
+    }
+  }
+}

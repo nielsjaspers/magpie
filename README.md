@@ -8,6 +8,7 @@ These extend Pi with capabilities that do not ship by default, built as Pi exten
 
 | Directory | Description |
 |-----------|-------------|
+| [`custom-modes/`](custom-modes/) | Single-active-mode manager with `/mode` and JSON-configurable custom modes |
 | [`handoff/`](handoff/) | Transfer context to a new session using an LLM-generated handoff prompt |
 | [`plan-mode/`](plan-mode/) | Planning loop with subagents, user questions, and deterministic plan files |
 | [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |
@@ -38,12 +39,12 @@ To install to a custom location:
 To install manually (per-tool or project-local):
 
 ```bash
-# Global
-cp -r plan-mode ~/.pi/agent/extensions/plan-mode.ts
+# Global (example)
+cp -r custom-modes ~/.pi/agent/extensions/custom-modes.ts
 
-# Project-local
+# Project-local (example)
 mkdir -p .pi/extensions
-cp -r plan-mode .pi/extensions/plan-mode.ts
+cp -r custom-modes .pi/extensions/custom-modes.ts
 ```
 
 Then reload Pi (`/reload`) or restart.
