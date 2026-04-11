@@ -159,6 +159,44 @@ export function slugify(input: string): string {
 	return slug.length > 0 ? slug : "plan";
 }
 
+const ADJECTIVES = [
+	"amber", "ancient", "aqua", "arctic", "autumn", "azure", "bare", "base", "billowing", "bitter",
+	"black", "blue", "bold", "brave", "brief", "bright", "brisk", "broad", "broken", "bronze",
+	"calm", "celestial", "cherry", "chill", "cold", "cool", "crimson", "crisp", "curved", "cyan",
+	"dark", "dawn", "deep", "divine", "dry", "dull", "dusk", "dusty", "empty", "evening",
+	"fading", "fast", "fierce", "flat", "floral", "flowing", "flying", "forest", "fragrant", "frosty",
+	"gentle", "golden", "grand", "gray", "green", "hidden", "hollow", "holy", "icy", "indigo",
+	"jade", "late", "lively", "long", "lost", "lunar", "magenta", "misty", "moonlit", "morning",
+	"muddy", "mute", "mute", "navy", "noble", "noisy", "old", "pale", "patient", "peach",
+	"proud", "purple", "quiet", "rapid", "red", "restless", "rough", "round", "royal", "ruby",
+	"rustic", "sacred", "sapphire", "scarlet", "secret", "serene", "sharp", "shining", "silent", "silver",
+	"simple", "sleek", "slow", "smooth", "soft", "solar", "solid", "sparkling", "spring", "square",
+	"steep", "still", "stout", "strong", "summer", "sweet", "swift", "teal", "tight", "twilight",
+	"vast", "velvet", "violet", "wandering", "warm", "white", "wild", "windy", "winter", "yellow"
+];
+
+const NOUNS = [
+	"apple", "ash", "bird", "block", "boat", "breeze", "brook", "bush", "butterfly", "cake",
+	"cape", "cave", "cell", "cherry", "cloud", "coast", "cove", "creek", "crest", "crow",
+	"dawn", "day", "dew", "dream", "dusk", "dust", "eagle", "earth", "fall", "feather",
+	"fern", "field", "fire", "fish", "flower", "fog", "forest", "fox", "frog", "frost",
+	"glade", "glass", "grass", "grove", "hall", "hare", "hawk", "haze", "heart", "hill",
+	"hound", "ice", "island", "king", "lake", "leaf", "light", "lion", "math", "meadow",
+	"moon", "morning", "moth", "mountain", "night", "nightingale", "oak", "ocean", "owl", "paper",
+	"path", "peak", "pine", "pine", "plain", "plant", "pond", "queen", "rain", "raven",
+	"resonance", "river", "road", "rock", "rose", "sand", "sea", "shadow", "shape", "silence",
+	"sky", "smoke", "snow", "sound", "spark", "spell", "spring", "star", "stone", "storm",
+	"stream", "summer", "sun", "sunset", "surf", "surge", "swallow", "swan", "team", "thunder",
+	"tide", "timber", "time", "tree", "truth", "valley", "voice", "water", "wave", "way",
+	"willow", "wind", "winter", "wolf", "wood", "word", "world", "yew"
+];
+
+export function generateRandomName(): string {
+	const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+	const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+	return `${adj}-${noun}`;
+}
+
 export function isPlanPath(pathArg: string, cwd: string): boolean {
 	const abs = resolve(cwd, pathArg);
 	const plansDir = resolve(cwd, ".pi/plans");

@@ -8,7 +8,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, Message, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Key } from "@mariozechner/pi-tui";
-import { extractTodoItems, isPlanPath, isSafeCommand, markCompletedSteps, slugify, type TodoItem } from "./utils.js";
+import { extractTodoItems, generateRandomName, isPlanPath, isSafeCommand, markCompletedSteps, slugify, type TodoItem } from "./utils.js";
 
 const PLAN_MODE_TOOLS = [
 	"read",
@@ -387,7 +387,9 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 		}
 		if (activePlanFile) return activePlanFile;
 		await mkdir(plansDir(cwd), { recursive: true });
-		const slug = planSlug ?? slugify("plan");
+		
+		const timestamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14); // YYYYMMDDHHmmss
+		const slug = planSlug ?? `${timestamp}-${generateRandomName()}`;
 		activePlanFile = resolve(plansDir(cwd), `${slug}.plan.md`);
 		return activePlanFile;
 	};
