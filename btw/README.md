@@ -23,7 +23,7 @@ A Pi extension that adds a **single background subagent command**: `/btw`.
 /btw check whether there are any TODO comments in src/
 /btw -mode smart summarize the README
 /btw -mode deep inspect the latest refactor for edge cases
-/btw -model anthropic/claude-haiku-4-5 count lines of code in the repo
+/btw -model anthropic/claude-haiku-4.5 count lines of code in the repo
 ```
 
 ## Mode behavior

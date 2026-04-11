@@ -81,7 +81,7 @@ These are **behavioral prompts**, not tool names. The extension injects concise 
   "modes": {
     "rush": {
       "statusLabel": "⚡ rush",
-      "model": "anthropic/claude-haiku-4-5",
+      "model": "anthropic/claude-haiku-4.5",
       "thinkingLevel": "low",
       "tools": ["@default"]
     },

@@ -284,7 +284,7 @@ const DEFAULT_PLAN_MODE_CONFIG: PlanModeConfig = {
 		default: "github-copilot/gpt-5.4-mini",
 		explore: "github-copilot/gemini-3-flash-preview",
 		design: "github-copilot/gemini-3-flash-preview",
-		risk: "github-copilot/claude-haiku-4-5",
+		risk: "github-copilot/claude-haiku-4.5",
 		custom: "github-copilot/gpt-5-mini",
 	},
 };
