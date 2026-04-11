@@ -14,6 +14,7 @@ These extend Pi with capabilities that do not ship by default, built as Pi exten
 | [`btw/`](btw/) | Background single-task subagent command (`/btw`) with rush-by-default mode routing |
 | [`plan-mode/`](plan-mode/) | Planning loop with subagents, user questions, and deterministic plan files |
 | [`spinner/`](spinner/) | Spinner that shows random verbs during streaming |
+| [`web-fetch/`](web-fetch/) | Fetch a web page and return its content as markdown via defuddle.md |
 | [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |
 
 

@@ -19,16 +19,17 @@ const PLAN_MODE_TOOLS = [
 	"write",
 	"edit",
 	"web_search",
+	"web_fetch",
 	"session_query",
 	"plan_subagent",
 	"user_question",
 	"plan_exit",
 ];
 
-const NORMAL_MODE_FALLBACK_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "session_query"];
-const PLAN_ONLY_TOOLS = ["plan_subagent", "user_question", "plan_exit"];
-const SUBAGENT_BUILTIN_TOOLS = "read,bash,grep,find,ls,web_search";
-const MAX_SUBAGENTS = 4;
+const NORMAL_MODE_FALLBACK_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_fetch", "session_query"];
+const PLAN_ONLY_TOOLS = ["plan_subagent", "user_question", "plan_exit", "bash"];
+const SUBAGENT_BUILTIN_TOOLS = "read,bash,grep,find,ls,web_search,web_fetch";
+const MAX_SUBAGENTS = 6;
 const MAX_STRICT_LOOP_VIOLATIONS = 3;
 
 type SubagentRole = "explore" | "design" | "risk" | "custom";
@@ -124,15 +125,15 @@ function chooseRoleModel(role: SubagentRole, explicitModel: string | undefined, 
 
 function rolePrompt(role: SubagentRole, task: string): string {
 	if (role === "explore") {
-		return `You are an EXPLORE sub-agent. Investigate the codebase quickly and precisely.\n\nTask:\n${task}\n\nRequirements:\n- Read-only only\n- You may use web_search for external research\n- Focus on locating relevant files, call paths, symbols, and existing patterns\n- Include concrete evidence with file paths\n- Keep output concise\n\nOutput:\n## Findings\n- ...\n\n## Evidence\n- path/to/file.ts (why relevant)\n\n## Unknowns\n- ...`;
+		return `You are an EXPLORE sub-agent. Investigate the codebase quickly and precisely.\n\nTask:\n${task}\n\nRequirements:\n- Read-only only\n- You may use web_search and web_fetch for external research\n- Focus on locating relevant files, call paths, symbols, and existing patterns\n- Include concrete evidence with file paths\n- Keep output concise\n\nOutput:\n## Findings\n- ...\n\n## Evidence\n- path/to/file.ts (why relevant)\n\n## Unknowns\n- ...`;
 	}
 	if (role === "design") {
-		return `You are a DESIGN sub-agent. Propose implementation approaches based on available evidence.\n\nTask:\n${task}\n\nRequirements:\n- Read-only only\n- You may use web_search for external research\n- Compare 1-2 viable approaches with tradeoffs\n- Emphasize maintainability and blast radius\n\nOutput:\n## Proposed Approaches\n- ...\n\n## Recommended Approach\n- ...\n\n## Affected Areas\n- path/to/file.ts (expected changes)`;
+		return `You are a DESIGN sub-agent. Propose implementation approaches based on available evidence.\n\nTask:\n${task}\n\nRequirements:\n- Read-only only\n- You may use web_search and web_fetch for external research\n- Compare 1-2 viable approaches with tradeoffs\n- Emphasize maintainability and blast radius\n\nOutput:\n## Proposed Approaches\n- ...\n\n## Recommended Approach\n- ...\n\n## Affected Areas\n- path/to/file.ts (expected changes)`;
 	}
 	if (role === "risk") {
-		return `You are a RISK sub-agent. Stress-test the plan and identify failure modes.\n\nTask:\n${task}\n\nRequirements:\n- Read-only only\n- You may use web_search for external research\n- Focus on edge cases, regressions, migrations, and test strategy\n- Highlight unknown assumptions\n\nOutput:\n## Risks\n- ...\n\n## Mitigations\n- ...\n\n## Validation\n- tests/checks to run`;
+		return `You are a RISK sub-agent. Stress-test the plan and identify failure modes.\n\nTask:\n${task}\n\nRequirements:\n- Read-only only\n- You may use web_search and web_fetch for external research\n- Focus on edge cases, regressions, migrations, and test strategy\n- Highlight unknown assumptions\n\nOutput:\n## Risks\n- ...\n\n## Mitigations\n- ...\n\n## Validation\n- tests/checks to run`;
 	}
-	return `You are a planning sub-agent. Investigate and report findings only.\n\nTask:\n${task}\n\nOutput:\n## Findings\n- ...\n\n## Evidence\n- ...`;
+	return `You are a planning sub-agent. Investigate and report findings only.\n\nTask:\n${task}\n\nYou may use web_search and web_fetch for external research.\n\nOutput:\n## Findings\n- ...\n\n## Evidence\n- ...`;
 }
 
 async function runSubagentTask(
@@ -351,7 +352,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			return {
 				message: {
 					customType: "plan-subagent-context",
-					content: `[PLAN SUBAGENT: ${role}]\nRead-only only. Do not modify files. web_search is allowed for external research.`,
+					content: `[PLAN SUBAGENT: ${role}]\nRead-only only. Do not modify files. web_search and web_fetch are allowed for external research.`,
 					display: false,
 				},
 			};
@@ -359,9 +360,10 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 
 		pi.on("session_start", async () => {
 			const all = new Set(pi.getAllTools().map((t) => t.name));
-			if (!all.has("web_search")) return;
+			const webTools = ["web_search", "web_fetch"].filter((t) => all.has(t));
+			if (webTools.length === 0) return;
 			const active = new Set(pi.getActiveTools());
-			active.add("web_search");
+			for (const t of webTools) active.add(t);
 			pi.setActiveTools(Array.from(active));
 		});
 
@@ -953,7 +955,7 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 			return {
 				message: {
 					customType: "plan-mode-context",
-					content: `[PLAN MODE ACTIVE]\nYou are in a strict planning loop.\n\nPlan file:\n- ${rel}\n\nRules:\n- Read-only exploration, except write/edit for ${rel}\n- Use plan_subagent (roles: explore/design/risk/custom) for research\n- Use web_search when external/current info is needed\n- Use user_question for user clarifications\n- Keep iterating until plan quality is high\n- Then write/update ${rel} and call plan_exit\n\nSTRICT LOOP RULE:\nYour turn must end with either:\n1) a user_question tool call, OR\n2) a plan_exit tool call\nDo not stop planning silently.\n\nPlan structure:\n- Goal\n- Constraints\n- Numbered implementation steps\n- Risks/unknowns\n- Validation/test plan\n\nExecution tracking:\nUse [DONE:n] markers when executing numbered steps.`,
+					content: `[PLAN MODE ACTIVE]\nYou are in a strict planning loop.\n\nPlan file:\n- ${rel}\n\nRules:\n- Read-only exploration, except write/edit for ${rel}\n- Use plan_subagent (roles: explore/design/risk/custom) for research\n- Use web_search and web_fetch when external/current info is needed\n- Use user_question for user clarifications\n- Keep iterating until plan quality is high\n- Then write/update ${rel} and call plan_exit\n\nSTRICT LOOP RULE:\nYour turn must end with either:\n1) a user_question tool call, OR\n2) a plan_exit tool call\nDo not stop planning silently.\n\nPlan structure:\n- Goal\n- Constraints\n- Numbered implementation steps\n- Risks/unknowns\n- Validation/test plan\n\nExecution tracking:\nUse [DONE:n] markers when executing numbered steps.`,
 					display: false,
 				},
 			};

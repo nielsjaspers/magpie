@@ -14,6 +14,7 @@ export const NORMAL_MODE_FALLBACK_TOOLS = [
 	"find",
 	"ls",
 	"web_search",
+	"web_fetch",
 	"session_query",
 ];
 
@@ -36,7 +37,7 @@ const SHARED_SUBAGENT_CONCEPTS: ModeSubagentConcepts = {
 	Librarian: {
 		description: "External and historical retrieval for docs, prior sessions, and supporting context.",
 		whenToUse: "Use when codebase evidence is insufficient or parent-session detail is needed.",
-		preferredTools: ["web_search", "session_query", "read", "grep", "find", "ls"],
+		preferredTools: ["web_search", "web_fetch", "session_query", "read", "grep", "find", "ls"],
 		promptHint: "Cite sources/paths and clearly separate facts from unknowns.",
 		modeHint: "smart",
 	},
