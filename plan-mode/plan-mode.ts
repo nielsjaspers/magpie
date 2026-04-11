@@ -381,11 +381,11 @@ export default function planModeExtension(pi: ExtensionAPI): void {
 	const plansDir = (cwd: string) => resolve(cwd, ".pi/plans");
 
 	const getPlanPath = async (cwd: string, seed?: string): Promise<string> => {
+		if (activePlanFile) return activePlanFile;
+
 		if (seed && seed.trim().length > 0) {
 			planSlug = slugify(seed);
-			activePlanFile = undefined;
 		}
-		if (activePlanFile) return activePlanFile;
 		await mkdir(plansDir(cwd), { recursive: true });
 		
 		const timestamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14); // YYYYMMDDHHmmss
