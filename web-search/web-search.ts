@@ -21,7 +21,7 @@ export default function (pi: ExtensionAPI) {
       
       const result = await pi.exec(
         "bash", 
-        ["-c", `OPENCODE_ENABLE_EXA=1 opencode run "${escapedQuery}" --model "github-copilot/gemini-3-flash-preview"`],
+        ["-c", `OPENCODE_ENABLE_EXA=1 opencode run "${escapedQuery}" --model "opencode-go/mimo-v2-pro"`],
         { signal, timeout: 120000 }
       );
 
