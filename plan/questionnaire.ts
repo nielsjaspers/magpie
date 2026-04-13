@@ -1,4 +1,4 @@
-import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth } from "@mariozechner/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 export interface QuestionnaireOption {
@@ -82,6 +82,8 @@ export async function runQuestionnaire(
 		let inputQuestionId: string | null = null;
 		let cachedLines: string[] | undefined;
 		const answers = new Map<string, Answer>();
+		const multiAnswers = new Map<string, Map<string, Answer>>();
+		const multiCustomKey = "__custom__";
 
 		const editorTheme: EditorTheme = {
 			borderColor: (s) => theme.fg("accent", s),
@@ -100,15 +102,53 @@ export async function runQuestionnaire(
 			tui.requestRender();
 		}
 
+		function getMultiAnswerMap(questionId: string): Map<string, Answer> {
+			let selected = multiAnswers.get(questionId);
+			if (!selected) {
+				selected = new Map<string, Answer>();
+				multiAnswers.set(questionId, selected);
+			}
+			return selected;
+		}
+
+		function removeMultiIfEmpty(questionId: string) {
+			if ((multiAnswers.get(questionId)?.size ?? 0) === 0) {
+				multiAnswers.delete(questionId);
+			}
+		}
+
+		function getQuestionAnswers(question: Question): Answer[] {
+			if (!question.multiSelect) {
+				const answer = answers.get(question.id);
+				return answer ? [answer] : [];
+			}
+			const selected = multiAnswers.get(question.id);
+			if (!selected) return [];
+			return [...selected.values()].sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER));
+		}
+
+		function isQuestionAnswered(question: Question): boolean {
+			if (!question.multiSelect) return answers.has(question.id);
+			return (multiAnswers.get(question.id)?.size ?? 0) > 0;
+		}
+
+		function isOptionChecked(question: Question, option: RenderOption): boolean {
+			if (!question.multiSelect) return false;
+			const selected = multiAnswers.get(question.id);
+			if (!selected) return false;
+			if (option.isOther) return selected.has(multiCustomKey);
+			return selected.has(option.value);
+		}
+
 		function submit(cancelled: boolean) {
 			const questionnaireAnswers: QuestionnaireAnswer[] = questions.map((q) => {
-				const answer = answers.get(q.id);
+				const selectedAnswers = getQuestionAnswers(q);
 				return {
 					id: q.id,
 					question: q.prompt,
 					kind: q.multiSelect ? "multi" : "single",
-					selected: answer ? [{ value: answer.value, label: answer.label }] : [],
-					custom: answer?.wasCustom ? [answer.label] : [],
+					selected: selectedAnswers.map((answer) => ({ value: answer.value, label: answer.label })),
+					custom: selectedAnswers.filter((answer) => answer.wasCustom).map((answer) => answer.label),
 					cancelled,
 				};
 			});
@@ -130,7 +170,7 @@ export async function runQuestionnaire(
 		}
 
 		function allAnswered(): boolean {
-			return questions.every((q) => answers.has(q.id));
+			return questions.every((q) => isQuestionAnswered(q));
 		}
 
 		function advanceAfterAnswer() {
@@ -151,9 +191,40 @@ export async function runQuestionnaire(
 			answers.set(questionId, { id: questionId, value, label, wasCustom, index });
 		}
 
+		function toggleMultiAnswer(questionId: string, value: string, label: string, wasCustom: boolean, index?: number) {
+			const selected = getMultiAnswerMap(questionId);
+			const key = wasCustom ? multiCustomKey : value;
+			if (selected.has(key)) {
+				selected.delete(key);
+			} else {
+				selected.set(key, { id: questionId, value, label, wasCustom, index });
+			}
+			removeMultiIfEmpty(questionId);
+		}
+
+		function setMultiCustomAnswer(questionId: string, value: string) {
+			const selected = getMultiAnswerMap(questionId);
+			selected.set(multiCustomKey, {
+				id: questionId,
+				value,
+				label: value,
+				wasCustom: true,
+				index: Number.MAX_SAFE_INTEGER,
+			});
+		}
+
 		editor.onSubmit = (value) => {
 			if (!inputQuestionId) return;
 			const trimmed = value.trim() || "(no response)";
+			const inputQuestion = questions.find((question) => question.id === inputQuestionId);
+			if (inputQuestion?.multiSelect) {
+				setMultiCustomAnswer(inputQuestionId, trimmed);
+				inputMode = false;
+				inputQuestionId = null;
+				editor.setText("");
+				refresh();
+				return;
+			}
 			saveAnswer(inputQuestionId, trimmed, trimmed, true);
 			inputMode = false;
 			inputQuestionId = null;
@@ -208,13 +279,41 @@ export async function runQuestionnaire(
 				return;
 			}
 			if (matchesKey(data, Key.down)) {
-				optionIndex = Math.min(opts.length - 1, optionIndex + 1);
+				optionIndex = Math.min(Math.max(0, opts.length - 1), optionIndex + 1);
+				refresh();
+				return;
+			}
+
+			if (q?.multiSelect && matchesKey(data, Key.space)) {
+				const opt = opts[optionIndex];
+				if (!opt) return;
+				if (opt.isOther) {
+					if (multiAnswers.get(q.id)?.has(multiCustomKey)) {
+						multiAnswers.get(q.id)?.delete(multiCustomKey);
+						removeMultiIfEmpty(q.id);
+						refresh();
+						return;
+					}
+					inputMode = true;
+					inputQuestionId = q.id;
+					editor.setText("");
+					refresh();
+					return;
+				}
+				toggleMultiAnswer(q.id, opt.value, opt.label, false, optionIndex + 1);
 				refresh();
 				return;
 			}
 
 			if (matchesKey(data, Key.enter) && q) {
+				if (q.multiSelect) {
+					if (isQuestionAnswered(q)) {
+						advanceAfterAnswer();
+					}
+					return;
+				}
 				const opt = opts[optionIndex];
+				if (!opt) return;
 				if (opt.isOther) {
 					inputMode = true;
 					inputQuestionId = q.id;
@@ -247,7 +346,7 @@ export async function runQuestionnaire(
 				const tabs: string[] = ["← "];
 				for (let i = 0; i < questions.length; i++) {
 					const isActive = i === currentTab;
-					const isAnswered = answers.has(questions[i].id);
+					const isAnswered = isQuestionAnswered(questions[i]);
 					const lbl = questions[i].label;
 					const box = isAnswered ? "■" : "□";
 					const color = isAnswered ? "success" : "muted";
@@ -271,12 +370,14 @@ export async function runQuestionnaire(
 					const opt = opts[i];
 					const selected = i === optionIndex;
 					const isOther = opt.isOther === true;
+					const checked = q ? isOptionChecked(q, opt) : false;
+					const checkbox = q?.multiSelect ? `${checked ? "☑" : "☐"} ` : "";
 					const prefix = selected ? theme.fg("accent", "> ") : "  ";
-					const color = selected ? "accent" : "text";
+					const color = selected ? "accent" : checked ? "success" : "text";
 					if (isOther && inputMode) {
-						add(prefix + theme.fg("accent", `${i + 1}. ${opt.label} ✎`));
+						add(prefix + theme.fg("accent", `${checkbox}${i + 1}. ${opt.label} ✎`));
 					} else {
-						add(prefix + theme.fg(color, `${i + 1}. ${opt.label}`));
+						add(prefix + theme.fg(color, `${checkbox}${i + 1}. ${opt.label}`));
 					}
 					if (opt.description) {
 						add(`     ${theme.fg("muted", opt.description)}`);
@@ -299,10 +400,12 @@ export async function runQuestionnaire(
 				add(theme.fg("accent", theme.bold(" Ready to submit")));
 				lines.push("");
 				for (const question of questions) {
-					const answer = answers.get(question.id);
-					if (answer) {
-						const prefix = answer.wasCustom ? "(wrote) " : "";
-						add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("text", prefix + answer.label)}`);
+					const questionAnswers = getQuestionAnswers(question);
+					if (questionAnswers.length > 0) {
+						const summary = questionAnswers
+							.map((answer) => `${answer.wasCustom ? "(wrote) " : ""}${answer.label}`)
+							.join(", ");
+						add(`${theme.fg("muted", ` ${question.label}: `)}${theme.fg("text", summary)}`);
 					}
 				}
 				lines.push("");
@@ -310,8 +413,8 @@ export async function runQuestionnaire(
 					add(theme.fg("success", " Press Enter to submit"));
 				} else {
 					const missing = questions
-						.filter((q) => !answers.has(q.id))
-						.map((q) => q.label)
+						.filter((question) => !isQuestionAnswered(question))
+						.map((question) => question.label)
 						.join(", ");
 					add(theme.fg("warning", ` Unanswered: ${missing}`));
 				}
@@ -323,10 +426,13 @@ export async function runQuestionnaire(
 
 			lines.push("");
 			if (!inputMode) {
-				const help = isMulti
-					? " Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
-					: " ↑↓ navigate • Enter select • Esc cancel";
-				add(theme.fg("dim", help));
+				const nav = isMulti ? " Tab/←→ navigate • ↑↓ select" : " ↑↓ navigate";
+				const action = currentTab === questions.length
+					? " • Enter submit • Esc cancel"
+					: q?.multiSelect
+						? " • Space toggle • Enter confirm • Esc cancel"
+						: " • Enter select • Esc cancel";
+				add(theme.fg("dim", `${nav}${action}`));
 			}
 			add(theme.fg("accent", "─".repeat(width)));
 

@@ -4,6 +4,7 @@ import { basename, relative, resolve } from "node:path";
 import { StringEnum, type AssistantMessage } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Key } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { loadConfig } from "../config/config.js";
@@ -130,6 +131,14 @@ export default function (pi: ExtensionAPI) {
 		description: "Toggle plan mode. Optional arg seeds deterministic filename",
 		handler: async (args, ctx) => {
 			if (!planModeEnabled) await setPlanMode(ctx, true, args?.trim() || undefined);
+			else await setPlanMode(ctx, false);
+		},
+	});
+
+	pi.registerShortcut(Key.ctrlAlt("p"), {
+		description: "Toggle plan mode",
+		handler: async (ctx) => {
+			if (!planModeEnabled) await setPlanMode(ctx, true);
 			else await setPlanMode(ctx, false);
 		},
 	});
