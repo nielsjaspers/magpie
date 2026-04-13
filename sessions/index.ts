@@ -137,13 +137,55 @@ export default function (pi: ExtensionAPI) {
 		subagentCore = api;
 	});
 
-	const runIndexAttempt = async (ctx: ExtensionContext, pending: PendingIndexEntry) => {
+	const runIndexAttempt = async (
+		ctx: ExtensionContext,
+		pending: PendingIndexEntry,
+		configOverride?: Awaited<ReturnType<typeof loadConfig>>,
+	) => {
 		if (!subagentCore) return false;
-		const config = await loadConfig(ctx.cwd);
+		const config = configOverride ?? await loadConfig(ctx.cwd);
 		const entry = await summarizeSession(subagentCore, ctx, config, pending.sessionPath, pending.cwd);
 		if (!entry) return false;
 		await appendIndexEntry(entry, config.sessions?.maxIndexEntries ?? 500);
 		return true;
+	};
+
+	let pendingDrainScheduled = false;
+	let pendingDrainPromise: Promise<void> | null = null;
+
+	const drainPendingIndexEntries = async (ctx: ExtensionContext) => {
+		if (!subagentCore) return;
+		const pending = await loadPendingIndexEntries();
+		if (pending.length === 0) return;
+		const config = await loadConfig(ctx.cwd);
+		if (config.sessions?.autoIndex === false) return;
+		const remaining: PendingIndexEntry[] = [];
+		for (const entry of pending) {
+			if (!existsSync(entry.sessionPath)) continue;
+			if (entry.attempts >= 3) {
+				remaining.push(entry);
+				continue;
+			}
+			const attempted = { ...entry, attempts: entry.attempts + 1 };
+			const ok = await runIndexAttempt(ctx, attempted, config);
+			if (!ok) remaining.push(attempted);
+		}
+		await updatePendingIndexEntries(remaining);
+	};
+
+	const schedulePendingIndexDrain = (ctx: ExtensionContext) => {
+		if (pendingDrainScheduled || pendingDrainPromise) return;
+		pendingDrainScheduled = true;
+		setTimeout(() => {
+			pendingDrainScheduled = false;
+			pendingDrainPromise = drainPendingIndexEntries(ctx)
+				.catch(() => {
+					// best-effort background indexing
+				})
+				.finally(() => {
+					pendingDrainPromise = null;
+				});
+		}, 0);
 	};
 
 	pi.registerTool({
@@ -259,28 +301,21 @@ export default function (pi: ExtensionAPI) {
 		const messageCount = branch.filter((entry) => entry.type === "message").length;
 		if (messageCount < 3) return;
 		await addPendingIndexEntry({ sessionPath, cwd: ctx.cwd, queuedAt: new Date().toISOString(), attempts: 0 });
-		queueMicrotask(async () => {
-			const pending = { sessionPath, cwd: ctx.cwd, queuedAt: new Date().toISOString(), attempts: 0 };
-			const ok = await runIndexAttempt(ctx, pending);
-			if (ok) {
+		queueMicrotask(() => {
+			void (async () => {
+				const pending = { sessionPath, cwd: ctx.cwd, queuedAt: new Date().toISOString(), attempts: 0 };
+				const ok = await runIndexAttempt(ctx, pending, config);
+				if (!ok) return;
 				const current = await loadPendingIndexEntries();
 				await updatePendingIndexEntries(current.filter((entry) => entry.sessionPath !== sessionPath));
-			}
+			})().catch(() => {
+				// best-effort background indexing
+			});
 		});
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		const pending = await loadPendingIndexEntries();
-		if (pending.length === 0) return;
-		const remaining: PendingIndexEntry[] = [];
-		for (const entry of pending) {
-			if (entry.attempts >= 3 || !existsSync(entry.sessionPath)) {
-				remaining.push(entry);
-				continue;
-			}
-			const ok = await runIndexAttempt(ctx, { ...entry, attempts: entry.attempts + 1 });
-			if (!ok) remaining.push({ ...entry, attempts: entry.attempts + 1 });
-		}
-		await updatePendingIndexEntries(remaining);
+		if (!ctx.hasUI) return;
+		schedulePendingIndexDrain(ctx);
 	});
 }

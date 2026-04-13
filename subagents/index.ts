@@ -2,7 +2,25 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../config/config.js";
-import { runSubagent, runSubagentBatch } from "./core.js";
+
+type RunSubagent = typeof import("./core.js").runSubagent;
+type RunSubagentBatch = typeof import("./core.js").runSubagentBatch;
+type SubagentCoreModule = typeof import("./core.js");
+
+let coreModulePromise: Promise<SubagentCoreModule> | null = null;
+
+async function getSubagentCoreModule(): Promise<SubagentCoreModule> {
+	coreModulePromise ??= import("./core.js");
+	return coreModulePromise;
+}
+
+function runSubagent(...args: Parameters<RunSubagent>): ReturnType<RunSubagent> {
+	return getSubagentCoreModule().then((core) => core.runSubagent(...args)) as ReturnType<RunSubagent>;
+}
+
+function runSubagentBatch(...args: Parameters<RunSubagentBatch>): ReturnType<RunSubagentBatch> {
+	return getSubagentCoreModule().then((core) => core.runSubagentBatch(...args)) as ReturnType<RunSubagentBatch>;
+}
 
 function formatResult(tool: string, result: Awaited<ReturnType<typeof runSubagent>>) {
 	if (result.exitCode !== 0) {
