@@ -1,0 +1,30 @@
+{
+  "name": "@nielsjaspers/magpie",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Modes, subagents, planning, memory, and session intelligence for pi",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "subagents/index.ts",
+      "modes/index.ts",
+      "plan/index.ts",
+      "btw/index.ts",
+      "handoff/index.ts",
+      "sessions/index.ts",
+      "memory/index.ts",
+      "web/web-fetch.ts",
+      "web/web-search.ts",
+      "spinner/index.ts"
+    ],
+    "prompts": ["prompts"]
+  }
+}

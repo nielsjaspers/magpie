@@ -1,0 +1,85 @@
+{
+  "modes": {
+    "smart": {
+      "model": "opencode-go/mimo-v2-pro",
+      "thinkingLevel": "high"
+    },
+    "rush": {
+      "statusLabel": "⚡ rush",
+      "model": "github-copilot/gpt-5.4-mini",
+      "thinkingLevel": "low"
+    },
+    "deep": {
+      "statusLabel": "🧠 deep",
+      "model": "github-copilot/gpt-5.3-codex",
+      "thinkingLevel": "xhigh"
+    },
+    "learn": {
+      "statusLabel": "🎓 learn",
+      "prompt": {
+        "strategy": "append",
+        "file": ".pi/modes/learn.md"
+      }
+    },
+    "review": {
+      "statusLabel": "🧪 review",
+      "tools": ["read", "grep", "find", "ls", "web_search", "session_query"],
+      "prompt": {
+        "strategy": "append",
+        "text": "Focus on risks, edge cases, and missing tests. Keep output concise."
+      }
+    }
+  },
+  "aliases": {
+    "fast": "rush",
+    "careful": "deep",
+    "study": "learn"
+  },
+  "subagents": {
+    "default": "opencode-go/minimax-m2.7",
+    "search": "opencode-go/mimo-v2-pro",
+    "oracle": {
+      "model": "github-copilot/gpt-5.3-codex",
+      "thinkingLevel": "high"
+    },
+    "librarian": {
+      "model": "opencode-go/mimo-v2-pro",
+      "thinkingLevel": "medium"
+    },
+    "plan": {
+      "explore": {
+        "model": "github-copilot/gpt-5.4-mini",
+        "thinkingLevel": "low"
+      },
+      "design": "opencode-go/glm-5.1",
+      "risk": "opencode-go/mimo-v2-pro",
+      "custom": "github-copilot/gpt-5-mini"
+    },
+    "handoff": "opencode-go/mimo-v2-pro",
+    "session": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "low"
+    },
+    "memory": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "low"
+    }
+  },
+  "handoff": {
+    "defaultMode": "default"
+  },
+  "sessions": {
+    "autoIndex": true,
+    "maxIndexEntries": 500
+  },
+  "memory": {
+    "enabled": true,
+    "maxRetrieved": 20,
+    "autoExtract": false
+  },
+  "web": {
+    "searchModel": "opencode-go/minimax-m2.7",
+    "searchTimeout": 120000,
+    "fetchTimeout": 30000
+  }
+}

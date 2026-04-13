@@ -89,6 +89,7 @@ export const SPINNER_VERBS = [
   'Germinating',
   'Gitifying',
   'Grooving',
+  'Gooning',
   'Gusting',
   'Harmonizing',
   'Hashing',
@@ -557,6 +558,9 @@ export const SPINNER_VERBS = [
 ]
 
 function randomVerb(): string {
+	if (Math.random() < 0.001) {
+		return 'Help! I\'m stuck in the computer';
+	}
 	return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)];
 }
 

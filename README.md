@@ -1,66 +1,119 @@
 # magpie
 
-A collection of custom tools and extensions for [Pi](https://pi.dev).
+Magpie is a pi package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, and a spinner.
+![Close-up of a Black-billed Magpie on a Tree](./magpie.webp "Photo by Bejan  Adrian: https://www.pexels.com/photo/close-up-of-a-black-billed-magpie-on-a-tree-36937253/")
 
-These extend Pi with capabilities that do not ship by default, built as Pi extensions using the extension API.
-
-## Tools
-
-| Directory | Description |
-|-----------|-------------|
-| [`custom-modes/`](custom-modes/) | Single-active-mode manager with `/mode`, Amp-like smart/rush/deep semantics, and JSON-configurable custom modes |
-| [`handoff/`](handoff/) | Transfer context to a new session using an LLM-generated handoff prompt |
-| [`session-query/`](session-query/) | Query previous Pi sessions for decisions, file changes, and historical context |
-| [`btw/`](btw/) | Background single-task subagent command (`/btw`) with rush-by-default mode routing |
-| [`plan-mode/`](plan-mode/) | Planning loop with subagents, user questions, and deterministic plan files |
-| [`spinner/`](spinner/) | Spinner that shows random verbs during streaming |
-| [`web-fetch/`](web-fetch/) | Fetch a web page and return its content as markdown via defuddle.md |
-| [`web-search/`](web-search/) | Web search tool that delegates to OpenCode with Exa enabled |
-
-## Providers
-
-| Directory | Description |
-|-----------|-------------|
-| [`custom-provider-claude-agent-sdk/`](custom-provider-claude-agent-sdk/) | Claude models via Agent SDK - uses your Anthropic subscription |
-| [`custom-provider-codex-app-server/`](custom-provider-codex-app-server/) | OpenAI models via Codex App Server - uses your ChatGPT/OpenAI subscription |
-
-
-See each tool's README for detailed usage, configuration, and requirements.
-
-## Requirements
-
-- Pi (the terminal coding agent)
-- Some tools have additional dependencies (see individual READMEs)
-
-## Installation
-
-Use the install script to symlink all tools into your global Pi extensions directory:
+## Install
 
 ```bash
-./install.sh
+pi install ./
 ```
 
-This copies each tool directory to `~/.pi/agent/extensions/` (as `<name>.ts/`). If an extension with the same name already exists, the script will skip it and print a warning.
-
-To install to a custom location:
+Or from git:
 
 ```bash
-./install.sh /path/to/extensions
+pi install git:github.com/nielsjaspers/magpie
 ```
 
-To install manually (per-tool or project-local):
+## Configuration
 
-```bash
-# Global (example)
-cp -r custom-modes ~/.pi/agent/extensions/custom-modes.ts
+Magpie reads one config file per scope:
 
-# Project-local (example)
-mkdir -p .pi/extensions
-cp -r custom-modes .pi/extensions/custom-modes.ts
+- Global: `~/.pi/agent/magpie.json`
+- Project: `.pi/magpie.json`
+
+Project config overrides global config.
+
+## Example config
+
+```json
+{
+  "modes": {
+    "smart": {
+      "model": "opencode-go/mimo-v2-pro",
+      "thinkingLevel": "high"
+    },
+    "rush": {
+      "statusLabel": "⚡ rush",
+      "model": "github-copilot/gpt-5.4-mini",
+      "thinkingLevel": "low"
+    },
+    "deep": {
+      "statusLabel": "🧠 deep",
+      "model": "github-copilot/gpt-5.3-codex",
+      "thinkingLevel": "xhigh"
+    },
+    "learn": {
+      "statusLabel": "🎓 learn",
+      "prompt": {
+        "strategy": "append",
+        "file": ".pi/modes/learn.md"
+      }
+    },
+    "review": {
+      "statusLabel": "🧪 review",
+      "tools": ["read", "grep", "find", "ls", "web_search", "session_query"],
+      "prompt": {
+        "strategy": "append",
+        "text": "Focus on risks, edge cases, and missing tests. Keep output concise."
+      }
+    }
+  },
+  "aliases": {
+    "fast": "rush",
+    "careful": "deep",
+    "study": "learn"
+  },
+  "subagents": {
+    "default": "opencode-go/minimax-m2.7",
+    "search": "opencode-go/mimo-v2-pro",
+    "oracle": { "model": "github-copilot/gpt-5.3-codex", "thinkingLevel": "high" },
+    "librarian": { "model": "opencode-go/mimo-v2-pro", "thinkingLevel": "medium" },
+    "plan": {
+      "explore": { "model": "github-copilot/gpt-5.4-mini", "thinkingLevel": "low" },
+      "design": "opencode-go/glm-5.1",
+      "risk": "opencode-go/mimo-v2-pro",
+      "custom": "github-copilot/gpt-5-mini"
+    },
+    "handoff": "opencode-go/mimo-v2-pro",
+    "session": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" },
+    "memory": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" }
+  },
+  "handoff": {
+    "defaultMode": "default"
+  },
+  "sessions": {
+    "autoIndex": true,
+    "maxIndexEntries": 500
+  },
+  "memory": {
+    "enabled": true,
+    "maxRetrieved": 20,
+    "autoExtract": false
+  },
+  "web": {
+    "searchModel": "opencode-go/minimax-m2.7",
+    "searchTimeout": 120000,
+    "fetchTimeout": 30000
+  }
+}
 ```
 
-Then reload Pi (`/reload`) or restart.
+You can copy `magpie.example.json` to `.pi/magpie.json` or `~/.pi/agent/magpie.json` as a starting point.
 
-## License
+Subagent tools available to the main agent:
+- `search_subagent`
+- `oracle_subagent`
+- `librarian_subagent`
 
-MIT
+## Included extensions
+
+- `subagents/` — shared SDK-based subagent core
+- `modes/` — `/mode`, `/magpie-config`, `/magpie-reload`
+- `plan/` — strict planning loop with `plan_subagent`, `user_question`, `plan_exit`
+- `btw/` — background task worker command
+- `handoff/` — command + tool for starting a new session with transferred context
+- `sessions/` — session indexing, `/sessions`, and `session_query`
+- `memory/` — long-term memory commands and tools
+- `web/` — `web_fetch` and `web_search`
+- `spinner/` — random verb spinner while streaming
