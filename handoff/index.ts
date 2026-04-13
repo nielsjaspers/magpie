@@ -71,7 +71,18 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("Subagent core unavailable.", "error");
 			return;
 		}
-		const generated = await generateHandoffPrompt(subagentCore, ctx, goal, mode, model);
+
+		const widgetKey = `magpie-handoff-${Date.now()}`;
+		const preview = goal.split("\n")[0].slice(0, 60);
+		ctx.ui.setWidget(widgetKey, [`Generating handoff for: ${preview}`], { placement: "aboveEditor" });
+
+		let generated: Awaited<ReturnType<typeof generateHandoffPrompt>>;
+		try {
+			generated = await generateHandoffPrompt(subagentCore, ctx, goal, mode, model);
+		} finally {
+			ctx.ui.setWidget(widgetKey, undefined);
+		}
+
 		if (generated.exitCode !== 0) {
 			ctx.ui.notify(generated.errorMessage ?? "Failed to generate handoff prompt.", "error");
 			return;
