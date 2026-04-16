@@ -77,7 +77,8 @@ Project config overrides global config.
     },
     "handoff": "opencode-go/mimo-v2-pro",
     "session": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" },
-    "memory": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" }
+    "memory": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" },
+    "commit": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "low" }
   },
   "handoff": {
     "defaultMode": "default"
@@ -112,6 +113,7 @@ Subagent tools available to the main agent:
 - `modes/` — `/mode`, `/magpie-config`, `/magpie-reload`
 - `plan/` — strict planning loop with `plan_subagent`, `user_question`, `plan_exit`
 - `btw/` — background task worker command
+- `commit/` — background git commit command (see `commit/README.md`)
 - `handoff/` — command + tool for starting a new session with transferred context
 - `sessions/` — session indexing, `/sessions`, `get_sessions`, and `session_query` (see `sessions/README.md`)
 - `memory/` — long-term memory commands and tools

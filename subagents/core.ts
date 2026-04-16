@@ -50,6 +50,9 @@ function defaultPromptFor(spec: SubagentSpec): string {
 	if (spec.role === "memory") {
 		return "You are a memory consolidation assistant. Extract key facts, decisions, preferences, and project context from the conversation. Output concise structured entries.";
 	}
+	if (spec.role === "commit") {
+		return "You are a fast git commit assistant. Inspect repo changes and recent commit history, infer the local commit style, make a single coherent commit when appropriate, and report the result clearly.";
+	}
 	return "You are a focused coding subagent. Complete the task accurately and concisely.";
 }
 

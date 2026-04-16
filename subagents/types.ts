@@ -8,6 +8,7 @@ export type SubagentRole =
 	| "memory"
 	| "titling"
 	| "lookAt"
+	| "commit"
 	| "custom";
 
 export interface SubagentSpec {

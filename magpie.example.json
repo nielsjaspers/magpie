@@ -63,6 +63,10 @@
     "memory": {
       "model": "github-copilot/gpt-5-mini",
       "thinkingLevel": "low"
+    },
+    "commit": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "low"
     }
   },
   "handoff": {

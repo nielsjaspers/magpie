@@ -171,8 +171,8 @@ export function resolveSubagentModel(
 			(planSubRole ? config.subagents.plan?.[planSubRole] : undefined) ?? config.subagents.default,
 		);
 	}
-	if (role === "search" || role === "oracle" || role === "librarian") {
-		const modeRoleOverride = modeOverride?.[role];
+	if (role === "search" || role === "oracle" || role === "librarian" || role === "commit") {
+		const modeRoleOverride = role === "commit" ? modeOverride?.commit : modeOverride?.[role];
 		return resolveSubagentModelRef(modeRoleOverride ?? config.subagents[role] ?? config.subagents.default);
 	}
 	return resolveSubagentModelRef(config.subagents[role] ?? config.subagents.default);

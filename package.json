@@ -18,6 +18,7 @@
       "modes/index.ts",
       "plan/index.ts",
       "btw/index.ts",
+      "commit/index.ts",
       "handoff/index.ts",
       "sessions/index.ts",
       "memory/index.ts",

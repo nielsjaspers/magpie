@@ -25,6 +25,7 @@ export interface ModeConfig {
 		search?: SubagentModelRef;
 		oracle?: SubagentModelRef;
 		librarian?: SubagentModelRef;
+		commit?: SubagentModelRef;
 	};
 }
 
@@ -47,6 +48,7 @@ export interface MagpieConfig {
 		memory?: SubagentModelRef;
 		titling?: SubagentModelRef;
 		lookAt?: SubagentModelRef;
+		commit?: SubagentModelRef;
 		custom?: SubagentModelRef;
 	};
 	handoff?: {
