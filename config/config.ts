@@ -7,6 +7,7 @@ import { BUILT_IN_MODES, DEFAULT_CONFIG } from "./defaults.js";
 import type {
 	MagpieConfig,
 	ModeConfig,
+	PromptConfig,
 	ResolvedMode,
 	ResolvedSubagentModel,
 	SubagentModelRef,
@@ -149,7 +150,7 @@ export function getMode(config: MagpieConfig, name: string): ResolvedMode | unde
 export function resolveSubagentModelRef(ref: SubagentModelRef | undefined): ResolvedSubagentModel | undefined {
 	if (!ref) return undefined;
 	if (typeof ref === "string") return { model: ref };
-	return { model: ref.model, thinkingLevel: ref.thinkingLevel };
+	return { model: ref.model, thinkingLevel: ref.thinkingLevel, prompt: ref.prompt };
 }
 
 export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined) {
@@ -199,4 +200,24 @@ export async function resolvePromptText(
 
 export function getConfigBaseDir(scope: "global" | "project", cwd: string): string {
 	return dirname(scope === "global" ? getGlobalConfigPath() : getProjectConfigPath(cwd));
+}
+
+export function getActiveConfigScope(cwd: string): "global" | "project" {
+	return existsSync(getProjectConfigPath(cwd)) ? "project" : "global";
+}
+
+export async function resolveSubagentPrompt(
+	config: MagpieConfig,
+	cwd: string,
+	role: SubagentRole,
+	planSubRole?: "explore" | "design" | "risk" | "custom",
+	activeMode?: string,
+): Promise<{ strategy: "append" | "replace"; text: string } | undefined> {
+	const resolved = resolveSubagentModel(config, role, planSubRole, activeMode);
+	const prompt = resolved?.prompt;
+	if (!prompt) return undefined;
+	const baseDir = getConfigBaseDir(getActiveConfigScope(cwd), cwd);
+	const text = await resolvePromptText(baseDir, prompt);
+	if (!text?.trim()) return undefined;
+	return { strategy: prompt.strategy ?? "append", text: text.trim() };
 }

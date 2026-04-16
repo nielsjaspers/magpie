@@ -58,7 +58,11 @@
     "handoff": "opencode-go/mimo-v2-pro",
     "session": {
       "model": "github-copilot/gpt-5-mini",
-      "thinkingLevel": "low"
+      "thinkingLevel": "low",
+      "prompt": {
+        "strategy": "append",
+        "file": ".pi/prompts/session-query.md"
+      }
     },
     "memory": {
       "model": "github-copilot/gpt-5-mini",
@@ -66,7 +70,11 @@
     },
     "commit": {
       "model": "github-copilot/gpt-5-mini",
-      "thinkingLevel": "low"
+      "thinkingLevel": "low",
+      "prompt": {
+        "strategy": "append",
+        "text": "Keep output factual and concise. Do not suggest follow-up changes."
+      }
     }
   },
   "handoff": {

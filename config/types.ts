@@ -3,16 +3,19 @@ export type PromptStrategy = "append" | "replace";
 export type PlanBehavior = "none" | "enter-plan";
 export type HandoffDefaultMode = "default" | "plan";
 
-export type SubagentModelRef = string | {
-	model: string;
-	thinkingLevel?: ThinkingLevel;
-};
-
-export interface ModePromptConfig {
+export interface PromptConfig {
 	strategy?: PromptStrategy;
 	text?: string;
 	file?: string;
 }
+
+export type SubagentModelRef = string | {
+	model: string;
+	thinkingLevel?: ThinkingLevel;
+	prompt?: PromptConfig;
+};
+
+export type ModePromptConfig = PromptConfig;
 
 export interface ModeConfig {
 	statusLabel?: string;
@@ -74,6 +77,7 @@ export interface MagpieConfig {
 export interface ResolvedSubagentModel {
 	model: string;
 	thinkingLevel?: ThinkingLevel;
+	prompt?: PromptConfig;
 }
 
 export interface ResolvedMode extends ModeConfig {

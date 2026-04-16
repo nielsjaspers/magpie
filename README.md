@@ -76,9 +76,17 @@ Project config overrides global config.
       "custom": "github-copilot/gpt-5-mini"
     },
     "handoff": "opencode-go/mimo-v2-pro",
-    "session": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" },
+    "session": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "minimal",
+      "prompt": { "strategy": "append", "file": ".pi/prompts/session-query.md" }
+    },
     "memory": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "minimal" },
-    "commit": { "model": "github-copilot/gpt-5-mini", "thinkingLevel": "low" }
+    "commit": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "low",
+      "prompt": { "strategy": "append", "text": "Keep output factual and concise. Do not suggest follow-up changes." }
+    }
   },
   "handoff": {
     "defaultMode": "default"
@@ -101,6 +109,12 @@ Project config overrides global config.
 ```
 
 You can copy `magpie.example.json` to `.pi/magpie.json` or `~/.pi/agent/magpie.json` as a starting point.
+
+Subagent entries can be either a model string or an object with `model`, `thinkingLevel`, and optional `prompt`.
+The `prompt` supports:
+- `strategy: "append" | "replace"`
+- `text: "..."` for inline prompt text
+- `file: "path/to/file.md"` to load prompt text from disk
 
 Subagent tools available to the main agent:
 - `search_subagent`

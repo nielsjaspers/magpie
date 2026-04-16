@@ -4,8 +4,6 @@ import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 
-const SYSTEM_PROMPT = `You are a context transfer assistant. Read a conversation history and restate only the information relevant to the stated goal for a fresh session. Structure the result as a self-contained task briefing with sections for context, files, constraints, known issues, and task.`;
-
 type HandoffMode = "default" | "plan";
 
 function getBranchMessages(ctx: ExtensionContext) {
@@ -30,7 +28,6 @@ async function generateHandoffPrompt(
 	return core.runSubagent(ctx, config, {
 		role: "handoff",
 		label: "handoff",
-		systemPrompt: SYSTEM_PROMPT,
 		task: `## Conversation History\n\n${conversationText}\n\n## Goal for new thread\n\n${goal}`,
 		tools: [],
 		model,
@@ -54,11 +51,11 @@ export default function (pi: ExtensionAPI) {
 	let pendingToolHandoff: { prompt: string; goal: string; mode: HandoffMode } | null = null;
 	let handoffTimestamp: number | null = null;
 
-	pi.events.on("magpie:subagent-core:register", (api: SubagentCoreAPI) => {
-		subagentCore = api;
+	pi.events.on("magpie:subagent-core:register", (api: unknown) => {
+		subagentCore = api as SubagentCoreAPI;
 	});
-	pi.events.emit("magpie:subagent-core:get", (api: SubagentCoreAPI) => {
-		subagentCore = api;
+	pi.events.emit("magpie:subagent-core:get", (api: unknown) => {
+		subagentCore = api as SubagentCoreAPI;
 	});
 
 	const performCommandHandoff = async (

@@ -29,11 +29,11 @@ function renderProgress(result: SubagentResult): string[] {
 
 export default function (pi: ExtensionAPI) {
 	let subagentCore: SubagentCoreAPI | null = null;
-	pi.events.on("magpie:subagent-core:register", (api: SubagentCoreAPI) => {
-		subagentCore = api;
+	pi.events.on("magpie:subagent-core:register", (api: unknown) => {
+		subagentCore = api as SubagentCoreAPI;
 	});
-	pi.events.emit("magpie:subagent-core:get", (api: SubagentCoreAPI) => {
-		subagentCore = api;
+	pi.events.emit("magpie:subagent-core:get", (api: unknown) => {
+		subagentCore = api as SubagentCoreAPI;
 	});
 
 	pi.on("context", (event) => {
@@ -100,7 +100,7 @@ export default function (pi: ExtensionAPI) {
 						"Be fast, prefer a single coherent commit, and execute git commands yourself.",
 					].join("\n"),
 					model,
-					tools: "full",
+					tools: "readonly",
 				},
 				undefined,
 				(progress) => {
