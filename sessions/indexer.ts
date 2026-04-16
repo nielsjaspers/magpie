@@ -45,11 +45,22 @@ export async function loadSessionIndex(): Promise<SessionIndexEntry[]> {
 	return readJsonl<SessionIndexEntry>(getSessionIndexPath());
 }
 
+export async function saveSessionIndex(entries: SessionIndexEntry[], maxEntries = 500): Promise<void> {
+	const trimmed = entries.slice(-Math.max(1, maxEntries));
+	await writeJsonl(getSessionIndexPath(), trimmed);
+}
+
 export async function appendIndexEntry(entry: SessionIndexEntry, maxEntries = 500): Promise<void> {
 	const entries = await loadSessionIndex();
 	entries.push(entry);
-	const trimmed = entries.slice(-Math.max(1, maxEntries));
-	await writeJsonl(getSessionIndexPath(), trimmed);
+	await saveSessionIndex(entries, maxEntries);
+}
+
+export async function upsertIndexEntry(entry: SessionIndexEntry, maxEntries = 500): Promise<void> {
+	const entries = await loadSessionIndex();
+	const filtered = entries.filter((existing) => existing.sessionPath !== entry.sessionPath);
+	filtered.push(entry);
+	await saveSessionIndex(filtered, maxEntries);
 }
 
 export async function loadPendingIndexEntries(): Promise<PendingIndexEntry[]> {

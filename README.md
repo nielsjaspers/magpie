@@ -113,7 +113,7 @@ Subagent tools available to the main agent:
 - `plan/` — strict planning loop with `plan_subagent`, `user_question`, `plan_exit`
 - `btw/` — background task worker command
 - `handoff/` — command + tool for starting a new session with transferred context
-- `sessions/` — session indexing, `/sessions`, and `session_query`
+- `sessions/` — session indexing, `/sessions`, `get_sessions`, and `session_query` (see `sessions/README.md`)
 - `memory/` — long-term memory commands and tools
 - `web/` — `web_fetch` and `web_search`
 - `spinner/` — random verb spinner while streaming
