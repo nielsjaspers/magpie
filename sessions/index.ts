@@ -508,10 +508,6 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => handleSessionsCommand(args, ctx, subagentCore),
 	});
 
-	pi.registerCommand("session", {
-		description: "Inspect indexed sessions: /session, /session search <query>, /session pending, /session sync, /session reindex <path>, /session reindex-all",
-		handler: async (args, ctx) => handleSessionsCommand(args, ctx, subagentCore),
-	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const config = await loadConfig(ctx.cwd);

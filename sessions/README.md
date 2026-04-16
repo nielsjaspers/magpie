@@ -6,7 +6,6 @@ It supports:
 - `get_sessions` tool
 - `session_query` tool
 - `/sessions` command
-- `/session` command
 
 ## Recommended workflow
 
@@ -69,14 +68,6 @@ Available commands:
 - `/sessions sync`
 - `/sessions reindex <path>`
 - `/sessions reindex-all`
-
-Singular aliases are also supported:
-- `/session`
-- `/session search <query>`
-- `/session pending`
-- `/session sync`
-- `/session reindex <path>`
-- `/session reindex-all`
 
 Command behavior:
 - `sync` indexes discovered session files that are not yet indexed and skips already indexed sessions
