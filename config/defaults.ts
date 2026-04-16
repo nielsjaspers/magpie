@@ -62,6 +62,7 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		handoff: "opencode-go/mimo-v2-pro",
 		session: { model: "github-copilot/gpt-5-mini", thinkingLevel: "minimal" },
 		memory: { model: "github-copilot/gpt-5-mini", thinkingLevel: "minimal" },
+		custom: "github-copilot/gpt-5-mini",
 	},
 	handoff: {
 		defaultMode: "default",

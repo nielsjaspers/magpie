@@ -47,6 +47,7 @@ export interface MagpieConfig {
 		memory?: SubagentModelRef;
 		titling?: SubagentModelRef;
 		lookAt?: SubagentModelRef;
+		custom?: SubagentModelRef;
 	};
 	handoff?: {
 		defaultMode?: HandoffDefaultMode;
