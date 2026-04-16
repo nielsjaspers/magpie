@@ -8,7 +8,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Web Search",
 		description: "Search the web using OpenCode. Use this when you need current information from the internet.",
 		promptSnippet: "Search the web for current information",
-		promptGuidelines: ["Use this tool when you need up-to-date information that might not be in your training data."],
+		promptGuidelines: ["web_search: Use this tool when you need up-to-date information that might not be in your training data."],
 		parameters: Type.Object({
 			query: Type.String({ description: "The search query to run" }),
 		}),

@@ -194,8 +194,8 @@ export default function (pi: ExtensionAPI) {
 		description: "Query a previous Pi session for context, decisions, file changes, and implementation details.",
 		promptSnippet: "Use this when you need details from a parent or earlier session.",
 		promptGuidelines: [
-			"Prefer specific questions (files changed, decisions, rationale, unresolved issues).",
-			"If sessionPath is omitted, it will try to use **Parent session:** from the current thread.",
+			"session_query: Prefer specific questions (files changed, decisions, rationale, unresolved issues).",
+			"session_query: If sessionPath is omitted, it will try to use **Parent session:** from the current thread.",
 		],
 		renderResult: (result, _options, theme) => {
 			const container = new Container();

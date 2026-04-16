@@ -8,7 +8,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Web Fetch",
 		description: "Fetch a URL and return the page content as markdown. Uses defuddle.md to extract clean, readable content from web pages.",
 		promptSnippet: "Fetch a web page and return its content as markdown",
-		promptGuidelines: ["Use this tool when you need to read the contents of a web page."],
+		promptGuidelines: ["web_fetch: Use this tool when you need to read the contents of a web page."],
 		parameters: Type.Object({
 			url: Type.String({ description: "The URL to fetch (must be a valid http or https URL)" }),
 		}),

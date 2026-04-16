@@ -148,10 +148,10 @@ export default function (pi: ExtensionAPI) {
 		description: "Transfer context to a new focused session. Use when the user explicitly asks to handoff or continue in a new thread.",
 		promptSnippet: "Use this to start a new thread with transferred context when the user asks for handoff.",
 		promptGuidelines: [
-			"Use this when the user clearly asks for a handoff/new thread continuation.",
-			"Provide a concrete goal and include optional mode/model only when needed.",
-			"If user says 'make a plan', prefer mode='plan' (or let auto mode infer it).",
-			"Do not call this if the user already typed /handoff.",
+			"handoff: Use this when the user clearly asks for a handoff/new thread continuation.",
+			"handoff: Provide a concrete goal and include optional mode/model only when needed.",
+			"handoff: If user says 'make a plan', prefer mode='plan' (or let auto mode infer it).",
+			"handoff: Do not call this if the user already typed /handoff.",
 		],
 		parameters: Type.Object({
 			goal: Type.String({ description: "Goal for the new thread" }),

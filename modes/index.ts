@@ -180,12 +180,10 @@ export default function (pi: ExtensionAPI) {
 		const baseDir = getConfigBaseDir(scope, ctx.cwd);
 		const promptText = await resolvePromptText(baseDir, mode.prompt);
 		const modePrompt = promptText?.trim();
-		const subagentHint = "Available subagent tools: search_subagent (fast codebase retrieval), oracle_subagent (complex reasoning), librarian_subagent (external research and historical context). Use these tools when the task would benefit from delegated investigation.";
 		let systemPrompt = event.systemPrompt;
 		if (modePrompt) {
 			systemPrompt = mode.prompt?.strategy === "replace" ? modePrompt : `${systemPrompt}\n\n${modePrompt}`;
 		}
-		systemPrompt = `${systemPrompt}\n\n${subagentHint}`;
 		return {
 			systemPrompt,
 			message: {

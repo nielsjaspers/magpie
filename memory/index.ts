@@ -5,11 +5,6 @@ import { loadConfig } from "../config/config.js";
 import { addMemory, forgetMemory, getDefaultMemoryStorePath, loadMemories, searchMemories } from "./store.js";
 
 export default function (pi: ExtensionAPI) {
-	pi.on("before_agent_start", async (event) => {
-		return {
-			systemPrompt: `${event.systemPrompt}\n\nYou have access to a long-term memory store from previous sessions. If the user asks you to remember something, use the save_memory tool. If you need to recall previous decisions, preferences, or context, use the recall_memories tool.`,
-		};
-	});
 
 	pi.registerCommand("remember", {
 		description: "Store a memory: /remember <text>",
@@ -55,6 +50,7 @@ export default function (pi: ExtensionAPI) {
 		name: "save_memory",
 		label: "Save Memory",
 		description: "Save a fact, decision, or preference to long-term memory for future sessions.",
+		promptSnippet: "Save a fact, decision, or preference to long-term memory for future sessions.",
 		parameters: Type.Object({
 			content: Type.String({ description: "The memory to save" }),
 			category: Type.Optional(StringEnum(["preference", "decision", "context", "project", "convention"] as const)),
@@ -69,9 +65,12 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "recall_memories",
 		label: "Recall Memories",
-		description: "Search long-term memory for relevant facts, decisions, preferences, or context from previous sessions.",
+		description: "List or search long-term memory for relevant facts, decisions, preferences, or context from previous sessions. Without a query, lists recent memories. Provide a query to search for specific memories.",
+		promptSnippet: "List or search long-term memory; omit query to list recent memories or provide query to search.",
 		parameters: Type.Object({
-			query: Type.String({ description: "What to search for in memories" }),
+			query: Type.Optional(Type.String({ description: "What to search for in memories. Omit to list recent memories." })),
+			offset: Type.Optional(Type.Integer({ description: "Number of memories to skip (default 0).", minimum: 0 })),
+			limit: Type.Optional(Type.Integer({ description: "Maximum number of memories to return (default 10, max 50).", minimum: 1, maximum: 50 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const config = await loadConfig(ctx.cwd);
@@ -80,9 +79,22 @@ export default function (pi: ExtensionAPI) {
 			}
 			const path = config.memory?.storePath ?? getDefaultMemoryStorePath();
 			const memories = await loadMemories(path);
-			const results = searchMemories(memories, params.query.trim()).slice(0, config.memory?.maxRetrieved ?? 20);
-			if (results.length === 0) return { content: [{ type: "text", text: "No matching memories." }], details: { results: [] } };
-			return { content: [{ type: "text", text: results.map((memory) => `- [${memory.category ?? "uncategorized"}] ${memory.content}`).join("\n") }], details: { results } };
+			const limit = Math.min(params.limit ?? 10, 50);
+			const offset = params.offset ?? 0;
+
+			let results;
+			if (params.query?.trim()) {
+				results = searchMemories(memories, params.query.trim());
+			} else {
+				results = memories.filter((memory) => memory.active).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+			}
+
+			const page = results.slice(offset, offset + limit);
+			if (page.length === 0) return { content: [{ type: "text", text: "No matching memories." }], details: { results: [], total: results.length } };
+			return {
+				content: [{ type: "text", text: page.map((memory) => `- [${memory.category ?? "uncategorized"}] ${memory.content}`).join("\n") }],
+				details: { results: page, total: results.length, offset, limit },
+			};
 		},
 	});
 }

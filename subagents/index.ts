@@ -54,7 +54,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Search Subagent",
 		description: "Ask a fast read-only subagent to retrieve relevant files, symbols, call paths, or code patterns.",
 		promptSnippet: "Use Search subagent for fast codebase retrieval when local evidence is needed.",
-		promptGuidelines: ["Use when you need targeted codebase discovery without doing the retrieval yourself."],
+		promptGuidelines: ["search_subagent: Use when you need targeted codebase discovery without doing the retrieval yourself."],
 		parameters: commonParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const config = await loadConfig(ctx.cwd);
@@ -75,7 +75,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Oracle Subagent",
 		description: "Ask a stronger reasoning subagent to analyze tradeoffs, root causes, architecture, or complex debugging paths.",
 		promptSnippet: "Use Oracle subagent for deeper reasoning, architecture analysis, and complex debugging.",
-		promptGuidelines: ["Use for non-trivial reasoning tasks where evidence should be gathered before conclusions."],
+		promptGuidelines: ["oracle_subagent: Use for non-trivial reasoning tasks where evidence should be gathered before conclusions."],
 		parameters: commonParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const config = await loadConfig(ctx.cwd);
@@ -96,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Librarian Subagent",
 		description: "Ask a research subagent to investigate docs, external APIs, prior sessions, and historical context.",
 		promptSnippet: "Use Librarian subagent for docs, external research, and historical/session context.",
-		promptGuidelines: ["Use when the answer likely depends on documentation, external systems, or prior threads."],
+		promptGuidelines: ["librarian_subagent: Use when the answer likely depends on documentation, external systems, or prior threads."],
 		parameters: commonParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const config = await loadConfig(ctx.cwd);
