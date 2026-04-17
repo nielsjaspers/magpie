@@ -1,6 +1,6 @@
 # magpie
 
-Magpie is a pi package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, and a spinner.
+Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, and a spinner.
 ![Close-up of a Black-billed Magpie on a Tree](./magpie.webp "Photo by Bejan  Adrian: https://www.pexels.com/photo/close-up-of-a-black-billed-magpie-on-a-tree-36937253/")
 
 ## Install
@@ -39,19 +39,19 @@ Project config overrides global config.
       "thinkingLevel": "low"
     },
     "deep": {
-      "statusLabel": "🧠 deep",
+      "statusLabel": "deep",
       "model": "github-copilot/gpt-5.3-codex",
       "thinkingLevel": "xhigh"
     },
     "learn": {
-      "statusLabel": "🎓 learn",
+      "statusLabel": "learn",
       "prompt": {
         "strategy": "append",
         "file": ".pi/modes/learn.md"
       }
     },
     "review": {
-      "statusLabel": "🧪 review",
+      "statusLabel": "review",
       "tools": ["read", "grep", "find", "ls", "web_search", "session_query"],
       "prompt": {
         "strategy": "append",
