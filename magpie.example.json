@@ -93,5 +93,12 @@
     "searchModel": "opencode-go/minimax-m2.7",
     "searchTimeout": 120000,
     "fetchTimeout": 30000
+  },
+  "research": {
+    "papersDir": "~/personal/magpie-papers",
+    "resolverSubagent": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "low"
+    }
   }
 }

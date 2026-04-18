@@ -1,6 +1,6 @@
 # magpie
 
-Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, and a spinner.
+Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, a research companion, and a spinner.
 ![Close-up of a Black-billed Magpie on a Tree](./magpie.webp "Photo by Bejan  Adrian: https://www.pexels.com/photo/close-up-of-a-black-billed-magpie-on-a-tree-36937253/")
 
 ## Install
@@ -104,6 +104,13 @@ Project config overrides global config.
     "searchModel": "opencode-go/minimax-m2.7",
     "searchTimeout": 120000,
     "fetchTimeout": 30000
+  },
+  "research": {
+    "papersDir": "~/personal/magpie-papers",
+    "resolverSubagent": {
+      "model": "github-copilot/gpt-5-mini",
+      "thinkingLevel": "low"
+    }
   }
 }
 ```
@@ -121,6 +128,15 @@ Subagent tools available to the main agent:
 - `oracle_subagent`
 - `librarian_subagent`
 
+Research config:
+- `research.papersDir` controls where papers and digest files are stored
+- `research.papersDir` supports `~` expansion at runtime
+- `research.resolverSubagent` configures the internal `/digest` paper resolver only
+
+Research commands:
+- `/papers [-limit <1-20>] <query>`
+- `/digest <query>`
+
 ## Included extensions
 
 - `subagents/` — shared SDK-based subagent core
@@ -131,5 +147,6 @@ Subagent tools available to the main agent:
 - `handoff/` — command + tool for starting a new session with transferred context
 - `sessions/` — session indexing, `/sessions`, `get_sessions`, and `session_query` (see `sessions/README.md`)
 - `memory/` — long-term memory commands and tools
+- `research/` — `/papers` and `/digest` research companion (see `research/README.md`)
 - `web/` — `web_fetch` and `web_search`
 - `spinner/` — random verb spinner while streaming
