@@ -6,7 +6,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { MagpieConfig } from "../config/types.js";
 import { getResearchResolverSubagent } from "../config/config.js";
-import type { SubagentCoreAPI } from "../subagents/types.js";
+import type { SubagentCoreAPI, SubagentProgress } from "../subagents/types.js";
 import { rebuildAnswersFile, readStoredPaper, writeDigestSession } from "./storage.js";
 import type { DigestContextDetails, DigestResolutionResult, StoredPaperRecord } from "./types.js";
 
@@ -54,6 +54,7 @@ export async function resolveDigestPaper(
 	subagentCore: SubagentCoreAPI,
 	baseDir: string,
 	query: string,
+	onProgress?: (progress: SubagentProgress) => void,
 ): Promise<DigestResolutionResult> {
 	const resolver = getResearchResolverSubagent(config);
 	const result = await subagentCore.runSubagent(ctx, config, {
@@ -64,7 +65,7 @@ export async function resolveDigestPaper(
 		model: resolver?.model,
 		thinkingLevel: resolver?.thinkingLevel,
 		tools: "readonly",
-	});
+	}, undefined, onProgress);
 	if (result.exitCode !== 0 || !result.output.trim()) return { kind: "none" };
 	let parsed: any;
 	try {

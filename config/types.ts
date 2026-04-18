@@ -37,6 +37,15 @@ export interface ResearchConfig {
 	resolverSubagent?: SubagentModelRef;
 }
 
+export interface ProviderAuthConfig {
+	apiKey?: string;
+}
+
+export interface MagpieAuthConfig {
+	semanticScholar?: ProviderAuthConfig;
+	exa?: ProviderAuthConfig;
+}
+
 export interface MagpieConfig {
 	modes: Record<string, ModeConfig | undefined>;
 	aliases?: Record<string, string>;

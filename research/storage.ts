@@ -80,6 +80,13 @@ export async function ensureDigestFiles(baseDir: string, shortId: string, starte
 	return { ...paths, sessionFile };
 }
 
+export async function countExistingDigestSessions(baseDir: string, shortId: string): Promise<number> {
+	const { digestDir } = getPaperPaths(baseDir, shortId);
+	if (!existsSync(digestDir)) return 0;
+	const entries = await readdir(digestDir, { withFileTypes: true });
+	return entries.filter((entry) => entry.isFile() && /^session-.*\.md$/i.test(entry.name)).length;
+}
+
 export async function readStoredPaper(baseDir: string, shortId: string): Promise<StoredPaperRecord | null> {
 	const paths = getPaperPaths(baseDir, shortId);
 	if (!existsSync(paths.metadataPath)) return null;

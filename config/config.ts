@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { BUILT_IN_MODES, DEFAULT_CONFIG } from "./defaults.js";
 import type {
+	MagpieAuthConfig,
 	MagpieConfig,
 	ModeConfig,
 	PromptConfig,
@@ -42,6 +43,15 @@ export function getGlobalConfigPath(): string {
 
 export function getProjectConfigPath(cwd: string): string {
 	return resolve(cwd, ".pi/magpie.json");
+}
+
+export function getGlobalAuthPath(): string {
+	const baseDir = process.env.PI_CODING_AGENT_DIR ?? resolve(homedir(), ".pi/agent");
+	return resolve(baseDir, "magpie.auth.json");
+}
+
+export function getProjectAuthPath(cwd: string): string {
+	return resolve(cwd, ".pi/magpie.auth.json");
 }
 
 async function readJson(path: string): Promise<any | undefined> {
@@ -122,6 +132,14 @@ export async function loadConfig(cwd: string): Promise<MagpieConfig> {
 	}
 
 	return deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);
+}
+
+export async function loadAuthConfig(cwd: string): Promise<MagpieAuthConfig> {
+	const globalPath = getGlobalAuthPath();
+	const projectPath = getProjectAuthPath(cwd);
+	const globalAuth = existsSync(globalPath) ? await readJson(globalPath) : undefined;
+	const projectAuth = existsSync(projectPath) ? await readJson(projectPath) : undefined;
+	return deepMerge(deepMerge({} as MagpieAuthConfig, globalAuth), projectAuth);
 }
 
 function normalizeModeConfig(name: string, mode: ModeConfig | undefined): ResolvedMode | undefined {

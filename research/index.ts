@@ -1,13 +1,14 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { loadConfig, getResearchPapersDir } from "../config/config.js";
+import { loadAuthConfig, loadConfig, getResearchPapersDir } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { buildDigestContextMessage, DIGEST_CONTEXT_TYPE, getActiveDigestContext, loadDigestPrompt, persistActiveDigestSession, resolveDigestPaper } from "./digest.js";
 import { fetchPaperMarkdown, searchSemanticScholar } from "./providers.js";
-import { ensureDigestFiles, formatPapersSummary, makePaperShortId, readStoredPaper, savePaper, toStoredMetadata, writeDigestSession } from "./storage.js";
+import { countExistingDigestSessions, ensureDigestFiles, formatPapersSummary, makePaperShortId, readStoredPaper, savePaper, toStoredMetadata, writeDigestSession } from "./storage.js";
 import type { NormalizedPaper, StoredPaperRecord } from "./types.js";
 
 const PAPERS_MESSAGE_TYPE = "magpie:research-papers";
 const RESEARCH_STATUS_MESSAGE_TYPE = "magpie:research-status";
+const RESEARCH_DIGEST_WIDGET_KEY = "magpie-research-digest";
 
 function parsePapersArgs(input: string | undefined): { query: string; limit: number } {
 	let remaining = input?.trim() ?? "";
@@ -20,11 +21,50 @@ function parsePapersArgs(input: string | undefined): { query: string; limit: num
 	return { query: remaining, limit };
 }
 
+function renderPapersProgress(input: {
+	query: string;
+	phase?: string;
+	rateLimit?: { attempt: number; maxAttempts: number; waitMs: number };
+}): string[] {
+	const lines = [`Searching papers for: ${input.query}`];
+	if (input.phase) lines.push(`  ${input.phase}`);
+	if (input.rateLimit) {
+		lines.push(`  Semantic Scholar rate-limited, retry ${input.rateLimit.attempt}/${input.rateLimit.maxAttempts}`);
+		lines.push(`  waiting ${(input.rateLimit.waitMs / 1000).toFixed(1)}s before retry`);
+	}
+	return lines;
+}
+
 function summarizeCandidates(candidates: StoredPaperRecord[]): string {
 	return candidates.map((candidate, index) => {
 		const firstAuthor = candidate.metadata.authors[0] || "Unknown author";
 		return `${index + 1}. ${candidate.metadata.short_id} | ${candidate.metadata.title} | ${firstAuthor} | ${candidate.metadata.year ?? "n.d."}`;
 	}).join("\n");
+}
+
+function renderResolverProgress(query: string, progressText?: string, tools?: string[]): string[] {
+	const lines = [`Resolving paper for: ${query}`];
+	for (const tool of tools?.slice(-4) ?? []) lines.push(`  → ${tool}`);
+	if (progressText?.trim()) lines.push(`  ${progressText.trim().split("\n")[0]}`);
+	return lines;
+}
+
+function renderDigestStartWidget(input: {
+	title: string;
+	firstAuthor?: string;
+	shortId: string;
+	sessionFile: string;
+	priorSessionCount: number;
+}): string[] {
+	return [
+		"/digest",
+		`  paper: ${input.title}`,
+		`  author: ${input.firstAuthor || "Unknown"}`,
+		`  short_id: ${input.shortId}`,
+		`  prior sessions: ${input.priorSessionCount}`,
+		`  mode: ${input.priorSessionCount > 0 ? "continuing existing work" : "starting fresh"}`,
+		`  session file: ${input.sessionFile}`,
+	];
 }
 
 function normalizePaperShortIds(papers: NormalizedPaper[]): NormalizedPaper[] {
@@ -73,6 +113,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (_event, ctx) => {
 		await persistActiveDigestSession(ctx);
+		ctx.ui.setWidget(RESEARCH_DIGEST_WIDGET_KEY, undefined);
 	});
 
 	pi.registerCommand("papers", {
@@ -84,10 +125,19 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const config = await loadConfig(ctx.cwd);
+			const auth = await loadAuthConfig(ctx.cwd);
 			const papersDir = getResearchPapersDir(config);
-			ctx.ui.setWidget("magpie-research-papers", [`Searching papers for: ${query}`], { placement: "aboveEditor" });
+			ctx.ui.setWidget("magpie-research-papers", renderPapersProgress({ query, phase: `limit: ${limit}` }), { placement: "aboveEditor" });
 			try {
-				const normalized = normalizePaperShortIds(await searchSemanticScholar(query, limit));
+				const normalized = normalizePaperShortIds(await searchSemanticScholar(query, limit, {
+					apiKey: auth.semanticScholar?.apiKey,
+					onRateLimit: ({ attempt, maxAttempts, waitMs }) => {
+						ctx.ui.setWidget("magpie-research-papers", renderPapersProgress({
+							query,
+							rateLimit: { attempt, maxAttempts, waitMs },
+						}), { placement: "aboveEditor" });
+					},
+				}));
 				if (normalized.length === 0) {
 					pi.sendMessage({
 						customType: RESEARCH_STATUS_MESSAGE_TYPE,
@@ -144,9 +194,16 @@ export default function (pi: ExtensionAPI) {
 			}
 			const config = await loadConfig(ctx.cwd);
 			const papersDir = getResearchPapersDir(config);
-			ctx.ui.setWidget("magpie-research-digest", [`Resolving paper for: ${query}`], { placement: "aboveEditor" });
+			let startedDigest = false;
+			ctx.ui.setWidget(RESEARCH_DIGEST_WIDGET_KEY, renderResolverProgress(query), { placement: "aboveEditor" });
 			try {
-				const resolved = await resolveDigestPaper(ctx, config, subagentCore, papersDir, query);
+				const resolved = await resolveDigestPaper(ctx, config, subagentCore, papersDir, query, (progress) => {
+					ctx.ui.setWidget(
+						RESEARCH_DIGEST_WIDGET_KEY,
+						renderResolverProgress(query, progress.partialOutput, progress.toolCalls.map((call) => call.name)),
+						{ placement: "aboveEditor" },
+					);
+				});
 				if (resolved.kind === "none") {
 					pi.sendMessage({
 						customType: RESEARCH_STATUS_MESSAGE_TYPE,
@@ -180,6 +237,7 @@ export default function (pi: ExtensionAPI) {
 					}, { triggerTurn: false });
 					return;
 				}
+				const priorSessionCount = await countExistingDigestSessions(papersDir, record.metadata.short_id);
 				const startedAt = new Date();
 				const digestFiles = await ensureDigestFiles(papersDir, record.metadata.short_id, startedAt);
 				await writeDigestSession(digestFiles.sessionFile, [
@@ -202,6 +260,20 @@ export default function (pi: ExtensionAPI) {
 					startedAt: startedAt.toISOString(),
 				};
 				const kickoff = await buildDigestContextMessage(record, digestFiles.sessionFile, digestFiles.answersPath);
+				ctx.ui.setWidget(RESEARCH_DIGEST_WIDGET_KEY, renderDigestStartWidget({
+					title: record.metadata.title,
+					firstAuthor: record.metadata.authors[0],
+					shortId: record.metadata.short_id,
+					sessionFile: digestFiles.sessionFile,
+					priorSessionCount,
+				}), { placement: "aboveEditor" });
+				pi.sendMessage({
+					customType: RESEARCH_STATUS_MESSAGE_TYPE,
+					content: `Starting /digest for ${record.metadata.title} (${record.metadata.short_id})`,
+					display: true,
+					details: { shortId: record.metadata.short_id, sessionFile: digestFiles.sessionFile, priorSessionCount },
+				}, { triggerTurn: false });
+				startedDigest = true;
 				pi.sendMessage({
 					customType: DIGEST_CONTEXT_TYPE,
 					content: kickoff,
@@ -211,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			} finally {
-				ctx.ui.setWidget("magpie-research-digest", undefined);
+				if (!startedDigest) ctx.ui.setWidget(RESEARCH_DIGEST_WIDGET_KEY, undefined);
 			}
 		},
 	});

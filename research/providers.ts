@@ -1,5 +1,10 @@
 import type { NormalizedPaper, PaperFetchResult } from "./types.js";
 
+export interface SearchSemanticScholarOptions {
+	apiKey?: string;
+	onRateLimit?: (info: { attempt: number; maxAttempts: number; waitMs: number; reason: string }) => void;
+}
+
 const SEMANTIC_SCHOLAR_FIELDS = [
 	"paperId",
 	"title",
@@ -14,8 +19,29 @@ const SEMANTIC_SCHOLAR_FIELDS = [
 	"url",
 ].join(",");
 
+const SEMANTIC_SCHOLAR_MAX_ATTEMPTS = 6;
+const SEMANTIC_SCHOLAR_BASE_BACKOFF_MS = 2000;
+
 function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+	if (!value?.trim()) return undefined;
+	const seconds = Number(value.trim());
+	if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+	const dateMs = new Date(value).getTime();
+	if (!Number.isFinite(dateMs)) return undefined;
+	const delta = dateMs - Date.now();
+	return delta > 0 ? delta : undefined;
+}
+
+function computeBackoffMs(attempt: number, retryAfterHeader: string | null): number {
+	const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+	if (retryAfterMs !== undefined) return retryAfterMs;
+	const exponential = SEMANTIC_SCHOLAR_BASE_BACKOFF_MS * 2 ** Math.max(0, attempt - 1);
+	const jitter = Math.floor(Math.random() * 500);
+	return exponential + jitter;
 }
 
 function getExternalId(externalIds: Record<string, unknown> | undefined, target: string): string | undefined {
@@ -59,23 +85,38 @@ async function fetchText(url: string, init?: RequestInit, timeoutMs = 30000): Pr
 	}
 }
 
-export async function searchSemanticScholar(query: string, limit: number): Promise<NormalizedPaper[]> {
-	const apiKey = process.env.SEMANTIC_SCHOLAR_API_KEY?.trim();
+export async function searchSemanticScholar(
+	query: string,
+	limit: number,
+	options: SearchSemanticScholarOptions = {},
+): Promise<NormalizedPaper[]> {
+	const apiKey = options.apiKey?.trim() || process.env.SEMANTIC_SCHOLAR_API_KEY?.trim();
 	const params = new URLSearchParams({
 		query,
 		limit: String(limit),
 		fields: SEMANTIC_SCHOLAR_FIELDS,
 	});
 	const url = `https://api.semanticscholar.org/graph/v1/paper/search?${params.toString()}`;
-	let attempt = 0;
-	while (attempt < 4) {
-		attempt += 1;
+	let lastRateLimitMessage = "Semantic Scholar search exhausted retry budget.";
+	for (let attempt = 1; attempt <= SEMANTIC_SCHOLAR_MAX_ATTEMPTS; attempt += 1) {
 		const response = await fetch(url, {
 			headers: apiKey ? { "x-api-key": apiKey } : undefined,
 		});
-		if (response.status === 429 && attempt < 4) {
-			await sleep(500 * 2 ** (attempt - 1));
-			continue;
+		if (response.status === 429) {
+			const body = await response.text().catch(() => "");
+			lastRateLimitMessage = `Semantic Scholar search failed after ${attempt} attempt${attempt === 1 ? "" : "s"} due to rate limiting: ${body || response.statusText}`;
+			if (attempt < SEMANTIC_SCHOLAR_MAX_ATTEMPTS) {
+				const waitMs = computeBackoffMs(attempt, response.headers.get("retry-after"));
+				options.onRateLimit?.({
+					attempt,
+					maxAttempts: SEMANTIC_SCHOLAR_MAX_ATTEMPTS,
+					waitMs,
+					reason: body || response.statusText,
+				});
+				await sleep(waitMs);
+				continue;
+			}
+			throw new Error(lastRateLimitMessage);
 		}
 		if (!response.ok) {
 			const body = await response.text().catch(() => "");
@@ -102,7 +143,7 @@ export async function searchSemanticScholar(query: string, limit: number): Promi
 		});
 		return papers;
 	}
-	throw new Error("Semantic Scholar search exhausted retry budget.");
+	throw new Error(lastRateLimitMessage);
 }
 
 export async function fetchViaDefuddle(url: string): Promise<string | undefined> {
