@@ -1,0 +1,8 @@
+{
+  "semanticScholar": {
+    "apiKey": "your-semantic-scholar-api-key"
+  },
+  "exa": {
+    "apiKey": "your-exa-api-key"
+  }
+}

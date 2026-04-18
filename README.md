@@ -24,6 +24,13 @@ Magpie reads one config file per scope:
 
 Project config overrides global config.
 
+Magpie can also read an optional auth file per scope for provider API keys:
+
+- Global: `~/.pi/agent/magpie.auth.json`
+- Project: `.pi/magpie.auth.json`
+
+Project auth overrides global auth.
+
 ## Example config
 
 ```json
@@ -116,6 +123,7 @@ Project config overrides global config.
 ```
 
 You can copy `magpie.example.json` to `.pi/magpie.json` or `~/.pi/agent/magpie.json` as a starting point.
+You can copy `magpie.auth.example.json` to `.pi/magpie.auth.json` or `~/.pi/agent/magpie.auth.json` for provider API keys.
 
 Subagent entries can be either a model string or an object with `model`, `thinkingLevel`, and optional `prompt`.
 The `prompt` supports:
@@ -133,9 +141,27 @@ Research config:
 - `research.papersDir` supports `~` expansion at runtime
 - `research.resolverSubagent` configures the internal `/digest` paper resolver only
 
+Auth config:
+- `semanticScholar.apiKey` is used by `/papers` for Semantic Scholar requests
+- `exa.apiKey` is reserved for future integrations
+- auth values live in `magpie.auth.json`, not `magpie.json`
+
 Research commands:
 - `/papers [-limit <1-20>] <query>`
 - `/digest <query>`
+
+## Auth example
+
+```json
+{
+  "semanticScholar": {
+    "apiKey": "your-semantic-scholar-api-key"
+  },
+  "exa": {
+    "apiKey": "your-exa-api-key"
+  }
+}
+```
 
 ## Included extensions
 

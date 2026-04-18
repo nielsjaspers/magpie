@@ -32,6 +32,30 @@ Notes:
 - `papersDir` supports `~` expansion at runtime.
 - `resolverSubagent` is internal to this extension. It is not exposed as a public Magpie subagent tool.
 
+## Auth
+
+Provider API keys live in `magpie.auth.json`, not in the normal Magpie config file.
+
+Scopes:
+- global: `~/.pi/agent/magpie.auth.json`
+- project: `.pi/magpie.auth.json`
+
+Project auth overrides global auth.
+
+Current auth keys:
+- `semanticScholar.apiKey` for `/papers`
+- `exa.apiKey` reserved for future integrations
+
+Example:
+
+```json
+{
+  "semanticScholar": {
+    "apiKey": "your-semantic-scholar-api-key"
+  }
+}
+```
+
 ## Directory layout
 
 Papers are stored under `research.papersDir` like this:
