@@ -22,6 +22,7 @@
       "handoff/index.ts",
       "sessions/index.ts",
       "memory/index.ts",
+      "research/index.ts",
       "web/web-fetch.ts",
       "web/web-search.ts",
       "spinner/index.ts"

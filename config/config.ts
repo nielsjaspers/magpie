@@ -153,6 +153,22 @@ export function resolveSubagentModelRef(ref: SubagentModelRef | undefined): Reso
 	return { model: ref.model, thinkingLevel: ref.thinkingLevel, prompt: ref.prompt };
 }
 
+export function expandHomePath(path: string): string {
+	const trimmed = path.trim();
+	if (!trimmed) return trimmed;
+	if (trimmed === "~") return homedir();
+	if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
+	return trimmed;
+}
+
+export function getResearchPapersDir(config: MagpieConfig): string {
+	return expandHomePath(config.research?.papersDir?.trim() || "~/magpie-papers");
+}
+
+export function getResearchResolverSubagent(config: MagpieConfig): ResolvedSubagentModel | undefined {
+	return resolveSubagentModelRef(config.research?.resolverSubagent);
+}
+
 export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined) {
 	if (!modelRef?.trim()) return undefined;
 	const idx = modelRef.indexOf("/");

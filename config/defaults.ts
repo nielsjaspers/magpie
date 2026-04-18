@@ -82,4 +82,11 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		searchTimeout: 120000,
 		fetchTimeout: 30000,
 	},
+	research: {
+		papersDir: "~/magpie-papers",
+		resolverSubagent: {
+			model: "github-copilot/gpt-5-mini",
+			thinkingLevel: "low",
+		},
+	},
 };

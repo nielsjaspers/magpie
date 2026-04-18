@@ -32,6 +32,11 @@ export interface ModeConfig {
 	};
 }
 
+export interface ResearchConfig {
+	papersDir?: string;
+	resolverSubagent?: SubagentModelRef;
+}
+
 export interface MagpieConfig {
 	modes: Record<string, ModeConfig | undefined>;
 	aliases?: Record<string, string>;
@@ -72,6 +77,7 @@ export interface MagpieConfig {
 		searchTimeout?: number;
 		fetchTimeout?: number;
 	};
+	research?: ResearchConfig;
 }
 
 export interface ResolvedSubagentModel {
