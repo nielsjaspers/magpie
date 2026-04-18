@@ -1,7 +1,13 @@
 # magpie
 
 Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, a research companion, and a spinner.
-![Close-up of a Black-billed Magpie on a Tree](./magpie.webp "Photo by Bejan  Adrian: https://www.pexels.com/photo/close-up-of-a-black-billed-magpie-on-a-tree-36937253/")
+
+<img
+  src="./magpie.webp"
+  alt="Close-up of a Black-billed Magpie on a Tree"
+  title="Photo by Bejan Adrian: https://www.pexels.com/photo/close-up-of-a-black-billed-magpie-on-a-tree-36937253/"
+  width="384"
+/>
 
 ## Install
 
