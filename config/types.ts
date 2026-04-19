@@ -47,6 +47,7 @@ export interface PersonalAssistantConfig {
 }
 
 export interface TelegramConfig {
+	hostUrl?: string;
 	allowFrom?: string[];
 	models?: Record<string, string>;
 	showToolCalls?: boolean;

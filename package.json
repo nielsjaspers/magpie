@@ -12,6 +12,9 @@
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
+  "scripts": {
+    "dev:assistant-host": "bun run runtime/assistant-host-server.ts"
+  },
   "pi": {
     "extensions": [
       "subagents/index.ts",

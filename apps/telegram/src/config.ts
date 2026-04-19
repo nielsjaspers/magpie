@@ -15,6 +15,7 @@ import {
 
 export interface TelegramAppConfig {
 	botToken: string;
+	hostUrl: string;
 	allowFrom: string[];
 	models: Record<string, string>;
 	showToolCalls: boolean;
@@ -76,6 +77,7 @@ export async function loadTelegramConfig(cwd: string): Promise<TelegramAppConfig
 
 	return {
 		botToken: telegramAuth?.botToken?.trim() || "",
+		hostUrl: telegram?.hostUrl?.trim() || "http://127.0.0.1:8787",
 		allowFrom: telegram?.allowFrom ?? [],
 		models: telegram?.models ?? {},
 		showToolCalls: telegram?.showToolCalls ?? false,

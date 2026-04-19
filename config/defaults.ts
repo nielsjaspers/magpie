@@ -96,6 +96,7 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		calendar: {},
 	},
 	telegram: {
+		hostUrl: "http://127.0.0.1:8787",
 		allowFrom: [],
 		models: {},
 		showToolCalls: false,

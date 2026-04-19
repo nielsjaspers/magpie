@@ -15,7 +15,6 @@ export interface AssistantSessionHostConfig {
 	storageDir: string;
 	resolveModel: (ref: string) => unknown;
 	buildSystemPrompt: () => Promise<string>;
-	initialModelRef: () => string;
 	tools?: unknown[];
 }
 
@@ -30,6 +29,10 @@ type SessionRegistry = Record<string, { sessionPath: string; updatedAt: string }
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
+export type AssistantToolEvent =
+	| { type: "start"; toolName: string; args: unknown }
+	| { type: "end"; toolName: string; result: string; isError: boolean };
+
 export class AssistantSessionHost {
 	private readonly hostCwd: string;
 	private readonly storageDir: string;
@@ -37,7 +40,6 @@ export class AssistantSessionHost {
 	private readonly registryPath: string;
 	private readonly resolveModelRef: (ref: string) => unknown;
 	private readonly buildSystemPromptText: () => Promise<string>;
-	private readonly initialModelRef: () => string;
 	private readonly tools: unknown[] | undefined;
 	private readonly runtimes = new Map<string, AssistantSessionRuntime>();
 
@@ -48,15 +50,14 @@ export class AssistantSessionHost {
 		this.registryPath = resolve(this.storageDir, "thread-sessions.json");
 		this.resolveModelRef = config.resolveModel;
 		this.buildSystemPromptText = config.buildSystemPrompt;
-		this.initialModelRef = config.initialModelRef;
 		this.tools = config.tools;
 	}
 
-	async getRuntime(threadKey: string): Promise<AssistantSessionRuntime> {
+	async getRuntime(threadKey: string, modelRef: string): Promise<AssistantSessionRuntime> {
 		let runtime = this.runtimes.get(threadKey);
 		if (!runtime) {
 			runtime = {
-				sessionPromise: this.loadOrCreateSession(threadKey),
+				sessionPromise: this.loadOrCreateSession(threadKey, modelRef),
 				queue: Promise.resolve(),
 				sessionFilePromise: Promise.resolve(undefined),
 			};
@@ -77,24 +78,23 @@ export class AssistantSessionHost {
 		await this.writeRegistry(registry);
 	}
 
-	private async loadOrCreateSession(threadKey: string): Promise<AgentSession> {
+	private async loadOrCreateSession(threadKey: string, modelRef: string): Promise<AgentSession> {
 		await this.ensureDirs();
 		const registry = await this.readRegistry();
 		const existingPath = registry[threadKey]?.sessionPath;
 		if (existingPath && existsSync(existingPath)) {
-			const session = await this.createSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd));
+			const session = await this.createSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef);
 			await this.touchRegistry(threadKey, existingPath, registry);
 			return session;
 		}
 
-		const session = await this.createSession(SessionManager.create(this.hostCwd, this.sessionsDir));
+		const session = await this.createSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef);
 		if (!session.sessionFile) throw new Error("Persistent assistant session did not produce a session file");
 		await this.touchRegistry(threadKey, session.sessionFile, registry);
 		return session;
 	}
 
-	private async createSession(sessionManager: SessionManager): Promise<AgentSession> {
-		const modelRef = this.initialModelRef();
+	private async createSession(sessionManager: SessionManager, modelRef: string): Promise<AgentSession> {
 		const model = this.resolveModelRef(modelRef);
 		if (!model) throw new Error(`Model not found: ${modelRef}`);
 		const systemPrompt = await this.buildSystemPromptText();
@@ -138,6 +138,46 @@ export class AssistantSessionHost {
 		next[threadKey] = { sessionPath, updatedAt: new Date().toISOString() };
 		await this.writeRegistry(next);
 	}
+}
+
+export async function promptAssistantSession(
+	session: AgentSession,
+	prompt: string,
+	onToolEvent?: (event: AssistantToolEvent) => void,
+): Promise<string> {
+	let text = "";
+
+	const unsubscribe = session.subscribe((event) => {
+		if (
+			event.type === "message_update" &&
+			event.assistantMessageEvent.type === "text_delta"
+		) {
+			text += event.assistantMessageEvent.delta;
+		}
+		if (onToolEvent && event.type === "tool_execution_start") {
+			onToolEvent({ type: "start", toolName: event.toolName, args: event.args });
+		}
+		if (onToolEvent && event.type === "tool_execution_end") {
+			const resultStr =
+				typeof event.result === "string"
+					? event.result
+					: JSON.stringify(event.result);
+			onToolEvent({
+				type: "end",
+				toolName: event.toolName,
+				result: resultStr ?? "",
+				isError: event.isError,
+			});
+		}
+	});
+
+	try {
+		await session.prompt(prompt);
+	} finally {
+		unsubscribe();
+	}
+
+	return text.trim();
 }
 
 export function createAssistantThreadKey(channel: string, threadId: string): string {
