@@ -35,7 +35,17 @@ export async function resolveAssistantThread(config: TelegramAppConfig, threadId
 }
 
 export async function sendAssistantMessage(config: TelegramAppConfig, threadId: string, text: string, modelRef: string) {
-	return await postJson<{ text: string; sessionId: string }>(
+	return await postJson<{
+		text: string;
+		sessionId: string;
+		toolEvents?: Array<{
+			type: "start" | "end";
+			toolName: string;
+			args?: unknown;
+			result?: string;
+			isError?: boolean;
+		}>;
+	}>(
 		config.hostUrl,
 		"/api/v1/assistant/message",
 		{ channel: "telegram", threadId, text, modelRef },

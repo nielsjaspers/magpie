@@ -47,6 +47,22 @@ export function createBot(config: TelegramAppConfig): Bot {
 			await ctx.api.sendChatAction(ctx.chat.id, "typing");
 			await resolveAssistantThread(config, chatId, ref);
 			const response = await sendAssistantMessage(config, chatId, text, ref);
+			if (config.showToolCalls && response.toolEvents?.length) {
+				for (const event of response.toolEvents) {
+					if (event.type === "start") {
+						const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
+						await ctx.api.sendMessage(
+							ctx.chat.id,
+							`[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`,
+						);
+					} else {
+						const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
+						let resultPreview = event.result || "";
+						if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
+						await ctx.api.sendMessage(ctx.chat.id, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
+					}
+				}
+			}
 			for (const chunk of splitMessage(response.text || "(empty response)")) {
 				await ctx.api.sendMessage(ctx.chat.id, chunk);
 			}

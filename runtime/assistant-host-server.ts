@@ -160,11 +160,16 @@ const server = createServer(async (req, res) => {
 			const runtime = await host.getRuntime(threadKey, modelRef);
 			const pending = runtime.queue.then(async () => {
 				const session = await runtime.sessionPromise;
-				return await promptAssistantSession(session, text);
+				const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
+				const responseText = await promptAssistantSession(session, text, (event) => {
+					if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
+					else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
+				});
+				return { responseText, toolEvents };
 			});
 			runtime.queue = pending.then(() => undefined, () => undefined);
-			const responseText = await pending;
-			return sendJson(res, 200, { text: responseText || "", sessionId: threadKey });
+			const { responseText, toolEvents } = await pending;
+			return sendJson(res, 200, { text: responseText || "", sessionId: threadKey, toolEvents });
 		}
 
 		if (req.url === "/api/v1/assistant/reset") {
