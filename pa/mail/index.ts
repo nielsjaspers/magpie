@@ -135,7 +135,7 @@ async function getMailboxDebugInfo(client: ImapFlow) {
 			flags: true,
 			labels: true,
 			threadId: true,
-		})) {
+		}, { uid: true })) {
 			latest.push({
 				id: messageIdForFetch(message),
 				threadId: threadIdForFetch(message),
@@ -234,7 +234,7 @@ async function searchMessages(client: ImapFlow, options: { query?: string; label
 			threadId: true,
 			source: { start: 0, maxLength: 4096 },
 			bodyStructure: true,
-		})) {
+		}, { uid: true })) {
 			const parsed = message.source ? await simpleParser(message.source) : null;
 			messages.push(toMailMessage(message, parsed));
 			if (messages.length >= limit) break;
@@ -244,12 +244,23 @@ async function searchMessages(client: ImapFlow, options: { query?: string; label
 }
 
 async function fetchFullMessage(client: ImapFlow, id: string): Promise<MailMessage | null> {
-	const selector = id.startsWith("gmail:")
-		? ({ emailId: id.slice("gmail:".length) } as any)
-		: id.startsWith("uid:")
-			? Number(id.slice("uid:".length))
-			: ({ emailId: id } as any);
 	return await withMailbox(client, async () => {
+		if (id.startsWith("uid:")) {
+			const uid = Number(id.slice("uid:".length));
+			const message = await client.fetchOne(uid, {
+				uid: true,
+				envelope: true,
+				flags: true,
+				labels: true,
+				threadId: true,
+				source: true,
+				bodyStructure: true,
+			}, { uid: true });
+			if (!message) return null;
+			const parsed = message.source ? await simpleParser(message.source) : null;
+			return toMailMessage(message, parsed);
+		}
+		const selector = id.startsWith("gmail:") ? { emailId: id.slice("gmail:".length) } : ({ emailId: id } as any);
 		for await (const message of client.fetch(selector, {
 			uid: true,
 			envelope: true,
