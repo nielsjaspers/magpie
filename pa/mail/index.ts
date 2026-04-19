@@ -311,6 +311,17 @@ function toSummary(message: MailMessage): PaEmailSummary {
 	};
 }
 
+function formatSummaryLines(messages: MailMessage[]): string {
+	return messages.map((message) => [
+		`- id=${message.id}`,
+		`thread=${message.threadId}`,
+		`${message.date}`,
+		`${message.from}`,
+		`${message.subject}`,
+		message.snippet ? `| ${message.snippet}` : undefined,
+	].filter(Boolean).join(" | ")).join("\n");
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("pa-mail-debug", {
 		description: "Debug the PA Gmail mailbox connection and counts",
@@ -362,7 +373,7 @@ export default function (pi: ExtensionAPI) {
 				const client = await getClient(gmail.address, gmail.appPassword);
 				const messages = await searchMessages(client, params);
 				const text = messages.length > 0
-					? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n")
+					? formatSummaryLines(messages)
 					: "No matching messages.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
@@ -390,7 +401,7 @@ export default function (pi: ExtensionAPI) {
 				const client = await getClient(gmail.address, gmail.appPassword);
 				const messages = await searchMessages(client, { label: params.label, limit: params.limit ?? 10, sinceDays: 365, unreadOnly: true });
 				const text = messages.length > 0
-					? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n")
+					? formatSummaryLines(messages)
 					: "No unread messages.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
@@ -440,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				const client = await getClient(gmail.address, gmail.appPassword);
 				const messages = await fetchThread(client, params.threadId);
-				const text = messages.length > 0 ? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n") : "No messages in thread.";
+				const text = messages.length > 0 ? formatSummaryLines(messages) : "No messages in thread.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
 				await resetClient();
@@ -464,7 +475,7 @@ export default function (pi: ExtensionAPI) {
 				const client = await getClient(gmail.address, gmail.appPassword);
 				const query = `from:${params.person}`;
 				const messages = await searchMessages(client, { query, limit: 20, sinceDays: 365 });
-				const text = messages.length > 0 ? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n") : `No recent conversation history for ${params.person}.`;
+				const text = messages.length > 0 ? formatSummaryLines(messages) : `No recent conversation history for ${params.person}.`;
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary), person: params.person } };
 			} catch (error) {
 				await resetClient();
