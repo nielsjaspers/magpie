@@ -15,6 +15,7 @@ import {
 import {
 	authenticateRequest,
 	consumeEnrollmentCode,
+	createEnrollmentCode,
 	createRemoteAuthStore,
 	isLoopbackRequest,
 } from "../remote/auth.js";
@@ -179,7 +180,11 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 	return createServer(async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url || "/", hostUrl);
-			const isPublicPath = requestUrl.pathname === "/health" || requestUrl.pathname === "/enroll" || requestUrl.pathname === "/api/v1/enroll";
+			const isPublicPath = requestUrl.pathname === "/health"
+				|| requestUrl.pathname === "/enroll"
+				|| requestUrl.pathname === "/api/v1/enroll"
+				|| requestUrl.pathname === "/api/v1/enroll/code"
+				|| requestUrl.pathname === "/api/v1/enroll/claim";
 			if (!isPublicPath && !isLoopbackRequest(req)) {
 				const device = await authenticateRequest(auth, req);
 				if (!device) {
@@ -201,6 +206,10 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				res.end(await readFile(resolve(clientDir, "enroll.html"), "utf8"));
 				return;
 			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/code") {
+				const result = await createEnrollmentCode(auth);
+				return sendJson(res, 201, { code: result.code, expiresAt: result.expiresAt });
+			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll") {
 				const body = await readBody(req);
 				const result = await consumeEnrollmentCode(auth, {
@@ -210,6 +219,15 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				});
 				res.setHeader("set-cookie", `magpie_token=${encodeURIComponent(result.token)}; Path=/; HttpOnly; SameSite=Lax`);
 				return sendJson(res, 200, { ok: true, device: result.device });
+			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/claim") {
+				const body = await readBody(req);
+				const result = await consumeEnrollmentCode(auth, {
+					code: String(body.code || ""),
+					deviceName: String(body.deviceName || "device"),
+					platform: String(body.platform || req.headers["user-agent"] || "cli"),
+				});
+				return sendJson(res, 200, { ok: true, token: result.token, device: result.device });
 			}
 			if (req.method === "GET" && requestUrl.pathname === "/") {
 				res.statusCode = 200;

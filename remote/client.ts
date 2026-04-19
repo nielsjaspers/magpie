@@ -2,8 +2,19 @@ import type { DispatchPayload, FetchPayload } from "./types.js";
 import type { SerializedSessionBundle } from "./transport.js";
 import { deserializeSessionBundle } from "./transport.js";
 
-async function requestJson<T>(baseUrl: string, path: string, options?: RequestInit): Promise<T> {
-	const response = await fetch(new URL(path, baseUrl), options);
+function withAuth(options: RequestInit | undefined, deviceToken?: string): RequestInit | undefined {
+	if (!deviceToken) return options;
+	return {
+		...options,
+		headers: {
+			...(options?.headers ?? {}),
+			authorization: `Bearer ${deviceToken}`,
+		},
+	};
+}
+
+async function requestJson<T>(baseUrl: string, path: string, options?: RequestInit, deviceToken?: string): Promise<T> {
+	const response = await fetch(new URL(path, baseUrl), withAuth(options, deviceToken));
 	const json = await response.json();
 	if (!response.ok) {
 		throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`);
@@ -19,10 +30,23 @@ export async function exportHostedSession(baseUrl: string, sessionId: string, mo
 	});
 }
 
+export async function createRemoteEnrollmentCode(baseUrl: string) {
+	return await requestJson<{ code: string; expiresAt: string }>(baseUrl, "/api/v1/enroll/code", { method: "POST" });
+}
+
+export async function claimRemoteEnrollmentCode(baseUrl: string, input: { code: string; deviceName: string; platform: string }) {
+	return await requestJson<{ ok: boolean; token: string; device: { id: string; name: string } }>(baseUrl, "/api/v1/enroll/claim", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(input),
+	});
+}
+
 export async function dispatchSession(
 	baseUrl: string,
 	payload: DispatchPayload,
 	bundle: SerializedSessionBundle,
+	deviceToken?: string,
 ) {
 	return await requestJson<{
 		ok: boolean;
@@ -32,10 +56,10 @@ export async function dispatchSession(
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ payload, bundle }),
-	});
+	}, deviceToken);
 }
 
-export async function listDispatchedSessions(baseUrl: string) {
+export async function listDispatchedSessions(baseUrl: string, deviceToken?: string) {
 	return await requestJson<{
 		sessions: Array<{
 			sessionId: string;
@@ -43,7 +67,7 @@ export async function listDispatchedSessions(baseUrl: string) {
 			updatedAt: string;
 			payload: DispatchPayload;
 		}>;
-	}>(baseUrl, "/api/v1/remote/sessions");
+	}>(baseUrl, "/api/v1/remote/sessions", undefined, deviceToken);
 }
 
 export async function fetchRemoteSession(baseUrl: string, payload: FetchPayload) {
