@@ -225,16 +225,12 @@ async function fetchICloudEvents(client: ICloudClient, calendar: ICloudCalendarS
 	const objects = await client.fetchCalendarObjects({
 		calendar: calendar.calendar,
 		timeRange: {
-			start: start.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"),
-			end: end.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"),
+			start: start.toISOString(),
+			end: end.toISOString(),
 		},
 		expand: true,
 	});
 	return objects.flatMap((object) => buildICloudEvent(calendar.id, object as DAVCalendarObject));
-}
-
-function formatCalDavTimestamp(date: Date): string {
-	return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
 function selectWritableCalendar(calendars: ICloudCalendarSource[], preferred: string | undefined, requestedId?: string): ICloudCalendarSource | undefined {

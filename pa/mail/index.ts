@@ -27,6 +27,7 @@ type MailMessage = {
 };
 
 let clientPromise: Promise<ImapFlow> | null = null;
+let activeClient: ImapFlow | null = null;
 
 function slugify(input: string): string {
 	return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "contact";
@@ -50,6 +51,19 @@ function normalizeTextBody(input: string | undefined): string {
 		.trim();
 }
 
+async function resetClient() {
+	const client = activeClient;
+	activeClient = null;
+	clientPromise = null;
+	if (client) {
+		try {
+			client.close();
+		} catch {
+			// ignore
+		}
+	}
+}
+
 async function getClient(address: string, appPassword: string): Promise<ImapFlow> {
 	if (!clientPromise) {
 		clientPromise = (async () => {
@@ -58,15 +72,25 @@ async function getClient(address: string, appPassword: string): Promise<ImapFlow
 				port: 993,
 				secure: true,
 				auth: { user: address, pass: appPassword },
+				disableAutoIdle: true,
+				socketTimeout: 0,
+				logger: false,
+			});
+			client.on("error", () => {
+				void resetClient();
+			});
+			client.on("close", () => {
+				void resetClient();
 			});
 			await client.connect();
+			activeClient = client;
 			return client;
 		})();
 	}
 	try {
 		return await clientPromise;
 	} catch (error) {
-		clientPromise = null;
+		await resetClient();
 		throw error;
 	}
 }
