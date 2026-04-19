@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type SearchObject } from "imapflow";
 import { simpleParser } from "mailparser";
 import { convert } from "html-to-text";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -13,7 +13,9 @@ import type { PaEmailSummary } from "../shared/types.js";
 type MailMessage = {
 	id: string;
 	uid: number;
+	emailId?: string;
 	threadId: string;
+	gmailThreadId?: string;
 	from: string;
 	to: string[];
 	subject: string;
@@ -28,6 +30,7 @@ type MailMessage = {
 
 let clientPromise: Promise<ImapFlow> | null = null;
 let activeClient: ImapFlow | null = null;
+let mailboxPathPromise: Promise<string> | null = null;
 
 function slugify(input: string): string {
 	return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "contact";
@@ -55,6 +58,7 @@ async function resetClient() {
 	const client = activeClient;
 	activeClient = null;
 	clientPromise = null;
+	mailboxPathPromise = null;
 	if (client) {
 		try {
 			client.close();
@@ -95,8 +99,22 @@ async function getClient(address: string, appPassword: string): Promise<ImapFlow
 	}
 }
 
+async function getMailboxPath(client: ImapFlow): Promise<string> {
+	if (!mailboxPathPromise) {
+		mailboxPathPromise = (async () => {
+			const boxes = await client.list();
+			const allMail = boxes.find((box) => box.specialUse === "\\All");
+			if (allMail?.path) return allMail.path;
+			const fallback = boxes.find((box) => box.path === "[Gmail]/All Mail" || box.path === "INBOX");
+			return fallback?.path || "INBOX";
+		})();
+	}
+	return await mailboxPathPromise;
+}
+
 async function withMailbox<T>(client: ImapFlow, fn: () => Promise<T>): Promise<T> {
-	const lock = await client.getMailboxLock("[Gmail]/All Mail");
+	const mailboxPath = await getMailboxPath(client);
+	const lock = await client.getMailboxLock(mailboxPath);
 	try {
 		return await fn();
 	} finally {
@@ -104,13 +122,108 @@ async function withMailbox<T>(client: ImapFlow, fn: () => Promise<T>): Promise<T
 	}
 }
 
-async function searchMessages(client: ImapFlow, options: { query?: string; label?: string; limit?: number; sinceDays?: number }): Promise<MailMessage[]> {
-	const sinceDays = Math.max(1, Math.min(365, options.sinceDays ?? 14));
-	const gmailRawParts = [options.query?.trim(), options.label?.trim() ? `label:${options.label.trim()}` : undefined, `newer_than:${sinceDays}d`].filter(Boolean);
-	const ids = await withMailbox(client, async () => {
-		const result = await client.search({ gmailraw: gmailRawParts.join(" ") || `newer_than:${sinceDays}d` }, { uid: true });
-		return (result || []).slice(-Math.max(1, Math.min(50, options.limit ?? 20))).reverse();
+async function getMailboxDebugInfo(client: ImapFlow) {
+	const boxes = await client.list({ statusQuery: { messages: true, unseen: true, recent: true } });
+	const selectedPath = await getMailboxPath(client);
+	const latest: Array<Record<string, unknown>> = [];
+	await withMailbox(client, async () => {
+		const ids = await client.search({ all: true }, { uid: true });
+		const latestIds = (ids || []).slice(-5).reverse();
+		for await (const message of client.fetch(latestIds, {
+			uid: true,
+			envelope: true,
+			flags: true,
+			labels: true,
+			threadId: true,
+		})) {
+			latest.push({
+				id: messageIdForFetch(message),
+				threadId: threadIdForFetch(message),
+				uid: message.uid,
+				subject: message.envelope?.subject || "(no subject)",
+				from: firstAddress(message.envelope?.from),
+				date: message.envelope?.date?.toISOString?.() || null,
+				labels: Array.from(message.labels ?? []),
+				flags: Array.from(message.flags ?? []),
+			});
+		}
 	});
+	return {
+		selectedPath,
+		mailboxes: boxes.map((box) => ({
+			path: box.path,
+			specialUse: box.specialUse,
+			messages: box.status?.messages,
+			unseen: box.status?.unseen,
+			recent: box.status?.recent,
+		})),
+		latest,
+	};
+}
+
+function buildSearchFallback(query: string | undefined, sinceDays: number, unreadOnly?: boolean): SearchObject {
+	const baseSince = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+	const trimmed = query?.trim();
+	const base: SearchObject = { since: baseSince };
+	if (unreadOnly) base.seen = false;
+	if (!trimmed) return { ...base, all: true };
+	const fromMatch = trimmed.match(/^from:(.+)$/i);
+	if (fromMatch) return { ...base, from: fromMatch[1].trim() };
+	const subjectMatch = trimmed.match(/^subject:(.+)$/i);
+	if (subjectMatch) return { ...base, subject: subjectMatch[1].trim() };
+	return { ...base, text: trimmed };
+}
+
+function messageIdForFetch(message: { emailId?: string; uid: number }): string {
+	return message.emailId ? `gmail:${message.emailId}` : `uid:${message.uid}`;
+}
+
+function threadIdForFetch(message: { threadId?: string; uid: number }): string {
+	return message.threadId ? `thread:${message.threadId}` : `uid-thread:${message.uid}`;
+}
+
+function toMailMessage(message: any, parsed: Awaited<ReturnType<typeof simpleParser>> | null, bodyText?: string): MailMessage {
+	const normalizedBody = normalizeTextBody(bodyText ?? parsed?.text ?? (parsed?.html ? convert(parsed.html as string) : ""));
+	return {
+		id: messageIdForFetch(message),
+		uid: message.uid,
+		emailId: message.emailId,
+		threadId: threadIdForFetch(message),
+		gmailThreadId: message.threadId,
+		from: firstAddress(message.envelope?.from),
+		to: formatAddressList(message.envelope?.to),
+		subject: message.envelope?.subject || "(no subject)",
+		date: message.envelope?.date?.toISOString?.() || new Date().toISOString(),
+		snippet: normalizedBody.slice(0, 200),
+		labels: Array.from(message.labels ?? []),
+		isUnread: !(message.flags?.has("\\Seen") ?? false),
+		hasAttachments: (parsed?.attachments?.length ?? 0) > 0,
+		body: normalizedBody || undefined,
+		messageId: parsed?.messageId,
+	};
+}
+
+async function searchMessages(client: ImapFlow, options: { query?: string; label?: string; limit?: number; sinceDays?: number; unreadOnly?: boolean }): Promise<MailMessage[]> {
+	const sinceDays = Math.max(1, Math.min(365, options.sinceDays ?? 14));
+	const limit = Math.max(1, Math.min(50, options.limit ?? 20));
+	const gmailRawParts = [
+		options.query?.trim(),
+		options.label?.trim() ? `label:${options.label.trim()}` : undefined,
+		options.unreadOnly ? "is:unread" : undefined,
+		`newer_than:${sinceDays}d`,
+	].filter(Boolean);
+	const ids = await withMailbox(client, async () => {
+		const rawQuery = gmailRawParts.join(" ") || `newer_than:${sinceDays}d`;
+		let result = await client.search({ gmailraw: rawQuery }, { uid: true });
+		if ((!result || result.length === 0) && (options.query?.trim() || options.unreadOnly)) {
+			result = await client.search(buildSearchFallback(options.query, sinceDays, options.unreadOnly), { uid: true });
+		}
+		if ((!result || result.length === 0) && !options.query?.trim() && !options.unreadOnly) {
+			result = await client.search({ all: true }, { uid: true });
+		}
+		return (result || []).slice(-limit).reverse();
+	});
+	if (ids.length === 0) return [];
 	const messages: MailMessage[] = [];
 	await withMailbox(client, async () => {
 		for await (const message of client.fetch(ids, {
@@ -123,30 +236,21 @@ async function searchMessages(client: ImapFlow, options: { query?: string; label
 			bodyStructure: true,
 		})) {
 			const parsed = message.source ? await simpleParser(message.source) : null;
-			const rawText = parsed?.text || (parsed?.html ? convert(parsed.html as string) : "");
-			messages.push({
-				id: message.emailId || String(message.uid),
-				uid: message.uid,
-				threadId: message.threadId || String(message.uid),
-				from: firstAddress(message.envelope?.from),
-				to: formatAddressList(message.envelope?.to),
-				subject: message.envelope?.subject || "(no subject)",
-				date: message.envelope?.date?.toISOString?.() || new Date().toISOString(),
-				snippet: normalizeTextBody(rawText).slice(0, 200),
-				labels: Array.from(message.labels ?? []),
-				isUnread: !(message.flags?.has("\\Seen") ?? false),
-				hasAttachments: (parsed?.attachments?.length ?? 0) > 0,
-				messageId: parsed?.messageId,
-			});
-			if (messages.length >= Math.max(1, Math.min(50, options.limit ?? 20))) break;
+			messages.push(toMailMessage(message, parsed));
+			if (messages.length >= limit) break;
 		}
 	});
 	return messages;
 }
 
 async function fetchFullMessage(client: ImapFlow, id: string): Promise<MailMessage | null> {
+	const selector = id.startsWith("gmail:")
+		? ({ emailId: id.slice("gmail:".length) } as any)
+		: id.startsWith("uid:")
+			? Number(id.slice("uid:".length))
+			: ({ emailId: id } as any);
 	return await withMailbox(client, async () => {
-		for await (const message of client.fetch({ emailId: id }, {
+		for await (const message of client.fetch(selector, {
 			uid: true,
 			envelope: true,
 			flags: true,
@@ -156,31 +260,18 @@ async function fetchFullMessage(client: ImapFlow, id: string): Promise<MailMessa
 			bodyStructure: true,
 		})) {
 			const parsed = message.source ? await simpleParser(message.source) : null;
-			const body = normalizeTextBody(parsed?.text || (parsed?.html ? convert(parsed.html as string) : ""));
-			return {
-				id: message.emailId || String(message.uid),
-				uid: message.uid,
-				threadId: message.threadId || String(message.uid),
-				from: firstAddress(message.envelope?.from),
-				to: formatAddressList(message.envelope?.to),
-				subject: message.envelope?.subject || "(no subject)",
-				date: message.envelope?.date?.toISOString?.() || new Date().toISOString(),
-				snippet: body.slice(0, 200),
-				labels: Array.from(message.labels ?? []),
-				isUnread: !(message.flags?.has("\\Seen") ?? false),
-				hasAttachments: (parsed?.attachments?.length ?? 0) > 0,
-				body,
-				messageId: parsed?.messageId,
-			};
+			return toMailMessage(message, parsed);
 		}
 		return null;
 	});
 }
 
 async function fetchThread(client: ImapFlow, threadId: string, limit = 20): Promise<MailMessage[]> {
+	const gmailThreadId = threadId.startsWith("thread:") ? threadId.slice("thread:".length) : undefined;
+	if (!gmailThreadId) return [];
 	const rows: MailMessage[] = [];
 	await withMailbox(client, async () => {
-		for await (const message of client.fetch({ threadId }, {
+		for await (const message of client.fetch({ threadId: gmailThreadId }, {
 			uid: true,
 			envelope: true,
 			flags: true,
@@ -189,20 +280,7 @@ async function fetchThread(client: ImapFlow, threadId: string, limit = 20): Prom
 			source: { start: 0, maxLength: 4096 },
 		})) {
 			const parsed = message.source ? await simpleParser(message.source) : null;
-			const rawText = parsed?.text || (parsed?.html ? convert(parsed.html as string) : "");
-			rows.push({
-				id: message.emailId || String(message.uid),
-				uid: message.uid,
-				threadId: message.threadId || String(message.uid),
-				from: firstAddress(message.envelope?.from),
-				to: formatAddressList(message.envelope?.to),
-				subject: message.envelope?.subject || "(no subject)",
-				date: message.envelope?.date?.toISOString?.() || new Date().toISOString(),
-				snippet: normalizeTextBody(rawText).slice(0, 200),
-				labels: Array.from(message.labels ?? []),
-				isUnread: !(message.flags?.has("\\Seen") ?? false),
-				hasAttachments: (parsed?.attachments?.length ?? 0) > 0,
-			});
+			rows.push(toMailMessage(message, parsed));
 			if (rows.length >= limit) break;
 		}
 	});
@@ -223,6 +301,36 @@ function toSummary(message: MailMessage): PaEmailSummary {
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.registerCommand("pa-mail-debug", {
+		description: "Debug the PA Gmail mailbox connection and counts",
+		handler: async (_args, ctx) => {
+			const runtime = await loadPersonalAssistantRuntime(ctx);
+			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
+			if (!gmail?.address || !gmail.appPassword) {
+				ctx.ui.notify("Gmail aggregation inbox is not configured.", "error");
+				return;
+			}
+			try {
+				const client = await getClient(gmail.address, gmail.appPassword);
+				const debug = await getMailboxDebugInfo(client);
+				const mailboxLines = debug.mailboxes.map((box) => `- ${box.path}${box.specialUse ? ` [${box.specialUse}]` : ""} | messages=${box.messages ?? "?"} unseen=${box.unseen ?? "?"} recent=${box.recent ?? "?"}`);
+				const latestLines = debug.latest.map((row) => `- ${row.id} | ${row.date ?? "no-date"} | ${row.from} | ${row.subject}`);
+				ctx.ui.notify([
+					`Selected mailbox: ${debug.selectedPath}`,
+					"",
+					"Mailboxes:",
+					...(mailboxLines.length > 0 ? mailboxLines : ["- none"]),
+					"",
+					"Latest messages:",
+					...(latestLines.length > 0 ? latestLines : ["- none"]),
+				].join("\n"), "info");
+			} catch (error) {
+				await resetClient();
+				ctx.ui.notify(`PA mail debug failed: ${(error as Error).message}`, "error");
+			}
+		},
+	});
+
 	pi.registerTool({
 		name: "email_search",
 		label: "Email Search",
@@ -247,7 +355,7 @@ export default function (pi: ExtensionAPI) {
 					: "No matching messages.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
-				clientPromise = null;
+				await resetClient();
 				return { content: [{ type: "text", text: `Mail search failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -269,14 +377,13 @@ export default function (pi: ExtensionAPI) {
 			}
 			try {
 				const client = await getClient(gmail.address, gmail.appPassword);
-				const unreadQuery = ["is:unread", params.label?.trim() ? `label:${params.label.trim()}` : undefined].filter(Boolean).join(" ");
-				const messages = await searchMessages(client, { query: unreadQuery, limit: params.limit ?? 10, sinceDays: 30 });
+				const messages = await searchMessages(client, { label: params.label, limit: params.limit ?? 10, sinceDays: 365, unreadOnly: true });
 				const text = messages.length > 0
 					? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n")
 					: "No unread messages.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
-				clientPromise = null;
+				await resetClient();
 				return { content: [{ type: "text", text: `Unread mail lookup failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -302,7 +409,7 @@ export default function (pi: ExtensionAPI) {
 					details: { message },
 				};
 			} catch (error) {
-				clientPromise = null;
+				await resetClient();
 				return { content: [{ type: "text", text: `Mail fetch failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -325,7 +432,7 @@ export default function (pi: ExtensionAPI) {
 				const text = messages.length > 0 ? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n") : "No messages in thread.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
-				clientPromise = null;
+				await resetClient();
 				return { content: [{ type: "text", text: `Thread fetch failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -344,12 +451,12 @@ export default function (pi: ExtensionAPI) {
 			}
 			try {
 				const client = await getClient(gmail.address, gmail.appPassword);
-				const query = `from:${params.person} OR to:${params.person}`;
-				const messages = await searchMessages(client, { query, limit: 20, sinceDays: 120 });
+				const query = `from:${params.person}`;
+				const messages = await searchMessages(client, { query, limit: 20, sinceDays: 365 });
 				const text = messages.length > 0 ? messages.map((message) => `- ${message.date} | ${message.from} | ${message.subject} | ${message.snippet}`).join("\n") : `No recent conversation history for ${params.person}.`;
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary), person: params.person } };
 			} catch (error) {
-				clientPromise = null;
+				await resetClient();
 				return { content: [{ type: "text", text: `Conversation history lookup failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -374,8 +481,7 @@ export default function (pi: ExtensionAPI) {
 				const client = await getClient(gmail.address, gmail.appPassword);
 				const target = await fetchFullMessage(client, params.messageId);
 				if (!target) return { content: [{ type: "text", text: `Message not found: ${params.messageId}` }], details: {}, isError: true };
-				const person = target.from;
-				const history = await searchMessages(client, { query: `from:${person} OR to:${person}`, limit: params.historyDepth ?? 15, sinceDays: 180 });
+				const history = await searchMessages(client, { query: `from:${target.from}`, limit: params.historyDepth ?? 15, sinceDays: 365 });
 				const thread = params.includeThreadContext === false ? [] : await fetchThread(client, target.threadId, 20);
 				return {
 					content: [{ type: "text", text: `Draft context loaded for ${target.subject}.` }],
@@ -383,11 +489,11 @@ export default function (pi: ExtensionAPI) {
 						target,
 						thread: thread.map(toSummary),
 						history: history.map(toSummary),
-						person,
+						person: target.from,
 					},
 				};
 			} catch (error) {
-				clientPromise = null;
+				await resetClient();
 				return { content: [{ type: "text", text: `Draft context lookup failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
