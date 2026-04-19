@@ -1,6 +1,6 @@
 import type { Bot } from "grammy";
 import type { TelegramAppConfig } from "./config.js";
-import { chats, getActiveModel, setActiveModel } from "./session.js";
+import { getActiveModel, resetChatRuntime, setActiveModel } from "./session.js";
 
 const HELP_TEXT = `Available commands:
 
@@ -45,19 +45,19 @@ export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 
 	bot.command("restart", async (ctx) => {
 		const chatId = String(ctx.chat.id);
-		chats.delete(chatId);
+		await resetChatRuntime(chatId, config);
 		await ctx.reply("Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("new", async (ctx) => {
 		const chatId = String(ctx.chat.id);
-		chats.delete(chatId);
+		await resetChatRuntime(chatId, config);
 		await ctx.reply("Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("clear", async (ctx) => {
 		const chatId = String(ctx.chat.id);
-		chats.delete(chatId);
+		await resetChatRuntime(chatId, config);
 		await ctx.reply("Session cleared.");
 	});
 }

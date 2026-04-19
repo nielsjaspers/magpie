@@ -42,7 +42,7 @@ export function createBot(config: TelegramAppConfig): Bot {
 		if (!text || text.startsWith("/")) return;
 
 		const chatId = String(ctx.chat.id);
-		const runtime = getChatRuntime(chatId, config);
+		const runtime = await getChatRuntime(chatId, config);
 
 		runtime.queue = runtime.queue
 			.then(async () => {

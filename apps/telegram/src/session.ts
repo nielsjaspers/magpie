@@ -1,25 +1,14 @@
-import {
-	AuthStorage,
-	createAgentSession,
-	DefaultResourceLoader,
-	ModelRegistry,
-	SessionManager,
-	type AgentSession,
-} from "@mariozechner/pi-coding-agent";
+import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import { ModelRegistry, AuthStorage } from "@mariozechner/pi-coding-agent";
+import { AssistantSessionHost, createAssistantThreadKey, type AssistantSessionRuntime } from "../../../runtime/assistant-session-host.js";
 import { buildSystemPrompt, parseModelRef, type TelegramAppConfig } from "./config.js";
-
-export type ChatRuntime = {
-	sessionPromise: Promise<AgentSession>;
-	queue: Promise<void>;
-};
-
-export const chats = new Map<string, ChatRuntime>();
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
 let activeAlias = "";
 let activeRef = "";
+let hostInstance: AssistantSessionHost | null = null;
 
 export function setActiveModel(alias: string, ref: string): void {
 	activeAlias = alias;
@@ -38,38 +27,26 @@ function resolveModel(ref: string) {
 	return model;
 }
 
-async function createChatSession(config: TelegramAppConfig): Promise<AgentSession> {
-	const model = resolveModel(activeRef);
-	const systemPrompt = await buildSystemPrompt(config);
-
-	const resourceLoader = new DefaultResourceLoader({
-		systemPromptOverride: () => systemPrompt,
-		appendSystemPromptOverride: () => [],
-	});
-	await resourceLoader.reload();
-
-	const { session } = await createAgentSession({
-		authStorage,
-		modelRegistry,
-		model,
-		resourceLoader,
-		sessionManager: SessionManager.inMemory(),
-		tools: [],
-	});
-
-	return session;
+function getHost(config: TelegramAppConfig): AssistantSessionHost {
+	if (!hostInstance) {
+		hostInstance = new AssistantSessionHost({
+			hostCwd: config.hostCwd,
+			storageDir: config.storageDir,
+			resolveModel,
+			buildSystemPrompt: () => buildSystemPrompt(config),
+			initialModelRef: () => activeRef,
+			tools: [],
+		});
+	}
+	return hostInstance;
 }
 
-export function getChatRuntime(chatId: string, config: TelegramAppConfig): ChatRuntime {
-	let runtime = chats.get(chatId);
-	if (!runtime) {
-		runtime = {
-			sessionPromise: createChatSession(config),
-			queue: Promise.resolve(),
-		};
-		chats.set(chatId, runtime);
-	}
-	return runtime;
+export async function getChatRuntime(chatId: string, config: TelegramAppConfig): Promise<AssistantSessionRuntime> {
+	return await getHost(config).getRuntime(createAssistantThreadKey("telegram", chatId));
+}
+
+export async function resetChatRuntime(chatId: string, config: TelegramAppConfig): Promise<void> {
+	await getHost(config).resetThread(createAssistantThreadKey("telegram", chatId));
 }
 
 export type ToolEvent =

@@ -10,6 +10,7 @@ import {
 	loadConfig,
 	getTelegramAuth,
 	getTelegramConfig,
+	getPersonalAssistantStorageDir,
 } from "../../../config/config.js";
 
 export interface TelegramAppConfig {
@@ -28,6 +29,8 @@ export interface TelegramAppConfig {
 	projectConfigPath: string;
 	globalAuthPath: string;
 	projectAuthPath: string;
+	hostCwd: string;
+	storageDir: string;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful general-purpose assistant.
@@ -87,6 +90,8 @@ export async function loadTelegramConfig(cwd: string): Promise<TelegramAppConfig
 		projectConfigPath: getProjectConfigPath(cwd),
 		globalAuthPath: getGlobalAuthPath(),
 		projectAuthPath: getProjectAuthPath(cwd),
+		hostCwd: resolve(cwd, "../.."),
+		storageDir: resolve(getPersonalAssistantStorageDir(config), "telegram"),
 	};
 }
 
