@@ -8,7 +8,16 @@ import {
 	AssistantSessionHost,
 	createAssistantThreadKey,
 } from "./assistant-session-host.js";
-import type { AssistantChannel, SessionFilter } from "./session-host-types.js";
+import type { AssistantChannel } from "./session-host-types.js";
+import {
+	createSessionRoute,
+	getSessionSnapshotRoute,
+	getSessionStatusRoute,
+	listSessionRoute,
+	normalizeAssistantChannel,
+	parseCreateSessionInput,
+	parseSessionFilter,
+} from "../webui/routes/session.js";
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
@@ -125,11 +134,6 @@ function sendSseEvent(res: import("node:http").ServerResponse, event: unknown) {
 	res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-function normalizeAssistantChannel(value: string | null | undefined): AssistantChannel | undefined {
-	if (value === "telegram" || value === "web" || value === "internal") return value;
-	return undefined;
-}
-
 function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suffix: string } | undefined {
 	const prefix = "/api/v1/sessions/";
 	if (!pathname.startsWith(prefix)) return undefined;
@@ -157,19 +161,15 @@ const server = createServer(async (req, res) => {
 		}
 
 		if (req.method === "GET" && requestUrl.pathname === "/api/v1/sessions") {
-			const filter: SessionFilter = {
-				kind: requestUrl.searchParams.get("kind") === "assistant" || requestUrl.searchParams.get("kind") === "coding"
-					? requestUrl.searchParams.get("kind") as SessionFilter["kind"]
-					: undefined,
-				location: requestUrl.searchParams.get("location") as SessionFilter["location"] ?? undefined,
-				runState: requestUrl.searchParams.get("runState") as SessionFilter["runState"] ?? undefined,
-				assistantChannel: normalizeAssistantChannel(requestUrl.searchParams.get("assistantChannel")),
-				query: requestUrl.searchParams.get("query") || undefined,
-				includeArchived: requestUrl.searchParams.get("includeArchived") === "1",
-				limit: requestUrl.searchParams.get("limit") ? Number(requestUrl.searchParams.get("limit")) : undefined,
-			};
-			const sessions = await host.listSessions(filter);
-			return sendJson(res, 200, { sessions });
+			return sendJson(res, 200, await listSessionRoute(host, parseSessionFilter(requestUrl.searchParams)));
+		}
+		if (req.method === "POST" && requestUrl.pathname === "/api/v1/sessions") {
+			const body = await readBody(req);
+			const input = parseCreateSessionInput(body, defaultModelRef);
+			if (input.kind !== "assistant") {
+				return sendJson(res, 400, { error: "Only assistant session creation is supported by the current host" });
+			}
+			return sendJson(res, 201, await createSessionRoute(host, input));
 		}
 
 		const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
@@ -193,16 +193,20 @@ const server = createServer(async (req, res) => {
 		}
 		if (sessionPath && req.method === "GET" && sessionPath.suffix === "") {
 			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-			const status = await host.getStatus(sessionPath.sessionId, modelRef);
-			if (!status) return sendJson(res, 404, { error: "Session not found" });
-			return sendJson(res, 200, status);
+			try {
+				return sendJson(res, 200, await getSessionStatusRoute(host, sessionPath.sessionId, modelRef));
+			} catch {
+				return sendJson(res, 404, { error: "Session not found" });
+			}
 		}
 		if (sessionPath && req.method === "GET" && sessionPath.suffix === "/snapshot") {
 			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
 			const limit = Number(requestUrl.searchParams.get("limit") || 20);
-			const snapshot = await host.getSnapshot(sessionPath.sessionId, modelRef, limit);
-			if (!snapshot) return sendJson(res, 404, { error: "Session not found" });
-			return sendJson(res, 200, snapshot);
+			try {
+				return sendJson(res, 200, await getSessionSnapshotRoute(host, sessionPath.sessionId, modelRef, limit));
+			} catch {
+				return sendJson(res, 404, { error: "Session not found" });
+			}
 		}
 		if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
 			const body = await readBody(req);

@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import {
 	AuthStorage,
@@ -21,6 +22,7 @@ import type {
 	HostedSessionSnapshot,
 	HostedSessionStatus,
 	HostedSessionSummary,
+	SendMessageInput,
 	SessionFilter,
 	SessionHost,
 	SessionOrigin,
@@ -135,6 +137,35 @@ export class AssistantSessionHost implements SessionHost {
 		this.resolveModelRef = config.resolveModel;
 		this.buildSystemPromptText = config.buildSystemPrompt;
 		this.tools = config.tools;
+	}
+
+	async createSession(input: CreateSessionInput): Promise<HostedSessionMetadata> {
+		if (input.kind !== "assistant") {
+			throw new Error(`Unsupported session kind for current host: ${input.kind}`);
+		}
+		const assistantChannel = input.assistantChannel ?? "internal";
+		const assistantThreadId = input.assistantThreadId ?? randomUUID();
+		const modelRef = input.modelRef?.trim();
+		if (!modelRef) throw new Error("modelRef is required to create an assistant session");
+		const resolved = await this.resolveAssistantSession({
+			...input,
+			kind: "assistant",
+			origin: input.origin ?? "assistant",
+			assistantChannel,
+			assistantThreadId,
+			workspaceMode: input.workspaceMode ?? "none",
+			modelRef,
+		});
+		return resolved.metadata;
+	}
+
+	async sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage> {
+		if (!input.modelRef?.trim()) throw new Error("modelRef is required to send a message");
+		const { accepted } = await this.promptSession(sessionId, {
+			text: input.text,
+			modelRef: input.modelRef,
+		});
+		return accepted;
 	}
 
 	async listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]> {
@@ -432,12 +463,12 @@ export class AssistantSessionHost implements SessionHost {
 		const registry = await this.readRegistry();
 		const existingPath = registry[threadKey]?.sessionPath;
 		if (existingPath && existsSync(existingPath)) {
-			const session = await this.createSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef);
+			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef);
 			await this.upsertRegistryEntry(threadKey, { sessionPath: existingPath, modelRef });
 			return session;
 		}
 
-		const session = await this.createSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef);
+		const session = await this.instantiateAgentSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef);
 		if (!session.sessionFile) throw new Error("Persistent assistant session did not produce a session file");
 		await this.upsertRegistryEntry(threadKey, {
 			sessionPath: session.sessionFile,
@@ -452,7 +483,7 @@ export class AssistantSessionHost implements SessionHost {
 		return session;
 	}
 
-	private async createSession(sessionManager: SessionManager, modelRef: string): Promise<AgentSession> {
+	private async instantiateAgentSession(sessionManager: SessionManager, modelRef: string): Promise<AgentSession> {
 		const model = this.resolveModelRef(modelRef);
 		if (!model) throw new Error(`Model not found: ${modelRef}`);
 		const systemPrompt = await this.buildSystemPromptText();

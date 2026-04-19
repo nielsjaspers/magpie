@@ -113,6 +113,8 @@ export interface AcceptedMessage {
 export interface SessionHost {
 	hostId: string;
 	hostRole: "local" | "remote";
+	createSession(input: CreateSessionInput): Promise<HostedSessionMetadata>;
+	sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage>;
 	listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]>;
 	getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined>;
 	getSnapshot(sessionId: string, modelRef?: string, limit?: number): Promise<HostedSessionSnapshot | undefined>;
