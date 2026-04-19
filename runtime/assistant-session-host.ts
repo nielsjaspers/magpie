@@ -238,11 +238,17 @@ function extractTextFromSessionMessage(message: unknown): string | undefined {
 		?? extractTextFromUnknownContent(record.parts);
 }
 
+export interface PromptAssistantSessionResult {
+	text: string;
+	streamedText: string;
+	lastAssistant?: unknown;
+}
+
 export async function promptAssistantSession(
 	session: AgentSession,
 	prompt: string,
 	onToolEvent?: (event: AssistantToolEvent) => void,
-): Promise<string> {
+): Promise<PromptAssistantSessionResult> {
 	let text = "";
 
 	const unsubscribe = session.subscribe((event) => {
@@ -276,13 +282,16 @@ export async function promptAssistantSession(
 	}
 
 	const streamed = text.trim();
-	if (streamed) return streamed;
 	const lastAssistant = [...(session.messages as unknown[])].reverse().find((message) => {
 		if (!message || typeof message !== "object") return false;
 		const record = message as Record<string, unknown>;
 		return record.role === "assistant" || record.type === "assistant";
 	});
-	return extractTextFromSessionMessage(lastAssistant) ?? "";
+	return {
+		text: streamed || extractTextFromSessionMessage(lastAssistant) || "",
+		streamedText: streamed,
+		lastAssistant,
+	};
 }
 
 export function createAssistantThreadKey(channel: string, threadId: string): string {
