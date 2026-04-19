@@ -97,6 +97,20 @@ export interface CreateSessionInput {
 	modelRef?: string;
 }
 
+export interface ExportedSessionBundle {
+	metadata: HostedSessionMetadata;
+	sessionJsonl: Uint8Array;
+	workspace?: {
+		archive: Uint8Array;
+		format: "tar.gz";
+	};
+}
+
+export interface ImportSessionInput {
+	bundle: ExportedSessionBundle;
+	targetCwd?: string;
+}
+
 export interface SendMessageInput {
 	text: string;
 	modelRef?: string;
@@ -114,6 +128,8 @@ export interface SessionHost {
 	hostId: string;
 	hostRole: "local" | "remote";
 	createSession(input: CreateSessionInput): Promise<HostedSessionMetadata>;
+	importSession(input: ImportSessionInput): Promise<HostedSessionMetadata>;
+	exportSession(sessionId: string, modelRef?: string): Promise<ExportedSessionBundle>;
 	sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage>;
 	listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]>;
 	getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined>;

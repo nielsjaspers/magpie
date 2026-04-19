@@ -1,4 +1,4 @@
-import type { HostedSessionMetadata } from "../runtime/session-host-types.js";
+import type { ExportedSessionBundle } from "../runtime/session-host-types.js";
 
 export interface DispatchPayload {
 	sessionId: string;
@@ -25,11 +25,3 @@ export interface DeviceRecord {
 	revoked: boolean;
 }
 
-export interface ExportedSessionBundle {
-	metadata: HostedSessionMetadata;
-	sessionJsonl: Uint8Array;
-	workspace?: {
-		archive: Uint8Array;
-		format: "tar.gz";
-	};
-}

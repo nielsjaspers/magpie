@@ -12,6 +12,7 @@ import {
 	listRemoteSessions,
 	prepareFetch,
 } from "../remote/server.js";
+import { deserializeSessionBundle, serializeSessionBundle } from "../remote/transport.js";
 import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
@@ -196,6 +197,11 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 					bundle: body.bundle as any,
 				}));
 			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/remote/import") {
+				const body = await readBody(req);
+				const metadata = await host.importSession({ bundle: deserializeSessionBundle(body.bundle as any) });
+				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
+			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/sessions") {
 				const body = await readBody(req);
 				const input = parseCreateSessionInput(body, defaultModelRef);
@@ -223,6 +229,15 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 					if (!res.writableEnded) res.end();
 				});
 				return;
+			}
+			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/export") {
+				const body = await readBody(req);
+				const modelRef = typeof body.modelRef === "string" && body.modelRef.trim() ? body.modelRef : defaultModelRef;
+				try {
+					return sendJson(res, 200, serializeSessionBundle(await host.exportSession(sessionPath.sessionId, modelRef)));
+				} catch {
+					return sendJson(res, 404, { error: "Session not found" });
+				}
 			}
 			if (sessionPath && req.method === "GET" && sessionPath.suffix === "") {
 				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;

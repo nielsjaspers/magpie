@@ -1,4 +1,4 @@
-import type { ExportedSessionBundle } from "./types.js";
+import type { ExportedSessionBundle } from "../runtime/session-host-types.js";
 
 export interface SerializedSessionBundle {
 	metadata: ExportedSessionBundle["metadata"];

@@ -14,6 +14,8 @@ import type {
 	AcceptedMessage,
 	AssistantChannel,
 	CreateSessionInput,
+	ExportedSessionBundle,
+	ImportSessionInput,
 	HostedSessionEvent,
 	HostedSessionListener,
 	HostedSessionLocation,
@@ -157,6 +159,49 @@ export class AssistantSessionHost implements SessionHost {
 			modelRef,
 		});
 		return resolved.metadata;
+	}
+
+	async importSession(input: ImportSessionInput): Promise<HostedSessionMetadata> {
+		const { bundle } = input;
+		if (bundle.metadata.kind !== "assistant") {
+			throw new Error(`Unsupported imported session kind for current host: ${bundle.metadata.kind}`);
+		}
+		await this.ensureDirs();
+		const parsed = bundle.metadata.assistantChannel && bundle.metadata.assistantThreadId
+			? createAssistantThreadKey(bundle.metadata.assistantChannel, bundle.metadata.assistantThreadId)
+			: undefined;
+		const sessionId = parsed ?? (parseAssistantThreadKey(bundle.metadata.sessionId) ? bundle.metadata.sessionId : createAssistantThreadKey("internal", randomUUID()));
+		const sessionPath = resolve(this.sessionsDir, `${sanitizeSessionIdForFilename(sessionId)}.jsonl`);
+		await writeFile(sessionPath, Buffer.from(bundle.sessionJsonl), "utf8");
+		this.runtimes.delete(sessionId);
+		await this.upsertRegistryEntry(sessionId, {
+			sessionPath,
+			kind: "assistant",
+			origin: bundle.metadata.origin,
+			location: bundle.metadata.location,
+			workspaceMode: bundle.metadata.workspaceMode,
+			assistantChannel: bundle.metadata.assistantChannel,
+			assistantThreadId: bundle.metadata.assistantThreadId,
+			title: bundle.metadata.title,
+		});
+		const metadata = await this.getMetadata(sessionId);
+		if (!metadata) throw new Error(`Failed to import session metadata for ${sessionId}`);
+		return metadata;
+	}
+
+	async exportSession(sessionId: string, modelRef?: string): Promise<ExportedSessionBundle> {
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) throw new Error(`Session not found: ${sessionId}`);
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry?.sessionPath || !existsSync(entry.sessionPath)) {
+			throw new Error(`Session file not found for export: ${sessionId}`);
+		}
+		const sessionJsonl = await readFile(entry.sessionPath);
+		return {
+			metadata,
+			sessionJsonl,
+		};
 	}
 
 	async sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage> {
@@ -732,4 +777,8 @@ export function parseAssistantThreadKey(threadKey: string): { channel: Assistant
 	const threadId = threadKey.slice(idx + 1);
 	if (channel !== "telegram" && channel !== "web" && channel !== "internal") return undefined;
 	return { channel, threadId };
+}
+
+function sanitizeSessionIdForFilename(sessionId: string): string {
+	return sessionId.replace(/[^a-zA-Z0-9._-]+/g, "-");
 }

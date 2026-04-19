@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import type { DispatchPayload, ExportedSessionBundle, FetchPayload } from "./types.js";
+import type { ExportedSessionBundle } from "../runtime/session-host-types.js";
+import type { DispatchPayload, FetchPayload } from "./types.js";
 import { deserializeSessionBundle, serializeSessionBundle, type SerializedSessionBundle } from "./transport.js";
 
 export interface RemoteStoredSessionRecord {

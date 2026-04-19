@@ -1,11 +1,13 @@
 const state = {
   sessions: [],
+  remoteSessions: [],
   activeSessionId: null,
   stream: null,
   activeMessages: [],
 };
 
 const sessionListEl = document.getElementById('sessionList');
+const remoteListEl = document.getElementById('remoteList');
 const messagesEl = document.getElementById('messages');
 const sessionTitleEl = document.getElementById('sessionTitle');
 const sessionMetaEl = document.getElementById('sessionMeta');
@@ -36,6 +38,26 @@ function renderSessions() {
   }
 }
 
+function renderRemoteSessions() {
+  remoteListEl.innerHTML = '';
+  for (const session of state.remoteSessions) {
+    const el = document.createElement('div');
+    el.className = 'session';
+    const meta = session.payload?.note ? ` · ${session.payload.note}` : '';
+    el.innerHTML = `
+      <div>${session.sessionId}</div>
+      <div class="meta">remote bundle · ${session.updatedAt}${meta}</div>
+      <div class="row" style="margin-top:8px;">
+        <button class="secondary import-remote">Import</button>
+        <button class="secondary delete-remote">Archive</button>
+      </div>
+    `;
+    el.querySelector('.import-remote').onclick = () => importRemote(session.sessionId);
+    el.querySelector('.delete-remote').onclick = () => deleteRemote(session.sessionId);
+    remoteListEl.appendChild(el);
+  }
+}
+
 function renderMessages() {
   messagesEl.innerHTML = '';
   for (const message of state.activeMessages) {
@@ -45,6 +67,12 @@ function renderMessages() {
     messagesEl.appendChild(el);
   }
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function refreshRemoteSessions() {
+  const { sessions } = await request('/api/v1/remote/sessions');
+  state.remoteSessions = sessions;
+  renderRemoteSessions();
 }
 
 async function refreshSessions() {
@@ -118,6 +146,53 @@ function connectStream(sessionId) {
   state.stream = stream;
 }
 
+async function dispatchActiveSession() {
+  if (!state.activeSessionId) return;
+  const modelRef = modelRefEl.value.trim();
+  const bundle = await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/export`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ modelRef }),
+  });
+  await request('/api/v1/dispatch', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      payload: {
+        sessionId: state.activeSessionId,
+        dispatchedAt: new Date().toISOString(),
+        note: 'dispatched from web ui',
+      },
+      bundle,
+    }),
+  });
+  await refreshRemoteSessions();
+}
+
+async function importRemote(sessionId) {
+  const fetched = await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/fetch`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ targetCwd: '' }),
+  });
+  const imported = await request('/api/v1/remote/import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ bundle: fetched.bundle }),
+  });
+  await refreshSessions();
+  await openSession(imported.sessionId);
+}
+
+async function deleteRemote(sessionId) {
+  await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ targetCwd: '' }),
+  });
+  await refreshRemoteSessions();
+}
+
 async function createSession() {
   const title = document.getElementById('newTitle').value.trim();
   const modelRef = modelRefEl.value.trim();
@@ -156,6 +231,8 @@ async function interruptSession() {
 }
 
 document.getElementById('refreshButton').onclick = refreshSessions;
+document.getElementById('refreshRemoteButton').onclick = refreshRemoteSessions;
+document.getElementById('dispatchButton').onclick = dispatchActiveSession;
 document.getElementById('createButton').onclick = createSession;
 document.getElementById('sendButton').onclick = sendMessage;
 document.getElementById('interruptButton').onclick = interruptSession;
@@ -166,6 +243,6 @@ composerEl.addEventListener('keydown', (event) => {
   }
 });
 
-refreshSessions().catch((error) => {
+Promise.all([refreshSessions(), refreshRemoteSessions()]).catch((error) => {
   messagesEl.innerHTML = `<div class="message system">${error.message}</div>`;
 });
