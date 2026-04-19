@@ -78,7 +78,7 @@ async function refreshRemoteSessions() {
 }
 
 async function refreshSessions() {
-  const { sessions } = await request('/api/v1/sessions?kind=assistant');
+  const { sessions } = await request('/api/v1/sessions');
   state.sessions = sessions;
   renderSessions();
   if (!state.activeSessionId && sessions[0]) {

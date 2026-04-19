@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
 import { AssistantSessionHost, createAssistantThreadKey } from "../runtime/assistant-session-host.js";
+import { CodingSessionHost } from "../runtime/coding-session-host.js";
 import {
 	acceptDispatch,
 	createRemoteServerRuntime,
@@ -35,6 +36,7 @@ import type { WebUiServerConfig } from "./types.js";
 
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
+	codingHost: CodingSessionHost;
 	remote: ReturnType<typeof createRemoteServerRuntime>;
 	auth: ReturnType<typeof createRemoteAuthStore>;
 	defaultModelRef: string;
@@ -116,8 +118,20 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		hostRole: "remote",
 	});
 
+	const codingHost = new CodingSessionHost({
+		hostCwd: cwd,
+		storageDir: resolve(process.env.HOME || "", ".pi/agent/magpie-remote-hosted"),
+		authStorage,
+		modelRegistry,
+		resolveModel,
+		buildSystemPrompt: async () => "You are a helpful coding assistant. Be concise, careful, and effective.",
+		hostId: "magpie-remote-coding-host",
+		hostRole: "remote",
+	});
+
 	return {
 		host,
+		codingHost,
 		remote: createRemoteServerRuntime(),
 		auth: createRemoteAuthStore(),
 		defaultModelRef,
@@ -175,8 +189,50 @@ function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suf
 }
 
 export function createWebUiServer(runtime: WebUiServerRuntime): Server {
-	const { host, remote, auth, defaultModelRef, hostUrl } = runtime;
+	const { host, codingHost, remote, auth, defaultModelRef, hostUrl } = runtime;
 	const clientDir = resolve(import.meta.dirname, "client");
+
+	const listAllSessions = async () => {
+		const [assistantSessions, codingSessions] = await Promise.all([
+			host.listSessions(),
+			codingHost.listSessions(),
+		]);
+		return [...codingSessions, ...assistantSessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	};
+
+	const getSessionStatusAny = async (sessionId: string, modelRef?: string) => {
+		return await host.getStatus(sessionId, modelRef) ?? await codingHost.getStatus(sessionId, modelRef);
+	};
+
+	const getSessionSnapshotAny = async (sessionId: string, modelRef?: string, limit = 20) => {
+		return await host.getSnapshot(sessionId, modelRef, limit) ?? await codingHost.getSnapshot(sessionId, modelRef, limit);
+	};
+
+	const subscribeAny = async (sessionId: string, listener: any, modelRef?: string) => {
+		if (await host.getStatus(sessionId, modelRef)) return await host.subscribe(sessionId, listener, modelRef);
+		return await codingHost.subscribe(sessionId, listener, modelRef);
+	};
+
+	const interruptAny = async (sessionId: string, modelRef?: string) => {
+		if (await host.getStatus(sessionId, modelRef)) return await host.interrupt(sessionId, modelRef);
+		return await codingHost.interrupt(sessionId, modelRef);
+	};
+
+	const promptAny = async (sessionId: string, text: string, modelRef: string) => {
+		if (await host.getStatus(sessionId, modelRef)) {
+			const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
+			const { accepted, result } = await host.promptSession(sessionId, { text, modelRef }, (event) => {
+				if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
+				else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
+			});
+			return { accepted, text: result.text || "", toolEvents };
+		}
+		const accepted = await codingHost.sendUserMessage(sessionId, { text, modelRef, source: "web" });
+		const snapshot = await codingHost.getSnapshot(sessionId, modelRef, 8);
+		const last = snapshot?.messages.at(-1);
+		return { accepted, text: last?.role === "assistant" ? last.text || "" : "", toolEvents: [] };
+	};
+
 	return createServer(async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url || "/", hostUrl);
@@ -243,7 +299,18 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			}
 
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/sessions") {
-				return sendJson(res, 200, await listSessionRoute(host, parseSessionFilter(requestUrl.searchParams)));
+				const filter = parseSessionFilter(requestUrl.searchParams);
+				const sessions = (await listAllSessions()).filter((session) => {
+					if (filter.kind && session.kind !== filter.kind) return false;
+					if (filter.location && session.location !== filter.location) return false;
+					if (filter.runState && session.runState !== filter.runState) return false;
+					if (filter.assistantChannel && session.assistantChannel !== filter.assistantChannel) return false;
+					if (!filter.includeArchived && session.location === "archived") return false;
+					if (!filter.query?.trim()) return true;
+					const query = filter.query.trim().toLowerCase();
+					return [session.sessionId, session.title, session.cwd, session.assistantThreadId].some((value) => value?.toLowerCase().includes(query));
+				});
+				return sendJson(res, 200, { sessions: filter.limit ? sessions.slice(0, filter.limit) : sessions });
 			}
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/remote/sessions") {
 				return sendJson(res, 200, { sessions: await listRemoteSessions(remote) });
@@ -257,7 +324,10 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/remote/import") {
 				const body = await readBody(req);
-				const metadata = await host.importSession({ bundle: deserializeSessionBundle(body.bundle as any) });
+				const bundle = deserializeSessionBundle(body.bundle as any);
+				const metadata = bundle.metadata.kind === "coding"
+					? await codingHost.importSession({ bundle })
+					: await host.importSession({ bundle });
 				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/sessions") {
@@ -280,10 +350,10 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
 			if (sessionPath && req.method === "GET" && sessionPath.suffix === "/stream") {
 				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				const status = await host.getStatus(sessionPath.sessionId, modelRef);
+				const status = await getSessionStatusAny(sessionPath.sessionId, modelRef);
 				if (!status) return sendJson(res, 404, { error: "Session not found" });
 				startSse(res);
-				const unsubscribe = await host.subscribe(sessionPath.sessionId, async (event) => {
+				const unsubscribe = await subscribeAny(sessionPath.sessionId, async (event: unknown) => {
 					sendSseEvent(res, event);
 				}, modelRef);
 				const keepAlive = setInterval(() => {
@@ -300,27 +370,26 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				const body = await readBody(req);
 				const modelRef = typeof body.modelRef === "string" && body.modelRef.trim() ? body.modelRef : defaultModelRef;
 				try {
-					return sendJson(res, 200, serializeSessionBundle(await host.exportSession(sessionPath.sessionId, modelRef)));
+					const bundle = await host.getStatus(sessionPath.sessionId, modelRef)
+						? await host.exportSession(sessionPath.sessionId, modelRef)
+						: await codingHost.exportSession(sessionPath.sessionId, modelRef);
+					return sendJson(res, 200, serializeSessionBundle(bundle));
 				} catch {
 					return sendJson(res, 404, { error: "Session not found" });
 				}
 			}
 			if (sessionPath && req.method === "GET" && sessionPath.suffix === "") {
 				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				try {
-					return sendJson(res, 200, await getSessionStatusRoute(host, sessionPath.sessionId, modelRef));
-				} catch {
-					return sendJson(res, 404, { error: "Session not found" });
-				}
+				const status = await getSessionStatusAny(sessionPath.sessionId, modelRef);
+				if (!status) return sendJson(res, 404, { error: "Session not found" });
+				return sendJson(res, 200, status);
 			}
 			if (sessionPath && req.method === "GET" && sessionPath.suffix === "/snapshot") {
 				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
 				const limit = Number(requestUrl.searchParams.get("limit") || 20);
-				try {
-					return sendJson(res, 200, await getSessionSnapshotRoute(host, sessionPath.sessionId, modelRef, limit));
-				} catch {
-					return sendJson(res, 404, { error: "Session not found" });
-				}
+				const snapshot = await getSessionSnapshotAny(sessionPath.sessionId, modelRef, limit);
+				if (!snapshot) return sendJson(res, 404, { error: "Session not found" });
+				return sendJson(res, 200, snapshot);
 			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/fetch") {
 				const body = await readBody(req);
@@ -335,22 +404,18 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				const text = String(body.text || "");
 				const modelRef = String(body.modelRef || defaultModelRef);
 				if (!text) return sendJson(res, 400, { error: "text is required" });
-				const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
-				const { accepted, result } = await host.promptSession(sessionPath.sessionId, { text, modelRef }, (event) => {
-					if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
-					else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
-				});
+				const result = await promptAny(sessionPath.sessionId, text, modelRef);
 				return sendJson(res, 200, {
-					text: result.text || "",
+					text: result.text,
 					sessionId: sessionPath.sessionId,
-					accepted,
-					toolEvents,
+					accepted: result.accepted,
+					toolEvents: result.toolEvents,
 				});
 			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/interrupt") {
 				const body = await readBody(req);
 				const modelRef = String(body.modelRef || defaultModelRef);
-				await host.interrupt(sessionPath.sessionId, modelRef);
+				await interruptAny(sessionPath.sessionId, modelRef);
 				return sendJson(res, 200, { ok: true });
 			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/reset") {
