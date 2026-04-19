@@ -3,10 +3,10 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
-import { getConfigBaseDir, getGlobalConfigPath, getMode, getProjectConfigPath, loadConfig, resolvePromptText } from "../config/config.js";
+import { getConfigBaseDir, getGlobalConfigPath, getMode, getProjectConfigPath, getStartupMode, loadConfig, resolvePromptText } from "../config/config.js";
 import type { ResolvedMode } from "../config/types.js";
+import { MODE_STATE_TYPE, normalizeMagpieModeName } from "../pa/shared/mode.js";
 
-const MODE_STATE_TYPE = "magpie:mode-state";
 const PLAN_STATE_TYPE = "magpie:plan-state";
 const STATUS_KEY = "magpie-mode";
 const FALLBACK_TOOLS = [
@@ -33,9 +33,7 @@ function defaultConfigText() {
 }
 
 function normalizeModeName(input: string): string {
-	const normalized = input.trim().toLowerCase();
-	if (normalized === "default" || normalized === "off" || normalized === "build") return "smart";
-	return normalized;
+	return normalizeMagpieModeName(input);
 }
 
 function getPlanEnabled(ctx: ExtensionContext): boolean {
@@ -64,7 +62,8 @@ export default function (pi: ExtensionAPI) {
 		const configured = mode?.tools?.length
 			? mode.tools.flatMap((name) => (name === "@default" ? normalTools : [name]))
 			: normalTools;
-		pi.setActiveTools(Array.from(new Set(configured)).filter((tool) => available.has(tool)));
+		const disabled = new Set(mode?.disableTools ?? []);
+		pi.setActiveTools(Array.from(new Set(configured)).filter((tool) => !disabled.has(tool) && available.has(tool)));
 	};
 
 	const persistMode = () => {
@@ -209,22 +208,21 @@ export default function (pi: ExtensionAPI) {
 				...FALLBACK_TOOLS,
 			]),
 		);
-		const state = (ctx.sessionManager.getEntries() as Array<{ type: string; customType?: string; data?: { activeMode?: string } }>)
-			.filter((entry) => entry.type === "custom" && entry.customType === MODE_STATE_TYPE)
-			.pop();
-		activeMode = normalizeModeName(state?.data?.activeMode ?? "smart");
+		activeMode = normalizeModeName(getStartupMode(currentConfig));
 		const mode = getMode(currentConfig, activeMode) ?? getMode(currentConfig, "smart");
 		if (mode) {
 			activeMode = mode.name;
 			applyTools(mode);
 			await setModeProfile(pi, ctx, mode);
+			persistMode();
 		}
 		updateStatus(ctx);
 	});
 
-	pi.events.on("magpie:handoff:set-mode", async (payload: { mode?: "plan" | "default" } | undefined) => {
-		if (!payload?.mode) return;
-		if (payload.mode === "plan") pi.events.emit("magpie:plan:enable", {});
-		if (payload.mode === "default") pi.events.emit("magpie:plan:disable", {});
+	pi.events.on("magpie:handoff:set-mode", async (payload: unknown) => {
+		const data = payload as { mode?: "plan" | "default" } | undefined;
+		if (!data?.mode) return;
+		if (data.mode === "plan") pi.events.emit("magpie:plan:enable", {});
+		if (data.mode === "default") pi.events.emit("magpie:plan:disable", {});
 	});
 }

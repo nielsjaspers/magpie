@@ -42,6 +42,7 @@ export const BUILT_IN_MODES: Record<string, ModeConfig> = {
 };
 
 export const DEFAULT_CONFIG: MagpieConfig = {
+	startupMode: "smart",
 	modes: { ...BUILT_IN_MODES },
 	aliases: {
 		fast: "rush",
@@ -88,5 +89,10 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 			model: "github-copilot/gpt-5-mini",
 			thinkingLevel: "low",
 		},
+	},
+	personalAssistant: {
+		timezone: "Europe/Amsterdam",
+		storageDir: "~/.pi/agent/personal-assistant",
+		calendar: {},
 	},
 };

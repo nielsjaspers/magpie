@@ -8,6 +8,7 @@ import { Key } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { loadConfig } from "../config/config.js";
+import { isAnyToolDisabledInActiveMode, isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import { runQuestionnaire } from "./questionnaire.js";
 import { extractTodoItems, isPlanPath, isSafeCommand, markCompletedSteps, randomName, slugify, type TodoItem } from "./utils.js";
 
@@ -46,14 +47,19 @@ export default function (pi: ExtensionAPI) {
 	let strictLoopViolations = 0;
 	let normalTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_fetch", "session_query"];
 
-	pi.events.on("magpie:subagent-core:register", (api: SubagentCoreAPI) => {
-		subagentCore = api;
+	pi.events.on("magpie:subagent-core:register", (api: unknown) => {
+		subagentCore = api as SubagentCoreAPI;
 	});
-	pi.events.emit("magpie:subagent-core:get", (api: SubagentCoreAPI) => {
-		subagentCore = api;
+	pi.events.emit("magpie:subagent-core:get", (api: unknown) => {
+		subagentCore = api as SubagentCoreAPI;
 	});
 
 	const plansDir = (cwd: string) => resolve(cwd, ".pi/plans");
+
+	const isPlanWorkflowDisabled = async (ctx: ExtensionContext) => {
+		const config = await loadConfig(ctx.cwd);
+		return isToolDisabledInActiveMode(ctx, config, "plan") || isAnyToolDisabledInActiveMode(ctx, config, PLAN_ONLY_TOOLS);
+	};
 
 	const applyTools = (desired: string[]) => {
 		const available = new Set(pi.getAllTools().map((tool) => tool.name));
@@ -120,8 +126,9 @@ export default function (pi: ExtensionAPI) {
 		persistState();
 	};
 
-	pi.events.on("magpie:plan:enable", (payload: { seed?: string } | undefined) => {
-		if (latestCtx) void setPlanMode(latestCtx, true, payload?.seed);
+	pi.events.on("magpie:plan:enable", (payload: unknown) => {
+		const data = payload as { seed?: string } | undefined;
+		if (latestCtx) void setPlanMode(latestCtx, true, data?.seed);
 	});
 	pi.events.on("magpie:plan:disable", () => {
 		if (latestCtx) void setPlanMode(latestCtx, false);
@@ -130,6 +137,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("plan", {
 		description: "Toggle plan mode. Optional arg seeds deterministic filename",
 		handler: async (args, ctx) => {
+			if (await isPlanWorkflowDisabled(ctx)) {
+				ctx.ui.notify("Plan mode is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
+				return;
+			}
 			if (!planModeEnabled) await setPlanMode(ctx, true, args?.trim() || undefined);
 			else await setPlanMode(ctx, false);
 		},
@@ -138,6 +149,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut(Key.ctrlAlt("p"), {
 		description: "Toggle plan mode",
 		handler: async (ctx) => {
+			if (await isPlanWorkflowDisabled(ctx)) {
+				ctx.ui.notify("Plan mode is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
+				return;
+			}
 			if (!planModeEnabled) await setPlanMode(ctx, true);
 			else await setPlanMode(ctx, false);
 		},
@@ -146,6 +161,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("plan-file", {
 		description: "Show active plan file",
 		handler: async (_args, ctx) => {
+			if (await isPlanWorkflowDisabled(ctx)) {
+				ctx.ui.notify("Plan mode is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
+				return;
+			}
 			const file = await getPlanPath(ctx.cwd);
 			ctx.ui.notify(`Plan file: ${relative(ctx.cwd, file)}`, "info");
 		},
@@ -154,6 +173,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("todos", {
 		description: "Show current plan progress",
 		handler: async (_args, ctx) => {
+			if (await isPlanWorkflowDisabled(ctx)) {
+				ctx.ui.notify("Plan mode is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
+				return;
+			}
 			ctx.ui.notify(todoItems.length ? todoItems.map((item) => `${item.step}. ${item.completed ? "✓" : "○"} ${item.text}`).join("\n") : "No tracked steps yet.", "info");
 		},
 	});

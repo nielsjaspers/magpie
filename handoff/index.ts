@@ -2,6 +2,7 @@ import { convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionC
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../config/config.js";
+import { isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 
 type HandoffMode = "default" | "plan";
@@ -125,6 +126,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("handoff", {
 		description: "Transfer context to a new focused session (-mode <plan|default>, -model <provider/id>)",
 		handler: async (args, ctx) => {
+			const config = await loadConfig(ctx.cwd);
+			if (isToolDisabledInActiveMode(ctx, config, "handoff")) {
+				ctx.ui.notify("Handoff is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
+				return;
+			}
 			const raw = args?.trim() ?? "";
 			const modeMatch = raw.match(/(?:^|\s)-mode\s+(\S+)/);
 			const modelMatch = raw.match(/(?:^|\s)-model\s+(\S+)/);

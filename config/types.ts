@@ -22,6 +22,7 @@ export interface ModeConfig {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	tools?: string[];
+	disableTools?: string[];
 	prompt?: ModePromptConfig;
 	planBehavior?: PlanBehavior;
 	subagents?: {
@@ -37,16 +38,46 @@ export interface ResearchConfig {
 	resolverSubagent?: SubagentModelRef;
 }
 
+export interface PersonalAssistantConfig {
+	timezone?: string;
+	storageDir?: string;
+	calendar?: {
+		defaultWritableCalendar?: string;
+	};
+}
+
 export interface ProviderAuthConfig {
 	apiKey?: string;
+}
+
+export interface PersonalAssistantAuthConfig {
+	calendar?: {
+		icloud?: {
+			email?: string;
+			appPassword?: string;
+		};
+		icsFeeds?: Array<{
+			id?: string;
+			name?: string;
+			url?: string;
+		}>;
+	};
+	mail?: {
+		gmail?: {
+			address?: string;
+			appPassword?: string;
+		};
+	};
 }
 
 export interface MagpieAuthConfig {
 	semanticScholar?: ProviderAuthConfig;
 	exa?: ProviderAuthConfig;
+	personalAssistant?: PersonalAssistantAuthConfig;
 }
 
 export interface MagpieConfig {
+	startupMode?: string;
 	modes: Record<string, ModeConfig | undefined>;
 	aliases?: Record<string, string>;
 	subagents: {
@@ -87,6 +118,7 @@ export interface MagpieConfig {
 		fetchTimeout?: number;
 	};
 	research?: ResearchConfig;
+	personalAssistant?: PersonalAssistantConfig;
 }
 
 export interface ResolvedSubagentModel {

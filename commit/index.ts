@@ -2,6 +2,7 @@ import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
 import { convertToLlm, getMarkdownTheme, serializeConversation } from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { loadConfig } from "../config/config.js";
+import { isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI, SubagentResult } from "../subagents/types.js";
 
 const COMMIT_MESSAGE_TYPE = "magpie:commit-result";
@@ -58,12 +59,16 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("commit", {
 		description: "Create a git commit in the background (-model <provider/modelId>)",
 		handler: async (args, ctx) => {
+			const config = await loadConfig(ctx.cwd);
+			if (isToolDisabledInActiveMode(ctx, config, "commit")) {
+				ctx.ui.notify("Commit is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
+				return;
+			}
 			if (!subagentCore) {
 				ctx.ui.notify("Subagent core unavailable.", "error");
 				return;
 			}
 			const { prompt, model } = parseFlags(args ?? "");
-			const config = await loadConfig(ctx.cwd);
 			const branch = ctx.sessionManager.getBranch();
 			const messages = branch
 				.filter((entry): entry is SessionEntry & { type: "message" } => entry.type === "message")

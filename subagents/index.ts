@@ -39,8 +39,8 @@ function formatResult(tool: string, result: Awaited<ReturnType<typeof runSubagen
 export default function (pi: ExtensionAPI) {
 	const api = { runSubagent, runSubagentBatch };
 	pi.events.emit("magpie:subagent-core:register", api);
-	pi.events.on("magpie:subagent-core:get", (callback: (value: unknown) => void) => {
-		callback(api);
+	pi.events.on("magpie:subagent-core:get", (callback: unknown) => {
+		if (typeof callback === "function") callback(api);
 	});
 
 	const commonParams = Type.Object({

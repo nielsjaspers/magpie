@@ -8,6 +8,8 @@ import type {
 	MagpieAuthConfig,
 	MagpieConfig,
 	ModeConfig,
+	PersonalAssistantAuthConfig,
+	PersonalAssistantConfig,
 	PromptConfig,
 	ResolvedMode,
 	ResolvedSubagentModel,
@@ -185,6 +187,23 @@ export function getResearchPapersDir(config: MagpieConfig): string {
 
 export function getResearchResolverSubagent(config: MagpieConfig): ResolvedSubagentModel | undefined {
 	return resolveSubagentModelRef(config.research?.resolverSubagent);
+}
+
+export function getStartupMode(config: MagpieConfig): string {
+	const configured = config.startupMode?.trim();
+	return configured ? configured : "smart";
+}
+
+export function getPersonalAssistantConfig(config: MagpieConfig): PersonalAssistantConfig | undefined {
+	return config.personalAssistant;
+}
+
+export function getPersonalAssistantStorageDir(config: MagpieConfig): string {
+	return expandHomePath(config.personalAssistant?.storageDir?.trim() || "~/.pi/agent/personal-assistant");
+}
+
+export function getPersonalAssistantAuth(auth: MagpieAuthConfig): PersonalAssistantAuthConfig | undefined {
+	return auth.personalAssistant;
 }
 
 export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined) {

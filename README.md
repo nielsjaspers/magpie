@@ -1,6 +1,6 @@
 # magpie
 
-Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, a research companion, and a spinner.
+Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, a research companion, a personal-assistant area, and a spinner.
 
 <img
   src="./magpie.webp"
@@ -147,9 +147,19 @@ Research config:
 - `research.papersDir` supports `~` expansion at runtime
 - `research.resolverSubagent` configures the internal `/digest` paper resolver only
 
+Mode config:
+- `startupMode` sets the mode Magpie should start in
+- `modes.<name>.disableTools` removes specific tools from that mode without replacing the whole tool set
+
+Personal assistant config:
+- `personalAssistant.storageDir` controls local PA persistence and supports `~` expansion
+- `personalAssistant.calendar.defaultWritableCalendar` sets the preferred writable calendar name/id for future calendar tools
+
 Auth config:
 - `semanticScholar.apiKey` is used by `/papers` for Semantic Scholar requests
 - `exa.apiKey` is reserved for future integrations
+- `personalAssistant.calendar` stores iCloud + ICS feed credentials/config
+- `personalAssistant.mail.gmail` stores the Gmail aggregation inbox credentials
 - auth values live in `magpie.auth.json`, not `magpie.json`
 
 Research commands:
@@ -182,3 +192,4 @@ Research commands:
 - `research/` — `/papers` and `/digest` research companion (see `research/README.md`)
 - `web/` — `web_fetch` and `web_search`
 - `spinner/` — random verb spinner while streaming
+- `pa/` — personal-assistant scaffolding for calendar and mail integrations

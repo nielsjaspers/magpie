@@ -1,4 +1,5 @@
 {
+  "startupMode": "smart",
   "modes": {
     "smart": {
       "model": "opencode-go/mimo-v2-pro",
@@ -10,24 +11,29 @@
       "thinkingLevel": "low"
     },
     "deep": {
-      "statusLabel": "🧠 deep",
+      "statusLabel": "deep",
       "model": "github-copilot/gpt-5.3-codex",
       "thinkingLevel": "xhigh"
     },
     "learn": {
-      "statusLabel": "🎓 learn",
+      "statusLabel": "learn",
       "prompt": {
         "strategy": "append",
         "file": ".pi/modes/learn.md"
       }
     },
     "review": {
-      "statusLabel": "🧪 review",
+      "statusLabel": "review",
       "tools": ["read", "grep", "find", "ls", "web_search", "session_query"],
       "prompt": {
         "strategy": "append",
         "text": "Focus on risks, edge cases, and missing tests. Keep output concise."
       }
+    },
+    "pa": {
+      "statusLabel": "pa",
+      "thinkingLevel": "high",
+      "disableTools": ["handoff", "commit", "plan_subagent", "user_question", "plan_exit", "search_subagent", "oracle_subagent", "librarian_subagent"]
     }
   },
   "aliases": {
@@ -99,6 +105,13 @@
     "resolverSubagent": {
       "model": "github-copilot/gpt-5-mini",
       "thinkingLevel": "low"
+    }
+  },
+  "personalAssistant": {
+    "timezone": "Europe/Amsterdam",
+    "storageDir": "~/.pi/agent/personal-assistant",
+    "calendar": {
+      "defaultWritableCalendar": "personal"
     }
   }
 }

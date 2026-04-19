@@ -4,5 +4,26 @@
   },
   "exa": {
     "apiKey": "your-exa-api-key"
+  },
+  "personalAssistant": {
+    "calendar": {
+      "icloud": {
+        "email": "user@icloud.com",
+        "appPassword": "xxxx-xxxx-xxxx-xxxx"
+      },
+      "icsFeeds": [
+        {
+          "id": "school",
+          "name": "School",
+          "url": "https://example.edu/calendar.ics"
+        }
+      ]
+    },
+    "mail": {
+      "gmail": {
+        "address": "magpie-inbox@gmail.com",
+        "appPassword": "xxxxxxxxxxxxxxxx"
+      }
+    }
   }
 }
