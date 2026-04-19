@@ -79,19 +79,22 @@ export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 
 	bot.command("restart", async (ctx) => {
 		const chatId = String(ctx.chat.id);
-		await resetAssistantThread(config, chatId);
+		const { ref } = getActiveModel();
+		await resetAssistantThread(config, chatId, ref);
 		await ctx.reply("Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("new", async (ctx) => {
 		const chatId = String(ctx.chat.id);
-		await resetAssistantThread(config, chatId);
+		const { ref } = getActiveModel();
+		await resetAssistantThread(config, chatId, ref);
 		await ctx.reply("Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("clear", async (ctx) => {
 		const chatId = String(ctx.chat.id);
-		await resetAssistantThread(config, chatId);
+		const { ref } = getActiveModel();
+		await resetAssistantThread(config, chatId, ref);
 		await ctx.reply("Session cleared.");
 	});
 }

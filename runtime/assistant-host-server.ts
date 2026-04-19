@@ -4,7 +4,12 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { getPersonalAssistantStorageDir, getTelegramConfig, loadConfig } from "../config/config.js";
-import { AssistantSessionHost, createAssistantThreadKey, promptAssistantSession } from "./assistant-session-host.js";
+import {
+	AssistantSessionHost,
+	createAssistantThreadKey,
+	parseAssistantThreadKey,
+} from "./assistant-session-host.js";
+import type { AssistantChannel, SessionFilter } from "./session-host-types.js";
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
@@ -75,6 +80,8 @@ async function loadServerContext(cwd: string) {
 		resolveModel,
 		buildSystemPrompt,
 		tools: [],
+		hostId: "magpie-remote-host",
+		hostRole: "remote",
 	});
 
 	return {
@@ -106,6 +113,24 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
 	res.end(JSON.stringify(body));
 }
 
+function normalizeAssistantChannel(value: string | null | undefined): AssistantChannel | undefined {
+	if (value === "telegram" || value === "web" || value === "internal") return value;
+	return undefined;
+}
+
+function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suffix: string } | undefined {
+	const prefix = "/api/v1/sessions/";
+	if (!pathname.startsWith(prefix)) return undefined;
+	const rest = pathname.slice(prefix.length);
+	if (!rest) return undefined;
+	const slash = rest.indexOf("/");
+	if (slash < 0) return { sessionId: decodeURIComponent(rest), suffix: "" };
+	return {
+		sessionId: decodeURIComponent(rest.slice(0, slash)),
+		suffix: rest.slice(slash),
+	};
+}
+
 const cwd = process.cwd();
 const { host, defaultModelRef, hostUrl } = await loadServerContext(cwd);
 const url = new URL(hostUrl);
@@ -116,8 +141,61 @@ const server = createServer(async (req, res) => {
 	try {
 		const requestUrl = new URL(req.url || "/", hostUrl);
 		if (req.method === "GET" && requestUrl.pathname === "/health") {
+			return sendJson(res, 200, { ok: true, hostId: host.hostId, hostRole: host.hostRole });
+		}
+
+		if (req.method === "GET" && requestUrl.pathname === "/api/v1/sessions") {
+			const filter: SessionFilter = {
+				kind: requestUrl.searchParams.get("kind") === "assistant" || requestUrl.searchParams.get("kind") === "coding"
+					? requestUrl.searchParams.get("kind") as SessionFilter["kind"]
+					: undefined,
+				location: requestUrl.searchParams.get("location") as SessionFilter["location"] ?? undefined,
+				runState: requestUrl.searchParams.get("runState") as SessionFilter["runState"] ?? undefined,
+				assistantChannel: normalizeAssistantChannel(requestUrl.searchParams.get("assistantChannel")),
+				query: requestUrl.searchParams.get("query") || undefined,
+				includeArchived: requestUrl.searchParams.get("includeArchived") === "1",
+				limit: requestUrl.searchParams.get("limit") ? Number(requestUrl.searchParams.get("limit")) : undefined,
+			};
+			const sessions = await host.listSessions(filter);
+			return sendJson(res, 200, { sessions });
+		}
+
+		const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
+		if (sessionPath && req.method === "GET" && sessionPath.suffix === "") {
+			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
+			const status = await host.getStatus(sessionPath.sessionId, modelRef);
+			if (!status) return sendJson(res, 404, { error: "Session not found" });
+			return sendJson(res, 200, status);
+		}
+		if (sessionPath && req.method === "GET" && sessionPath.suffix === "/snapshot") {
+			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
+			const limit = Number(requestUrl.searchParams.get("limit") || 20);
+			const snapshot = await host.getSnapshot(sessionPath.sessionId, modelRef, limit);
+			if (!snapshot) return sendJson(res, 404, { error: "Session not found" });
+			return sendJson(res, 200, snapshot);
+		}
+		if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
+			const body = await readBody(req);
+			const text = String(body.text || "");
+			const modelRef = String(body.modelRef || defaultModelRef);
+			if (!text) return sendJson(res, 400, { error: "text is required" });
+			const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
+			const { accepted, result } = await host.promptSession(sessionPath.sessionId, { text, modelRef }, (event) => {
+				if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
+				else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
+			});
+			return sendJson(res, 200, {
+				text: result.text || "",
+				sessionId: sessionPath.sessionId,
+				accepted,
+				toolEvents,
+			});
+		}
+		if (sessionPath && req.method === "POST" && sessionPath.suffix === "/reset") {
+			await host.resetSession(sessionPath.sessionId);
 			return sendJson(res, 200, { ok: true });
 		}
+
 		if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/status") {
 			const channel = requestUrl.searchParams.get("channel") || "telegram";
 			const threadId = requestUrl.searchParams.get("threadId") || "";
@@ -135,48 +213,59 @@ const server = createServer(async (req, res) => {
 			const threadKey = createAssistantThreadKey(channel, threadId);
 			return sendJson(res, 200, await host.getThreadSnapshot(threadKey, modelRef, limit));
 		}
+
 		if (req.method !== "POST" || !req.url) {
 			return sendJson(res, 404, { error: "Not found" });
 		}
 
 		if (req.url === "/api/v1/assistant/resolve") {
 			const body = await readBody(req);
-			const channel = String(body.channel || "telegram");
+			const channel = normalizeAssistantChannel(String(body.channel || "telegram")) || "telegram";
 			const threadId = String(body.threadId || "");
 			const modelRef = String(body.modelRef || defaultModelRef);
+			const title = typeof body.title === "string" ? body.title : undefined;
 			if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
-			const threadKey = createAssistantThreadKey(channel, threadId);
-			const runtime = await host.getRuntime(threadKey, modelRef);
-			const session = await runtime.sessionPromise;
-			return sendJson(res, 200, { sessionId: threadKey, created: true, sessionFile: session.sessionFile });
+			const resolved = await host.resolveAssistantSession({
+				kind: "assistant",
+				origin: "assistant",
+				assistantChannel: channel,
+				assistantThreadId: threadId,
+				workspaceMode: "none",
+				title,
+				modelRef,
+			});
+			return sendJson(res, 200, {
+				sessionId: resolved.sessionId,
+				created: resolved.created,
+				sessionFile: resolved.sessionFile,
+				metadata: resolved.metadata,
+			});
 		}
 
 		if (req.url === "/api/v1/assistant/message") {
 			const body = await readBody(req);
-			const channel = String(body.channel || "telegram");
+			const channel = normalizeAssistantChannel(String(body.channel || "telegram")) || "telegram";
 			const threadId = String(body.threadId || "");
 			const text = String(body.text || "");
 			const modelRef = String(body.modelRef || defaultModelRef);
 			if (!threadId || !text) return sendJson(res, 400, { error: "threadId and text are required" });
 			const threadKey = createAssistantThreadKey(channel, threadId);
-			const runtime = await host.getRuntime(threadKey, modelRef);
-			const pending = runtime.queue.then(async () => {
-				const session = await runtime.sessionPromise;
-				const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
-				const result = await promptAssistantSession(session, text, (event) => {
-					if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
-					else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
-				});
-				return { result, toolEvents };
+			const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
+			const { accepted, result } = await host.promptSession(threadKey, { text, modelRef }, (event) => {
+				if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
+				else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
 			});
-			runtime.queue = pending.then(() => undefined, () => undefined);
-			const { result, toolEvents } = await pending;
-			return sendJson(res, 200, { text: result.text || "", sessionId: threadKey, toolEvents });
+			return sendJson(res, 200, {
+				text: result.text || "",
+				sessionId: threadKey,
+				accepted,
+				toolEvents,
+			});
 		}
 
 		if (req.url === "/api/v1/assistant/reset") {
 			const body = await readBody(req);
-			const channel = String(body.channel || "telegram");
+			const channel = normalizeAssistantChannel(String(body.channel || "telegram")) || "telegram";
 			const threadId = String(body.threadId || "");
 			if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
 			const threadKey = createAssistantThreadKey(channel, threadId);
