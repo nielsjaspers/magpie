@@ -13,6 +13,8 @@ import type {
 	PromptConfig,
 	ResolvedMode,
 	TelegramConfig,
+	RemoteConfig,
+	WebUiConfig,
 	ResolvedSubagentModel,
 	SubagentModelRef,
 } from "./types.js";
@@ -213,6 +215,14 @@ export function getTelegramConfig(config: MagpieConfig): TelegramConfig | undefi
 
 export function getTelegramAuth(auth: MagpieAuthConfig): { botToken?: string } | undefined {
 	return auth.telegram;
+}
+
+export function getRemoteConfig(config: MagpieConfig): RemoteConfig | undefined {
+	return config.remote;
+}
+
+export function getWebUiConfig(config: MagpieConfig): WebUiConfig | undefined {
+	return config.webui;
 }
 
 export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined) {

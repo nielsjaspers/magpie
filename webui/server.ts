@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import { getPersonalAssistantStorageDir, getTelegramConfig, loadConfig } from "../config/config.js";
+import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
 import { AssistantSessionHost, createAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import {
 	acceptDispatch,
@@ -12,7 +12,15 @@ import {
 	listRemoteSessions,
 	prepareFetch,
 } from "../remote/server.js";
+import {
+	authenticateRequest,
+	consumeEnrollmentCode,
+	createRemoteAuthStore,
+	isLoopbackRequest,
+} from "../remote/auth.js";
+import { buildRemoteBundleSnapshot } from "../remote/snapshot.js";
 import { deserializeSessionBundle, serializeSessionBundle } from "../remote/transport.js";
+import { loadRemoteBundle } from "../remote/store.js";
 import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
@@ -27,6 +35,7 @@ import type { WebUiServerConfig } from "./types.js";
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
 	remote: ReturnType<typeof createRemoteServerRuntime>;
+	auth: ReturnType<typeof createRemoteAuthStore>;
 	defaultModelRef: string;
 	hostUrl: string;
 	config?: WebUiServerConfig;
@@ -61,6 +70,7 @@ async function tryReadText(path: string): Promise<string | undefined> {
 export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerConfig): Promise<WebUiServerRuntime> {
 	const loadedConfig = await loadConfig(cwd);
 	const telegram = getTelegramConfig(loadedConfig);
+	const webui = getWebUiConfig(loadedConfig);
 	const models = telegram?.models ?? {};
 	const defaultModelRef = Object.values(models)[0];
 	if (!defaultModelRef) throw new Error("telegram.models is empty in magpie.json");
@@ -108,9 +118,10 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 	return {
 		host,
 		remote: createRemoteServerRuntime(),
+		auth: createRemoteAuthStore(),
 		defaultModelRef,
-		hostUrl: telegram?.hostUrl?.trim() || config?.tailscaleUrl?.trim() || "http://127.0.0.1:8787",
-		config,
+		hostUrl: webui?.publicUrl?.trim() || webui?.tailscaleUrl?.trim() || telegram?.hostUrl?.trim() || config?.tailscaleUrl?.trim() || "http://127.0.0.1:8787",
+		config: { ...webui, ...config },
 	};
 }
 
@@ -163,13 +174,42 @@ function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suf
 }
 
 export function createWebUiServer(runtime: WebUiServerRuntime): Server {
-	const { host, remote, defaultModelRef, hostUrl } = runtime;
+	const { host, remote, auth, defaultModelRef, hostUrl } = runtime;
 	const clientDir = resolve(import.meta.dirname, "client");
 	return createServer(async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url || "/", hostUrl);
+			const isPublicPath = requestUrl.pathname === "/health" || requestUrl.pathname === "/enroll" || requestUrl.pathname === "/api/v1/enroll";
+			if (!isPublicPath && !isLoopbackRequest(req)) {
+				const device = await authenticateRequest(auth, req);
+				if (!device) {
+					if (requestUrl.pathname === "/" || requestUrl.pathname.startsWith("/assets/")) {
+						res.statusCode = 302;
+						res.setHeader("location", "/enroll");
+						res.end();
+						return;
+					}
+					return sendJson(res, 401, { error: "Unauthorized" });
+				}
+			}
 			if (req.method === "GET" && requestUrl.pathname === "/health") {
 				return sendJson(res, 200, { ok: true, hostId: host.hostId, hostRole: host.hostRole });
+			}
+			if (req.method === "GET" && requestUrl.pathname === "/enroll") {
+				res.statusCode = 200;
+				res.setHeader("content-type", "text/html; charset=utf-8");
+				res.end(await readFile(resolve(clientDir, "enroll.html"), "utf8"));
+				return;
+			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll") {
+				const body = await readBody(req);
+				const result = await consumeEnrollmentCode(auth, {
+					code: String(body.code || ""),
+					deviceName: String(body.deviceName || "device"),
+					platform: String(body.platform || req.headers["user-agent"] || "web"),
+				});
+				res.setHeader("set-cookie", `magpie_token=${encodeURIComponent(result.token)}; Path=/; HttpOnly; SameSite=Lax`);
+				return sendJson(res, 200, { ok: true, device: result.device });
 			}
 			if (req.method === "GET" && requestUrl.pathname === "/") {
 				res.statusCode = 200;
@@ -209,6 +249,14 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 					return sendJson(res, 400, { error: "Only assistant session creation is supported by the current host" });
 				}
 				return sendJson(res, 201, await createSessionRoute(host, input));
+			}
+
+			const remoteMatch = requestUrl.pathname.match(/^\/api\/v1\/remote\/sessions\/([^/]+)$/);
+			if (req.method === "GET" && remoteMatch?.[1]) {
+				const sessionId = decodeURIComponent(remoteMatch[1]);
+				const loaded = await loadRemoteBundle(remote.store, sessionId);
+				if (!loaded) return sendJson(res, 404, { error: "Remote session not found" });
+				return sendJson(res, 200, buildRemoteBundleSnapshot(loaded.serialized, 80));
 			}
 
 			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
@@ -388,8 +436,15 @@ export async function startWebUiServer(cwd: string, config?: WebUiServerConfig) 
 	const runtime = await loadWebUiServerRuntime(cwd, config);
 	const server = createWebUiServer(runtime);
 	const url = new URL(runtime.hostUrl);
-	const hostname = url.hostname;
-	const port = Number(url.port || runtime.config?.port || 8787);
+	const bind = runtime.config?.bind;
+	const hostname = bind === "public"
+		? "0.0.0.0"
+		: bind === "localhost"
+			? "127.0.0.1"
+			: typeof bind === "string" && bind !== "tailscale"
+				? bind
+				: url.hostname;
+		const port = Number(runtime.config?.port || url.port || 8787);
 	await new Promise<void>((resolve) => {
 		server.listen(port, hostname, resolve);
 	});

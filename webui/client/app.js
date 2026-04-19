@@ -48,10 +48,12 @@ function renderRemoteSessions() {
       <div>${session.sessionId}</div>
       <div class="meta">remote bundle · ${session.updatedAt}${meta}</div>
       <div class="row" style="margin-top:8px;">
+        <button class="secondary view-remote">View</button>
         <button class="secondary import-remote">Import</button>
         <button class="secondary delete-remote">Archive</button>
       </div>
     `;
+    el.querySelector('.view-remote').onclick = () => viewRemote(session.sessionId);
     el.querySelector('.import-remote').onclick = () => importRemote(session.sessionId);
     el.querySelector('.delete-remote').onclick = () => deleteRemote(session.sessionId);
     remoteListEl.appendChild(el);
@@ -144,6 +146,19 @@ function connectStream(sessionId) {
     stream.close();
   };
   state.stream = stream;
+}
+
+async function viewRemote(sessionId) {
+  const snapshot = await request(`/api/v1/remote/sessions/${encodeURIComponent(sessionId)}`);
+  state.activeSessionId = null;
+  sessionTitleEl.textContent = snapshot.metadata.title || snapshot.metadata.sessionId;
+  sessionMetaEl.textContent = `remote bundle · ${snapshot.metadata.kind} · ${snapshot.metadata.updatedAt}`;
+  state.activeMessages = snapshot.messages || [];
+  if (state.stream) {
+    state.stream.close();
+    state.stream = null;
+  }
+  renderMessages();
 }
 
 async function dispatchActiveSession() {
