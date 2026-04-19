@@ -123,11 +123,7 @@ export class AssistantSessionHost {
 			.slice(-Math.max(1, limit))
 			.map((message) => ({
 				role: String(message?.role ?? message?.type ?? "unknown"),
-				text: typeof message?.content === "string"
-					? message.content
-					: Array.isArray(message?.content)
-						? message.content.map((part: any) => typeof part?.text === "string" ? part.text : "").join("\n").trim() || undefined
-						: undefined,
+				text: extractTextFromSessionMessage(message),
 			}));
 		return { ...status, messages };
 	}
@@ -194,6 +190,54 @@ export class AssistantSessionHost {
 	}
 }
 
+function extractTextFromUnknownContent(content: unknown): string | undefined {
+	if (typeof content === "string") {
+		const trimmed = content.trim();
+		return trimmed || undefined;
+	}
+	if (Array.isArray(content)) {
+		const parts = content
+			.map((part) => {
+				if (typeof part === "string") return part;
+				if (part && typeof part === "object") {
+					const record = part as Record<string, unknown>;
+					if (typeof record.text === "string") return record.text;
+					if (typeof record.content === "string") return record.content;
+				}
+				return "";
+			})
+			.filter(Boolean)
+			.join("\n")
+			.trim();
+		return parts || undefined;
+	}
+	if (content && typeof content === "object") {
+		const record = content as Record<string, unknown>;
+		if (typeof record.text === "string") {
+			const trimmed = record.text.trim();
+			return trimmed || undefined;
+		}
+		if (typeof record.content === "string") {
+			const trimmed = record.content.trim();
+			return trimmed || undefined;
+		}
+		if (Array.isArray(record.content)) return extractTextFromUnknownContent(record.content);
+		if (record.message && typeof record.message === "object") {
+			const nested = record.message as Record<string, unknown>;
+			return extractTextFromUnknownContent(nested.content);
+		}
+	}
+	return undefined;
+}
+
+function extractTextFromSessionMessage(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const record = message as Record<string, unknown>;
+	return extractTextFromUnknownContent(record.content)
+		?? extractTextFromUnknownContent(record.message)
+		?? extractTextFromUnknownContent(record.parts);
+}
+
 export async function promptAssistantSession(
 	session: AgentSession,
 	prompt: string,
@@ -231,7 +275,14 @@ export async function promptAssistantSession(
 		unsubscribe();
 	}
 
-	return text.trim();
+	const streamed = text.trim();
+	if (streamed) return streamed;
+	const lastAssistant = [...(session.messages as unknown[])].reverse().find((message) => {
+		if (!message || typeof message !== "object") return false;
+		const record = message as Record<string, unknown>;
+		return record.role === "assistant" || record.type === "assistant";
+	});
+	return extractTextFromSessionMessage(lastAssistant) ?? "";
 }
 
 export function createAssistantThreadKey(channel: string, threadId: string): string {
