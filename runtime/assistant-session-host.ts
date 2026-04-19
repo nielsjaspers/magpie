@@ -26,6 +26,23 @@ export interface AssistantSessionRuntime {
 
 type SessionRegistry = Record<string, { sessionPath: string; updatedAt: string }>;
 
+export interface AssistantThreadStatus {
+	threadKey: string;
+	exists: boolean;
+	sessionPath?: string;
+	updatedAt?: string;
+	loaded: boolean;
+	messageCount?: number;
+	sessionId?: string;
+}
+
+export interface AssistantThreadSnapshot extends AssistantThreadStatus {
+	messages?: Array<{
+		role: string;
+		text?: string;
+	}>;
+}
+
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 
@@ -76,6 +93,43 @@ export class AssistantSessionHost {
 		}
 		delete registry[threadKey];
 		await this.writeRegistry(registry);
+	}
+
+	async getThreadStatus(threadKey: string, modelRef: string): Promise<AssistantThreadStatus> {
+		const registry = await this.readRegistry();
+		const entry = registry[threadKey];
+		if (!entry?.sessionPath || !existsSync(entry.sessionPath)) {
+			return { threadKey, exists: false, loaded: this.runtimes.has(threadKey) };
+		}
+		const runtime = await this.getRuntime(threadKey, modelRef);
+		const session = await runtime.sessionPromise;
+		return {
+			threadKey,
+			exists: true,
+			sessionPath: entry.sessionPath,
+			updatedAt: entry.updatedAt,
+			loaded: this.runtimes.has(threadKey),
+			messageCount: session.messages.length,
+			sessionId: session.sessionId,
+		};
+	}
+
+	async getThreadSnapshot(threadKey: string, modelRef: string, limit = 20): Promise<AssistantThreadSnapshot> {
+		const status = await this.getThreadStatus(threadKey, modelRef);
+		if (!status.exists) return status;
+		const runtime = await this.getRuntime(threadKey, modelRef);
+		const session = await runtime.sessionPromise;
+		const messages = (session.messages as any[])
+			.slice(-Math.max(1, limit))
+			.map((message) => ({
+				role: String(message?.role ?? message?.type ?? "unknown"),
+				text: typeof message?.content === "string"
+					? message.content
+					: Array.isArray(message?.content)
+						? message.content.map((part: any) => typeof part?.text === "string" ? part.text : "").join("\n").trim() || undefined
+						: undefined,
+			}));
+		return { ...status, messages };
 	}
 
 	private async loadOrCreateSession(threadKey: string, modelRef: string): Promise<AgentSession> {

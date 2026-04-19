@@ -112,8 +112,26 @@ const port = Number(url.port || 8787);
 
 const server = createServer(async (req, res) => {
 	try {
-		if (req.method === "GET" && req.url === "/health") {
+		const requestUrl = new URL(req.url || "/", hostUrl);
+		if (req.method === "GET" && requestUrl.pathname === "/health") {
 			return sendJson(res, 200, { ok: true });
+		}
+		if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/status") {
+			const channel = requestUrl.searchParams.get("channel") || "telegram";
+			const threadId = requestUrl.searchParams.get("threadId") || "";
+			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
+			if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
+			const threadKey = createAssistantThreadKey(channel, threadId);
+			return sendJson(res, 200, await host.getThreadStatus(threadKey, modelRef));
+		}
+		if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/snapshot") {
+			const channel = requestUrl.searchParams.get("channel") || "telegram";
+			const threadId = requestUrl.searchParams.get("threadId") || "";
+			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
+			const limit = Number(requestUrl.searchParams.get("limit") || 20);
+			if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
+			const threadKey = createAssistantThreadKey(channel, threadId);
+			return sendJson(res, 200, await host.getThreadSnapshot(threadKey, modelRef, limit));
 		}
 		if (req.method !== "POST" || !req.url) {
 			return sendJson(res, 404, { error: "Not found" });
