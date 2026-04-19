@@ -7,7 +7,6 @@ import { getPersonalAssistantStorageDir, getTelegramConfig, loadConfig } from ".
 import {
 	AssistantSessionHost,
 	createAssistantThreadKey,
-	parseAssistantThreadKey,
 } from "./assistant-session-host.js";
 import type { AssistantChannel, SessionFilter } from "./session-host-types.js";
 
@@ -113,6 +112,19 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
 	res.end(JSON.stringify(body));
 }
 
+function startSse(res: import("node:http").ServerResponse) {
+	res.statusCode = 200;
+	res.setHeader("content-type", "text/event-stream; charset=utf-8");
+	res.setHeader("cache-control", "no-cache, no-transform");
+	res.setHeader("connection", "keep-alive");
+	res.setHeader("x-accel-buffering", "no");
+	res.write(": connected\n\n");
+}
+
+function sendSseEvent(res: import("node:http").ServerResponse, event: unknown) {
+	res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
 function normalizeAssistantChannel(value: string | null | undefined): AssistantChannel | undefined {
 	if (value === "telegram" || value === "web" || value === "internal") return value;
 	return undefined;
@@ -161,6 +173,24 @@ const server = createServer(async (req, res) => {
 		}
 
 		const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
+		if (sessionPath && req.method === "GET" && sessionPath.suffix === "/stream") {
+			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
+			const status = await host.getStatus(sessionPath.sessionId, modelRef);
+			if (!status) return sendJson(res, 404, { error: "Session not found" });
+			startSse(res);
+			const unsubscribe = await host.subscribe(sessionPath.sessionId, async (event) => {
+				sendSseEvent(res, event);
+			}, modelRef);
+			const keepAlive = setInterval(() => {
+				res.write(": keepalive\n\n");
+			}, 15000);
+			req.on("close", () => {
+				clearInterval(keepAlive);
+				unsubscribe();
+				if (!res.writableEnded) res.end();
+			});
+			return;
+		}
 		if (sessionPath && req.method === "GET" && sessionPath.suffix === "") {
 			const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
 			const status = await host.getStatus(sessionPath.sessionId, modelRef);
@@ -190,6 +220,12 @@ const server = createServer(async (req, res) => {
 				accepted,
 				toolEvents,
 			});
+		}
+		if (sessionPath && req.method === "POST" && sessionPath.suffix === "/interrupt") {
+			const body = await readBody(req);
+			const modelRef = String(body.modelRef || defaultModelRef);
+			await host.interrupt(sessionPath.sessionId, modelRef);
+			return sendJson(res, 200, { ok: true });
 		}
 		if (sessionPath && req.method === "POST" && sessionPath.suffix === "/reset") {
 			await host.resetSession(sessionPath.sessionId);

@@ -13,6 +13,8 @@ import type {
 	AcceptedMessage,
 	AssistantChannel,
 	CreateSessionInput,
+	HostedSessionEvent,
+	HostedSessionListener,
 	HostedSessionLocation,
 	HostedSessionMetadata,
 	HostedSessionRunState,
@@ -22,6 +24,7 @@ import type {
 	SessionFilter,
 	SessionHost,
 	SessionOrigin,
+	Unsubscribe,
 	WorkspaceMode,
 } from "./session-host-types.js";
 
@@ -118,6 +121,7 @@ export class AssistantSessionHost implements SessionHost {
 	private readonly buildSystemPromptText: () => Promise<string>;
 	private readonly tools: unknown[] | undefined;
 	private readonly runtimes = new Map<string, AssistantSessionRuntime>();
+	private readonly listeners = new Map<string, Set<HostedSessionListener>>();
 
 	constructor(config: AssistantSessionHostConfig) {
 		this.hostId = config.hostId ?? "magpie-host";
@@ -178,7 +182,7 @@ export class AssistantSessionHost implements SessionHost {
 			title: input.title,
 			modelRef: input.modelRef,
 		});
-		const metadata = await this.getMetadata(sessionId);
+		const metadata = await this.getMetadata(sessionId, input.modelRef);
 		if (!metadata) throw new Error(`Failed to resolve session metadata for ${sessionId}`);
 		return {
 			sessionId,
@@ -206,7 +210,8 @@ export class AssistantSessionHost implements SessionHost {
 	async getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined> {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
-		if (!entry?.sessionPath || !existsSync(entry.sessionPath)) return undefined;
+		const hasRuntime = this.runtimes.has(sessionId);
+		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
 		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		let messageCount: number | undefined;
 		if (runtime) {
@@ -233,6 +238,42 @@ export class AssistantSessionHost implements SessionHost {
 		const status = await this.getStatus(sessionId, modelRef);
 		if (!status) return undefined;
 		return { metadata, status, messages };
+	}
+
+	async subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe> {
+		if (!(await this.hasStoredSession(sessionId))) {
+			throw new Error(`Session not found: ${sessionId}`);
+		}
+		if (modelRef) {
+			await this.getRuntime(sessionId, modelRef);
+		}
+		const listeners = this.listeners.get(sessionId) ?? new Set<HostedSessionListener>();
+		listeners.add(listener);
+		this.listeners.set(sessionId, listeners);
+		const snapshot = await this.getSnapshot(sessionId, modelRef);
+		if (snapshot) {
+			await listener({ type: "snapshot", session: snapshot });
+			await listener({ type: "status", status: snapshot.status });
+		}
+		return () => {
+			const current = this.listeners.get(sessionId);
+			if (!current) return;
+			current.delete(listener);
+			if (current.size === 0) this.listeners.delete(sessionId);
+		};
+	}
+
+	async interrupt(sessionId: string, modelRef?: string): Promise<void> {
+		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
+		if (!runtime) return;
+		runtime.runState = "aborting";
+		await this.updateRegistryState(sessionId, { runState: runtime.runState, updatedAt: new Date().toISOString() });
+		await this.emitStatus(sessionId, modelRef);
+		const session = await runtime.sessionPromise;
+		await session.abort();
+		runtime.runState = "idle";
+		await this.updateRegistryState(sessionId, { runState: runtime.runState, updatedAt: new Date().toISOString() });
+		await this.emitStatus(sessionId, modelRef);
 	}
 
 	async getThreadStatus(threadKey: string, modelRef: string): Promise<AssistantThreadStatus> {
@@ -281,6 +322,7 @@ export class AssistantSessionHost implements SessionHost {
 		input: { text: string; modelRef: string },
 		onToolEvent?: (event: AssistantToolEvent) => void,
 	): Promise<{ accepted: AcceptedMessage; result: PromptAssistantSessionResult }> {
+		await this.ensurePromptableSession(sessionId, input.modelRef);
 		const runtime = await this.getRuntime(sessionId, input.modelRef);
 		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
 		runtime.queueDepth += 1;
@@ -293,17 +335,34 @@ export class AssistantSessionHost implements SessionHost {
 		const pending = runtime.queue.then(async () => {
 			runtime.runState = "running";
 			await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
+			await this.emitStatus(sessionId, input.modelRef);
 			try {
 				const session = await runtime.sessionPromise;
-				const result = await promptAssistantSession(session, input.text, onToolEvent);
+				const result = await promptAssistantSession(session, input.text, {
+					onTextDelta: async (delta) => {
+						await this.emit(sessionId, { type: "text_delta", delta });
+					},
+					onToolEvent: async (event) => {
+						onToolEvent?.(event);
+						if (event.type === "start") {
+							await this.emit(sessionId, { type: "tool_start", toolName: event.toolName, args: event.args });
+						} else {
+							await this.emit(sessionId, { type: "tool_end", toolName: event.toolName, result: event.result, isError: event.isError });
+						}
+					},
+				});
 				runtime.runState = "idle";
 				runtime.lastError = undefined;
 				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
+				await this.emit(sessionId, { type: "message_complete" });
+				await this.emitStatus(sessionId, input.modelRef);
 				return result;
 			} catch (error) {
 				runtime.runState = "error";
 				runtime.lastError = error instanceof Error ? error.message : String(error);
 				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: runtime.lastError, updatedAt: new Date().toISOString() });
+				await this.emit(sessionId, { type: "error", error: runtime.lastError });
+				await this.emitStatus(sessionId, input.modelRef);
 				throw error;
 			} finally {
 				runtime.queueDepth = Math.max(0, runtime.queueDepth - 1);
@@ -317,7 +376,8 @@ export class AssistantSessionHost implements SessionHost {
 	async getMetadata(sessionId: string, modelRef?: string): Promise<HostedSessionMetadata | undefined> {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
-		if (!entry?.sessionPath || !existsSync(entry.sessionPath)) return undefined;
+		const hasRuntime = this.runtimes.has(sessionId);
+		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
 		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		const runState = runtime?.runState ?? (entry.lastError ? "error" : "idle");
 		return {
@@ -335,6 +395,36 @@ export class AssistantSessionHost implements SessionHost {
 			assistantChannel: entry.assistantChannel,
 			assistantThreadId: entry.assistantThreadId,
 		};
+	}
+
+	private async emit(sessionId: string, event: HostedSessionEvent) {
+		const listeners = this.listeners.get(sessionId);
+		if (!listeners || listeners.size === 0) return;
+		for (const listener of [...listeners]) {
+			await listener(event);
+		}
+	}
+
+	private async emitStatus(sessionId: string, modelRef?: string) {
+		const status = await this.getStatus(sessionId, modelRef);
+		if (!status) return;
+		await this.emit(sessionId, { type: "status", status });
+	}
+
+	private async ensurePromptableSession(sessionId: string, modelRef: string) {
+		if (await this.hasStoredSession(sessionId)) return;
+		const parsed = parseAssistantThreadKey(sessionId);
+		if (!parsed) {
+			throw new Error(`Session not found: ${sessionId}`);
+		}
+		await this.resolveAssistantSession({
+			kind: "assistant",
+			origin: "assistant",
+			assistantChannel: parsed.channel,
+			assistantThreadId: parsed.threadId,
+			workspaceMode: "none",
+			modelRef,
+		});
 	}
 
 	private async loadOrCreateSession(threadKey: string, modelRef: string): Promise<AgentSession> {
@@ -395,6 +485,12 @@ export class AssistantSessionHost implements SessionHost {
 		} catch {
 			return {};
 		}
+	}
+
+	private async hasStoredSession(sessionId: string): Promise<boolean> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		return Boolean(entry?.sessionPath && (existsSync(entry.sessionPath) || this.runtimes.has(sessionId)));
 	}
 
 	private async writeRegistry(registry: SessionRegistry) {
@@ -543,7 +639,10 @@ export interface PromptAssistantSessionResult {
 export async function promptAssistantSession(
 	session: AgentSession,
 	prompt: string,
-	onToolEvent?: (event: AssistantToolEvent) => void,
+	callbacks?: {
+		onTextDelta?: (delta: string) => void | Promise<void>;
+		onToolEvent?: (event: AssistantToolEvent) => void | Promise<void>;
+	},
 ): Promise<PromptAssistantSessionResult> {
 	let text = "";
 
@@ -553,16 +652,17 @@ export async function promptAssistantSession(
 			event.assistantMessageEvent.type === "text_delta"
 		) {
 			text += event.assistantMessageEvent.delta;
+			void callbacks?.onTextDelta?.(event.assistantMessageEvent.delta);
 		}
-		if (onToolEvent && event.type === "tool_execution_start") {
-			onToolEvent({ type: "start", toolName: event.toolName, args: event.args });
+		if (callbacks?.onToolEvent && event.type === "tool_execution_start") {
+			void callbacks.onToolEvent({ type: "start", toolName: event.toolName, args: event.args });
 		}
-		if (onToolEvent && event.type === "tool_execution_end") {
+		if (callbacks?.onToolEvent && event.type === "tool_execution_end") {
 			const resultStr =
 				typeof event.result === "string"
 					? event.result
 					: JSON.stringify(event.result);
-			onToolEvent({
+			void callbacks.onToolEvent({
 				type: "end",
 				toolName: event.toolName,
 				result: resultStr ?? "",

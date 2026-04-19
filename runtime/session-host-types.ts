@@ -74,6 +74,18 @@ export interface HostedSessionSnapshot {
 	}>;
 }
 
+export type HostedSessionEvent =
+	| { type: "snapshot"; session: HostedSessionSnapshot }
+	| { type: "status"; status: HostedSessionStatus }
+	| { type: "text_delta"; delta: string }
+	| { type: "message_complete"; messageId?: string }
+	| { type: "tool_start"; toolName: string; args?: unknown }
+	| { type: "tool_end"; toolName: string; result?: unknown; isError?: boolean }
+	| { type: "error"; error: string };
+
+export type HostedSessionListener = (event: HostedSessionEvent) => void | Promise<void>;
+export type Unsubscribe = () => void;
+
 export interface CreateSessionInput {
 	kind: HostedSessionKind;
 	origin: SessionOrigin;
@@ -104,4 +116,6 @@ export interface SessionHost {
 	listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]>;
 	getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined>;
 	getSnapshot(sessionId: string, modelRef?: string, limit?: number): Promise<HostedSessionSnapshot | undefined>;
+	subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe>;
+	interrupt(sessionId: string, modelRef?: string): Promise<void>;
 }
