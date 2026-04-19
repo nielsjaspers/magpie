@@ -113,5 +113,19 @@
     "calendar": {
       "defaultWritableCalendar": "personal"
     }
+  },
+  "telegram": {
+    "allowFrom": ["123456789", "alice"],
+    "models": {
+      "sonnet": "anthropic/claude-sonnet-4-6",
+      "mimop": "opencode-go/mimo-v2-pro"
+    },
+    "showToolCalls": false,
+    "prompt": {
+      "systemFile": "telegram/SYSTEM.md",
+      "memoryFile": "telegram/MEMORY.md",
+      "userFile": "telegram/USER.md",
+      "customFiles": []
+    }
   }
 }

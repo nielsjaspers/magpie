@@ -12,6 +12,7 @@ import type {
 	PersonalAssistantConfig,
 	PromptConfig,
 	ResolvedMode,
+	TelegramConfig,
 	ResolvedSubagentModel,
 	SubagentModelRef,
 } from "./types.js";
@@ -204,6 +205,14 @@ export function getPersonalAssistantStorageDir(config: MagpieConfig): string {
 
 export function getPersonalAssistantAuth(auth: MagpieAuthConfig): PersonalAssistantAuthConfig | undefined {
 	return auth.personalAssistant;
+}
+
+export function getTelegramConfig(config: MagpieConfig): TelegramConfig | undefined {
+	return config.telegram;
+}
+
+export function getTelegramAuth(auth: MagpieAuthConfig): { botToken?: string } | undefined {
+	return auth.telegram;
 }
 
 export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined) {

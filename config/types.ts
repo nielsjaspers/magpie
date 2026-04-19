@@ -46,6 +46,18 @@ export interface PersonalAssistantConfig {
 	};
 }
 
+export interface TelegramConfig {
+	allowFrom?: string[];
+	models?: Record<string, string>;
+	showToolCalls?: boolean;
+	prompt?: {
+		systemFile?: string;
+		memoryFile?: string;
+		userFile?: string;
+		customFiles?: string[];
+	};
+}
+
 export interface ProviderAuthConfig {
 	apiKey?: string;
 }
@@ -74,6 +86,9 @@ export interface MagpieAuthConfig {
 	semanticScholar?: ProviderAuthConfig;
 	exa?: ProviderAuthConfig;
 	personalAssistant?: PersonalAssistantAuthConfig;
+	telegram?: {
+		botToken?: string;
+	};
 }
 
 export interface MagpieConfig {
@@ -119,6 +134,7 @@ export interface MagpieConfig {
 	};
 	research?: ResearchConfig;
 	personalAssistant?: PersonalAssistantConfig;
+	telegram?: TelegramConfig;
 }
 
 export interface ResolvedSubagentModel {

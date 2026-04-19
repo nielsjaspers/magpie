@@ -25,5 +25,8 @@
         "appPassword": "xxxxxxxxxxxxxxxx"
       }
     }
+  },
+  "telegram": {
+    "botToken": "123456:ABC-DEF..."
   }
 }

@@ -95,4 +95,15 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		storageDir: "~/.pi/agent/personal-assistant",
 		calendar: {},
 	},
+	telegram: {
+		allowFrom: [],
+		models: {},
+		showToolCalls: false,
+		prompt: {
+			systemFile: "telegram/SYSTEM.md",
+			memoryFile: "telegram/MEMORY.md",
+			userFile: "telegram/USER.md",
+			customFiles: [],
+		},
+	},
 };

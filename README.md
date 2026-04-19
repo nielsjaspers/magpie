@@ -160,6 +160,7 @@ Auth config:
 - `exa.apiKey` is reserved for future integrations
 - `personalAssistant.calendar` stores iCloud + ICS feed credentials/config
 - `personalAssistant.mail.gmail` stores the Gmail aggregation inbox credentials
+- `telegram.botToken` stores the Telegram bot token for `apps/telegram/`
 - auth values live in `magpie.auth.json`, not `magpie.json`
 
 Research commands:
@@ -193,3 +194,4 @@ Research commands:
 - `web/` — `web_fetch` and `web_search`
 - `spinner/` — random verb spinner while streaming
 - `pa/` — personal-assistant scaffolding for calendar and mail integrations
+- `apps/telegram/` — separate Telegram app process that reads `magpie.json` / `magpie.auth.json` and will later move onto the shared remote host API
