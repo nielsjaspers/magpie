@@ -13,6 +13,8 @@ import {
 export interface AssistantSessionHostConfig {
 	hostCwd: string;
 	storageDir: string;
+	authStorage: AuthStorage;
+	modelRegistry: ModelRegistry;
 	resolveModel: (ref: string) => unknown;
 	buildSystemPrompt: () => Promise<string>;
 	tools?: unknown[];
@@ -43,9 +45,6 @@ export interface AssistantThreadSnapshot extends AssistantThreadStatus {
 	}>;
 }
 
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
-
 export type AssistantToolEvent =
 	| { type: "start"; toolName: string; args: unknown }
 	| { type: "end"; toolName: string; result: string; isError: boolean };
@@ -55,6 +54,8 @@ export class AssistantSessionHost {
 	private readonly storageDir: string;
 	private readonly sessionsDir: string;
 	private readonly registryPath: string;
+	private readonly authStorage: AuthStorage;
+	private readonly modelRegistry: ModelRegistry;
 	private readonly resolveModelRef: (ref: string) => unknown;
 	private readonly buildSystemPromptText: () => Promise<string>;
 	private readonly tools: unknown[] | undefined;
@@ -65,6 +66,8 @@ export class AssistantSessionHost {
 		this.storageDir = config.storageDir;
 		this.sessionsDir = resolve(this.storageDir, "sessions");
 		this.registryPath = resolve(this.storageDir, "thread-sessions.json");
+		this.authStorage = config.authStorage;
+		this.modelRegistry = config.modelRegistry;
 		this.resolveModelRef = config.resolveModel;
 		this.buildSystemPromptText = config.buildSystemPrompt;
 		this.tools = config.tools;
@@ -155,8 +158,8 @@ export class AssistantSessionHost {
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
 			cwd: this.hostCwd,
-			authStorage,
-			modelRegistry,
+			authStorage: this.authStorage,
+			modelRegistry: this.modelRegistry,
 			model: model as any,
 			resourceLoader,
 			sessionManager,

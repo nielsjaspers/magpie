@@ -70,6 +70,8 @@ async function loadServerContext(cwd: string) {
 	const host = new AssistantSessionHost({
 		hostCwd: cwd,
 		storageDir: resolve(getPersonalAssistantStorageDir(config), "telegram"),
+		authStorage,
+		modelRegistry,
 		resolveModel,
 		buildSystemPrompt,
 		tools: [],
