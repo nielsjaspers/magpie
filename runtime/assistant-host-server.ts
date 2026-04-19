@@ -162,27 +162,11 @@ const server = createServer(async (req, res) => {
 			const runtime = await host.getRuntime(threadKey, modelRef);
 			const pending = runtime.queue.then(async () => {
 				const session = await runtime.sessionPromise;
-				const messagesBefore = session.messages.length;
 				const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
 				const result = await promptAssistantSession(session, text, (event) => {
 					if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
 					else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
 				});
-				const messagesAfter = session.messages.length;
-				const lastAssistant = result.lastAssistant as Record<string, unknown> | undefined;
-				console.error("[assistant-host]", JSON.stringify({
-					threadKey,
-					modelRef,
-					sessionId: session.sessionId,
-					sessionFile: session.sessionFile,
-					messagesBefore,
-					messagesAfter,
-					streamedTextLen: result.streamedText.length,
-					finalTextLen: result.text.length,
-					lastAssistantRole: lastAssistant?.role ?? lastAssistant?.type,
-					lastAssistantKeys: lastAssistant ? Object.keys(lastAssistant).slice(0, 20) : [],
-					lastAssistantPreview: lastAssistant ? JSON.stringify(lastAssistant).slice(0, 500) : undefined,
-				}));
 				return { result, toolEvents };
 			});
 			runtime.queue = pending.then(() => undefined, () => undefined);
