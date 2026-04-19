@@ -6,6 +6,13 @@ import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { getPersonalAssistantStorageDir, getTelegramConfig, loadConfig } from "../config/config.js";
 import { AssistantSessionHost, createAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import {
+	acceptDispatch,
+	createRemoteServerRuntime,
+	deleteRemoteSession,
+	listRemoteSessions,
+	prepareFetch,
+} from "../remote/server.js";
+import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
 	getSessionStatusRoute,
@@ -18,6 +25,7 @@ import type { WebUiServerConfig } from "./types.js";
 
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
+	remote: ReturnType<typeof createRemoteServerRuntime>;
 	defaultModelRef: string;
 	hostUrl: string;
 	config?: WebUiServerConfig;
@@ -98,6 +106,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 
 	return {
 		host,
+		remote: createRemoteServerRuntime(),
 		defaultModelRef,
 		hostUrl: telegram?.hostUrl?.trim() || config?.tailscaleUrl?.trim() || "http://127.0.0.1:8787",
 		config,
@@ -153,7 +162,7 @@ function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suf
 }
 
 export function createWebUiServer(runtime: WebUiServerRuntime): Server {
-	const { host, defaultModelRef, hostUrl } = runtime;
+	const { host, remote, defaultModelRef, hostUrl } = runtime;
 	const clientDir = resolve(import.meta.dirname, "client");
 	return createServer(async (req, res) => {
 		try {
@@ -176,6 +185,16 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/sessions") {
 				return sendJson(res, 200, await listSessionRoute(host, parseSessionFilter(requestUrl.searchParams)));
+			}
+			if (req.method === "GET" && requestUrl.pathname === "/api/v1/remote/sessions") {
+				return sendJson(res, 200, { sessions: await listRemoteSessions(remote) });
+			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/dispatch") {
+				const body = await readBody(req);
+				return sendJson(res, 201, await acceptDispatch(remote, {
+					payload: body.payload as any,
+					bundle: body.bundle as any,
+				}));
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/sessions") {
 				const body = await readBody(req);
@@ -222,6 +241,14 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 					return sendJson(res, 404, { error: "Session not found" });
 				}
 			}
+			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/fetch") {
+				const body = await readBody(req);
+				return sendJson(res, 200, await prepareFetch(remote, {
+					sessionId: sessionPath.sessionId,
+					fetchedAt: new Date().toISOString(),
+					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
+				}));
+			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
 				const body = await readBody(req);
 				const text = String(body.text || "");
@@ -248,6 +275,14 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/reset") {
 				await host.resetSession(sessionPath.sessionId);
 				return sendJson(res, 200, { ok: true });
+			}
+			if (sessionPath && req.method === "DELETE" && sessionPath.suffix === "") {
+				const body = await readBody(req);
+				return sendJson(res, 200, await deleteRemoteSession(remote, {
+					sessionId: sessionPath.sessionId,
+					fetchedAt: new Date().toISOString(),
+					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
+				}));
 			}
 
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/status") {

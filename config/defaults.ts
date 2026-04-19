@@ -107,4 +107,17 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 			customFiles: [],
 		},
 	},
+	remote: {
+		mode: "client",
+		serverPort: 4711,
+		maxTarSize: 524288000,
+		defaultHost: undefined,
+		hosts: {},
+		tarExclude: ["node_modules", ".pi/sessions", "dist", "build", ".venv", "__pycache__", ".git"],
+	},
+	webui: {
+		enabled: true,
+		port: 8787,
+		bind: "localhost",
+	},
 };

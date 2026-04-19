@@ -59,6 +59,33 @@ export interface TelegramConfig {
 	};
 }
 
+export interface RemoteHostConfig {
+	tailscaleUrl?: string;
+	publicUrl?: string;
+	deviceToken?: string;
+}
+
+export interface RemoteConfig {
+	mode?: "client" | "server" | "both";
+	serverPort?: number;
+	maxTarSize?: number;
+	defaultHost?: string;
+	hosts?: Record<string, RemoteHostConfig>;
+	tarExclude?: string[];
+}
+
+export interface WebUiConfig {
+	enabled?: boolean;
+	port?: number;
+	bind?: "tailscale" | "public" | "localhost" | string;
+	publicUrl?: string;
+	tailscaleUrl?: string;
+	tls?: {
+		certPath: string;
+		keyPath: string;
+	};
+}
+
 export interface ProviderAuthConfig {
 	apiKey?: string;
 }
@@ -136,6 +163,8 @@ export interface MagpieConfig {
 	research?: ResearchConfig;
 	personalAssistant?: PersonalAssistantConfig;
 	telegram?: TelegramConfig;
+	remote?: RemoteConfig;
+	webui?: WebUiConfig;
 }
 
 export interface ResolvedSubagentModel {
