@@ -321,7 +321,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const filtered = windowFilter(events, days, params.calendarIds, params.query).sort((a, b) => a.start.localeCompare(b.start));
 			const summary = filtered.length > 0
-				? filtered.slice(0, 12).map((event) => `- ${event.start} ${event.summary} (${event.calendarId})`).join("\n")
+				? filtered.slice(0, 12).map((event) => `- id=${event.id} | calendar=${event.calendarId} | ${event.start} | ${event.summary}`).join("\n")
 				: "No matching upcoming events.";
 			return {
 				content: [{ type: "text", text: warnings.length > 0 ? `${summary}\n\nWarnings:\n- ${warnings.join("\n- ")}` : summary }],
