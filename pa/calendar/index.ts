@@ -235,7 +235,10 @@ async function fetchICloudEvents(client: ICloudClient, calendar: ICloudCalendarS
 
 function selectWritableCalendar(calendars: ICloudCalendarSource[], preferred: string | undefined, requestedId?: string): ICloudCalendarSource | undefined {
 	if (requestedId) return calendars.find((calendar) => calendar.id === requestedId || calendar.name === requestedId);
-	if (preferred) return calendars.find((calendar) => calendar.id === preferred || calendar.name === preferred);
+	if (preferred) {
+		const matched = calendars.find((calendar) => calendar.id === preferred || calendar.name === preferred);
+		if (matched) return matched;
+	}
 	return calendars[0];
 }
 
@@ -266,8 +269,11 @@ export default function (pi: ExtensionAPI) {
 					warnings.push(`iCloud authentication failed: ${(error as Error).message}`);
 				}
 			}
+			const lines = calendars.length > 0
+				? calendars.map((calendar) => `- id=${calendar.id} | ${calendar.name} | ${calendar.sourceType} | ${calendar.writable ? "writable" : "read-only"}`)
+				: ["No calendar sources configured."];
 			return {
-				content: [{ type: "text", text: calendars.length > 0 ? `Found ${calendars.length} calendar source(s).${warnings.length ? ` Warnings: ${warnings.join(" | ")}` : ""}` : `No calendar sources configured.${warnings.length ? ` Warnings: ${warnings.join(" | ")}` : ""}` }],
+				content: [{ type: "text", text: `${lines.join("\n")}${warnings.length ? `\n\nWarnings:\n- ${warnings.join("\n- ")}` : ""}` }],
 				details: { calendars, warnings },
 			};
 		},
@@ -384,7 +390,11 @@ export default function (pi: ExtensionAPI) {
 				const defaultCalendar = runtime.personalAssistant?.calendar?.defaultWritableCalendar;
 				const targetCalendar = selectWritableCalendar(calendars, defaultCalendar, params.calendarId);
 				if (!targetCalendar) {
-					return { content: [{ type: "text", text: "No writable iCloud calendar matched the requested/default target." }], details: {}, isError: true };
+					return {
+						content: [{ type: "text", text: `No writable iCloud calendar matched the requested/default target. Available iCloud calendars: ${calendars.map((calendar) => calendar.name).join(", ") || "none"}` }],
+						details: { calendars: calendars.map((calendar) => ({ id: calendar.id, name: calendar.name })) },
+						isError: true,
+					};
 				}
 				const start = new Date(params.start);
 				const end = new Date(params.end);
