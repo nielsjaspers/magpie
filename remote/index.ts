@@ -300,7 +300,7 @@ async function dispatchCurrentSession(
 	return { remoteHost, result };
 }
 
-function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
+export function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
 	return [{
 		name: "remote-routes",
 		handler: async ({ req, res, requestUrl, runtime, readBody, sendJson, getSessionIdFromRequestPath }) => {
