@@ -61,6 +61,7 @@ export interface HostedSessionSummary {
 	updatedAt: string;
 	cwd?: string;
 	owner?: SessionOwner;
+	watcherCount?: number;
 	assistantChannel?: AssistantChannel;
 	assistantThreadId?: string;
 	sessionPath?: string;
@@ -71,6 +72,7 @@ export interface HostedSessionSummary {
 export interface HostedSessionStatus extends HostedSessionSummary {
 	queueDepth?: number;
 	lastError?: string;
+	watchers?: SessionWatcher[];
 }
 
 export interface HostedSessionSnapshot {
@@ -148,7 +150,7 @@ export interface SessionHost {
 	listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]>;
 	getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined>;
 	getSnapshot(sessionId: string, modelRef?: string, limit?: number): Promise<HostedSessionSnapshot | undefined>;
-	subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe>;
+	subscribe(sessionId: string, listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string): Promise<Unsubscribe>;
 	interrupt(sessionId: string, actor?: SessionOwner, modelRef?: string): Promise<void>;
 	claimOwnership(sessionId: string, owner: SessionOwner): Promise<void>;
 	releaseOwnership(sessionId: string, owner?: SessionOwner): Promise<void>;

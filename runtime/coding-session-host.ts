@@ -27,6 +27,7 @@ import type {
 	SessionFilter,
 	SessionHost,
 	SessionOwner,
+	SessionWatcher,
 	Unsubscribe,
 } from "./session-host-types.js";
 import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "../remote/workspace.js";
@@ -90,6 +91,7 @@ export class CodingSessionHost implements SessionHost {
 	private readonly maxWorkspaceArchiveBytes?: number;
 	private readonly runtimes = new Map<string, CodingSessionRuntime>();
 	private readonly listeners = new Map<string, Set<HostedSessionListener>>();
+	private readonly watchers = new Map<string, Map<HostedSessionListener, SessionWatcher>>();
 
 	constructor(config: CodingSessionHostConfig) {
 		this.hostId = config.hostId ?? "magpie-coding-host";
@@ -305,21 +307,35 @@ export class CodingSessionHost implements SessionHost {
 		return { metadata, status, messages };
 	}
 
-	async subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe> {
+	async subscribe(sessionId: string, listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string): Promise<Unsubscribe> {
 		if (!(await this.hasStoredSession(sessionId))) throw new Error(`Session not found: ${sessionId}`);
 		const listeners = this.listeners.get(sessionId) ?? new Set<HostedSessionListener>();
 		listeners.add(listener);
 		this.listeners.set(sessionId, listeners);
+		let watcherChanged = false;
+		if (watcher) {
+			const sessionWatchers = this.watchers.get(sessionId) ?? new Map<HostedSessionListener, SessionWatcher>();
+			watcherChanged = !sessionWatchers.has(listener);
+			sessionWatchers.set(listener, watcher);
+			this.watchers.set(sessionId, sessionWatchers);
+		}
 		const snapshot = await this.getSnapshot(sessionId, modelRef);
 		if (snapshot) {
 			await listener({ type: "snapshot", session: snapshot });
 			await listener({ type: "status", status: snapshot.status });
 		}
+		if (watcherChanged) await this.emitStatus(sessionId, modelRef);
 		return () => {
 			const current = this.listeners.get(sessionId);
-			if (!current) return;
-			current.delete(listener);
-			if (current.size === 0) this.listeners.delete(sessionId);
+			if (current) {
+				current.delete(listener);
+				if (current.size === 0) this.listeners.delete(sessionId);
+			}
+			const sessionWatchers = this.watchers.get(sessionId);
+			if (!sessionWatchers) return;
+			const removedWatcher = sessionWatchers.delete(listener);
+			if (sessionWatchers.size === 0) this.watchers.delete(sessionId);
+			if (removedWatcher) void this.emitStatus(sessionId, modelRef);
 		};
 	}
 
@@ -375,6 +391,7 @@ export class CodingSessionHost implements SessionHost {
 		await this.writeRegistry(registry);
 		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
 		this.runtimes.delete(sessionId);
+		this.watchers.delete(sessionId);
 	}
 
 	private async getMetadata(sessionId: string, modelRef?: string): Promise<HostedSessionMetadata | undefined> {
@@ -549,6 +566,10 @@ export class CodingSessionHost implements SessionHost {
 		await this.emit(sessionId, { type: "status", status });
 	}
 
+	private getWatchers(sessionId: string): SessionWatcher[] {
+		return [...(this.watchers.get(sessionId)?.values() ?? [])];
+	}
+
 	private matchesFilter(summary: HostedSessionSummary, filter?: SessionFilter): boolean {
 		if (!filter) return true;
 		if (filter.kind && summary.kind !== filter.kind) return false;
@@ -573,13 +594,20 @@ export class CodingSessionHost implements SessionHost {
 			updatedAt: entry.updatedAt,
 			cwd: entry.cwd ?? this.hostCwd,
 			owner: entry.owner,
+			watcherCount: this.getWatchers(sessionId).length,
 			loaded: this.runtimes.has(sessionId),
 		};
 	}
 
 	private toStatus(sessionId: string, entry: CodingSessionRegistryEntry, runtime: CodingSessionRuntime | undefined, messageCount?: number): HostedSessionStatus {
 		const summary = this.toSummary(sessionId, entry);
-		return { ...summary, messageCount, queueDepth: runtime?.queueDepth ?? 0, lastError: runtime?.lastError ?? entry.lastError };
+		return {
+			...summary,
+			messageCount,
+			queueDepth: runtime?.queueDepth ?? 0,
+			lastError: runtime?.lastError ?? entry.lastError,
+			watchers: this.getWatchers(sessionId),
+		};
 	}
 }
 

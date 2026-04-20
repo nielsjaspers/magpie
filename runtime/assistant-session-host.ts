@@ -30,6 +30,7 @@ import type {
 	SessionHost,
 	SessionOrigin,
 	SessionOwner,
+	SessionWatcher,
 	Unsubscribe,
 	WorkspaceMode,
 } from "./session-host-types.js";
@@ -129,6 +130,7 @@ export class AssistantSessionHost implements SessionHost {
 	private readonly tools: unknown[] | undefined;
 	private readonly runtimes = new Map<string, AssistantSessionRuntime>();
 	private readonly listeners = new Map<string, Set<HostedSessionListener>>();
+	private readonly watchers = new Map<string, Map<HostedSessionListener, SessionWatcher>>();
 
 	constructor(config: AssistantSessionHostConfig) {
 		this.hostId = config.hostId ?? "magpie-host";
@@ -331,7 +333,7 @@ export class AssistantSessionHost implements SessionHost {
 		return { metadata, status, messages };
 	}
 
-	async subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe> {
+	async subscribe(sessionId: string, listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string): Promise<Unsubscribe> {
 		if (!(await this.hasStoredSession(sessionId))) {
 			throw new Error(`Session not found: ${sessionId}`);
 		}
@@ -341,16 +343,30 @@ export class AssistantSessionHost implements SessionHost {
 		const listeners = this.listeners.get(sessionId) ?? new Set<HostedSessionListener>();
 		listeners.add(listener);
 		this.listeners.set(sessionId, listeners);
+		let watcherChanged = false;
+		if (watcher) {
+			const sessionWatchers = this.watchers.get(sessionId) ?? new Map<HostedSessionListener, SessionWatcher>();
+			watcherChanged = !sessionWatchers.has(listener);
+			sessionWatchers.set(listener, watcher);
+			this.watchers.set(sessionId, sessionWatchers);
+		}
 		const snapshot = await this.getSnapshot(sessionId, modelRef);
 		if (snapshot) {
 			await listener({ type: "snapshot", session: snapshot });
 			await listener({ type: "status", status: snapshot.status });
 		}
+		if (watcherChanged) await this.emitStatus(sessionId, modelRef);
 		return () => {
 			const current = this.listeners.get(sessionId);
-			if (!current) return;
-			current.delete(listener);
-			if (current.size === 0) this.listeners.delete(sessionId);
+			if (current) {
+				current.delete(listener);
+				if (current.size === 0) this.listeners.delete(sessionId);
+			}
+			const sessionWatchers = this.watchers.get(sessionId);
+			if (!sessionWatchers) return;
+			const removedWatcher = sessionWatchers.delete(listener);
+			if (sessionWatchers.size === 0) this.watchers.delete(sessionId);
+			if (removedWatcher) void this.emitStatus(sessionId, modelRef);
 		};
 	}
 
@@ -521,6 +537,7 @@ export class AssistantSessionHost implements SessionHost {
 		await this.writeRegistry(registry);
 		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
 		this.runtimes.delete(sessionId);
+		this.watchers.delete(sessionId);
 	}
 
 	private async emit(sessionId: string, event: HostedSessionEvent) {
@@ -535,6 +552,10 @@ export class AssistantSessionHost implements SessionHost {
 		const status = await this.getStatus(sessionId, modelRef);
 		if (!status) return;
 		await this.emit(sessionId, { type: "status", status });
+	}
+
+	private getWatchers(sessionId: string): SessionWatcher[] {
+		return [...(this.watchers.get(sessionId)?.values() ?? [])];
 	}
 
 	private async ensurePromptableSession(sessionId: string, modelRef: string) {
@@ -689,6 +710,7 @@ export class AssistantSessionHost implements SessionHost {
 			updatedAt: entry.updatedAt,
 			cwd: this.hostCwd,
 			owner: entry.owner,
+			watcherCount: this.getWatchers(sessionId).length,
 			assistantChannel: entry.assistantChannel,
 			assistantThreadId: entry.assistantThreadId,
 			sessionPath: entry.sessionPath,
@@ -709,6 +731,7 @@ export class AssistantSessionHost implements SessionHost {
 			messageCount,
 			queueDepth: runtime?.queueDepth ?? 0,
 			lastError: runtime?.lastError ?? entry.lastError,
+			watchers: this.getWatchers(sessionId),
 		};
 	}
 }

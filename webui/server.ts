@@ -7,6 +7,7 @@ import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, load
 import { AssistantSessionHost, createAssistantThreadKey, parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
 import { createRemoteServerRuntime } from "../remote/server.js";
+import type { DeviceRecord } from "../remote/types.js";
 import {
 	authenticateRequest,
 	consumeEnrollmentCode,
@@ -230,9 +231,9 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 		return await host.getSnapshot(sessionId, modelRef, limit) ?? await codingHost.getSnapshot(sessionId, modelRef, limit);
 	};
 
-	const subscribeAny = async (sessionId: string, listener: any, modelRef?: string) => {
-		if (await host.getStatus(sessionId, modelRef)) return await host.subscribe(sessionId, listener, modelRef);
-		return await codingHost.subscribe(sessionId, listener, modelRef);
+	const subscribeAny = async (sessionId: string, listener: any, watcher: { assistant?: any; coding?: any }, modelRef?: string) => {
+		if (await host.getStatus(sessionId, modelRef)) return await host.subscribe(sessionId, listener, watcher.assistant, modelRef);
+		return await codingHost.subscribe(sessionId, listener, watcher.coding, modelRef);
 	};
 
 	const interruptAny = async (sessionId: string, modelRef?: string) => {
@@ -275,9 +276,28 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 		return { accepted, text: last?.role === "assistant" ? last.text || "" : "", toolEvents: [] };
 	};
 
+	const buildWatchersForRequest = (sessionId: string, device?: DeviceRecord) => {
+		const kind = device ? "web" : "local_status";
+		return {
+			assistant: {
+				id: `${kind}:${device?.id ?? "loopback"}:${sessionId}`,
+				kind,
+				hostId: host.hostId,
+				actorId: device?.id,
+			},
+			coding: {
+				id: `${kind}:${device?.id ?? "loopback"}:${sessionId}`,
+				kind,
+				hostId: codingHost.hostId,
+				actorId: device?.id,
+			},
+		};
+	};
+
 	return createServer(async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url || "/", hostUrl);
+			let authenticatedDevice: DeviceRecord | undefined;
 			const isPublicPath = requestUrl.pathname === "/health"
 				|| requestUrl.pathname === "/enroll"
 				|| requestUrl.pathname === "/api/v1/enroll"
@@ -290,8 +310,8 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				}
 			}
 			if (!isPublicPath && !isLoopbackRequest(req)) {
-				const device = await authenticateRequest(auth, req);
-				if (!device) {
+				authenticatedDevice = await authenticateRequest(auth, req);
+				if (!authenticatedDevice) {
 					if (requestUrl.pathname === "/" || requestUrl.pathname.startsWith("/assets/")) {
 						res.statusCode = 302;
 						res.setHeader("location", "/enroll");
@@ -300,7 +320,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					}
 					return sendJson(res, 401, { error: "Unauthorized" });
 				}
-				if (!recordRateLimit(deviceRequestLimiter, device.id, 100, 60 * 1000)) {
+				if (!recordRateLimit(deviceRequestLimiter, authenticatedDevice.id, 100, 60 * 1000)) {
 					return sendJson(res, 429, { error: "Rate limit exceeded. Try again later." });
 				}
 			}
@@ -397,7 +417,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				startSse(res);
 				const unsubscribe = await subscribeAny(sessionPath.sessionId, async (event: unknown) => {
 					sendSseEvent(res, event);
-				}, modelRef);
+				}, buildWatchersForRequest(sessionPath.sessionId, authenticatedDevice), modelRef);
 				const keepAlive = setInterval(() => {
 					res.write(": keepalive\n\n");
 				}, 15000);
