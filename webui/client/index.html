@@ -39,11 +39,12 @@
       <h1>Magpie Sessions</h1>
       <div class="stack">
         <button id="refreshButton">Refresh</button>
-        <div>
-          <label class="tiny" for="newTitle">New web session</label>
+        <div class="stack">
+          <label class="tiny" for="newTitle">New remote session</label>
+          <input id="newTitle" placeholder="Optional title" />
           <div class="row">
-            <input id="newTitle" placeholder="Optional title" />
-            <button id="createButton">Create</button>
+            <button id="createCodingButton">New coding</button>
+            <button id="createAssistantButton" class="secondary">New assistant</button>
           </div>
         </div>
         <div>

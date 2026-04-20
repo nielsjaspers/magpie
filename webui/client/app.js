@@ -191,13 +191,16 @@ async function deleteRemote(sessionId) {
   await refreshRemoteSessions();
 }
 
-async function createSession() {
+async function createSession(kind = 'assistant') {
   const title = document.getElementById('newTitle').value.trim();
   const modelRef = modelRefEl.value.trim();
+  const body = kind === 'coding'
+    ? { kind: 'coding', origin: 'remote', workspaceMode: 'attached', title, modelRef }
+    : { kind: 'assistant', origin: 'assistant', assistantChannel: 'web', title, modelRef };
   const result = await request('/api/v1/sessions', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ kind: 'assistant', origin: 'assistant', assistantChannel: 'web', title, modelRef }),
+    body: JSON.stringify(body),
   });
   await refreshSessions();
   await openSession(result.sessionId);
@@ -231,7 +234,8 @@ async function interruptSession() {
 document.getElementById('refreshButton').onclick = refreshSessions;
 document.getElementById('refreshRemoteButton').onclick = refreshRemoteSessions;
 document.getElementById('dispatchButton').onclick = dispatchActiveSession;
-document.getElementById('createButton').onclick = createSession;
+document.getElementById('createCodingButton').onclick = () => createSession('coding');
+document.getElementById('createAssistantButton').onclick = () => createSession('assistant');
 document.getElementById('sendButton').onclick = sendMessage;
 document.getElementById('interruptButton').onclick = interruptSession;
 document.getElementById('reloadButton').onclick = () => state.activeSessionId && openSession(state.activeSessionId);
