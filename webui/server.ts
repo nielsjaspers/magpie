@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
@@ -119,6 +119,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		tools: [],
 		hostId: "magpie-remote-host",
 		hostRole: "remote",
+		agentDir: globalBaseDir,
 	});
 
 	const codingHost = new CodingSessionHost({
@@ -133,6 +134,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		hostRole: "remote",
 		workspaceArchiveExcludes: loadedConfig.remote?.tarExclude,
 		maxWorkspaceArchiveBytes: loadedConfig.remote?.maxTarSize,
+		agentDir: globalBaseDir,
 	});
 
 	return {
@@ -156,6 +158,70 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 				resolve(data ? JSON.parse(data) : {});
 			} catch (error) {
 				reject(error);
+			}
+		});
+		req.on("error", reject);
+	});
+}
+
+function parseMultipartFormData(req: IncomingMessage): Promise<Array<{ name: string; filename?: string; contentType?: string; data: Buffer }>> {
+	return new Promise((resolve, reject) => {
+		const contentType = req.headers["content-type"] || "";
+		const match = contentType.match(/boundary=([^;]+)/i);
+		if (!match) return reject(new Error("Missing multipart boundary"));
+		let boundary = match[1].trim();
+		if (boundary.startsWith('"') && boundary.endsWith('"')) boundary = boundary.slice(1, -1);
+
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+		req.on("end", () => {
+			try {
+				const body = Buffer.concat(chunks);
+				const boundaryBuf = Buffer.from(`--${boundary}`);
+				const parts: Array<{ name: string; filename?: string; contentType?: string; data: Buffer }> = [];
+
+				let idx = 0;
+				while (true) {
+					idx = body.indexOf(boundaryBuf, idx);
+					if (idx === -1) break;
+					idx += boundaryBuf.length;
+
+					if (body.slice(idx, idx + 2).toString() === "--") break;
+
+					if (body.slice(idx, idx + 2).toString() === "\r\n") idx += 2;
+					else if (body[idx] === 0x0a) idx += 1;
+
+					const nextBoundary = body.indexOf(boundaryBuf, idx);
+					if (nextBoundary === -1) break;
+
+					let partEnd = nextBoundary;
+					if (body[partEnd - 2] === 0x0d && body[partEnd - 1] === 0x0a) partEnd -= 2;
+					else if (body[partEnd - 1] === 0x0a) partEnd -= 1;
+
+					const part = body.slice(idx, partEnd);
+					const headerEnd = part.indexOf("\r\n\r\n");
+					if (headerEnd === -1) continue;
+
+					const headerStr = part.slice(0, headerEnd).toString("utf8");
+					const data = part.slice(headerEnd + 4);
+
+					const nameMatch = headerStr.match(/name="([^"]+)"/);
+					const filenameMatch = headerStr.match(/filename="([^"]*)"/);
+					const ctMatch = headerStr.match(/Content-Type:\s*([^\r\n]+)/i);
+
+					if (nameMatch) {
+						parts.push({
+							name: nameMatch[1],
+							filename: filenameMatch ? filenameMatch[1] : undefined,
+							contentType: ctMatch ? ctMatch[1].trim() : undefined,
+							data,
+						});
+					}
+					idx = nextBoundary;
+				}
+				resolve(parts);
+			} catch (err) {
+				reject(err);
 			}
 		});
 		req.on("error", reject);
@@ -469,6 +535,36 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				if (!snapshot) return sendJson(res, 404, { error: "Session not found" });
 				return sendJson(res, 200, snapshot);
 			}
+			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/files") {
+				try {
+					const parts = await parseMultipartFormData(req);
+					const fileParts = parts.filter((p) => p.filename);
+					if (fileParts.length === 0) return sendJson(res, 400, { error: "No files uploaded" });
+
+					const codingSession = await codingHost.getSession(sessionPath.sessionId);
+					if (!codingSession) {
+						const assistantSession = await host.getSession(sessionPath.sessionId);
+						if (assistantSession) return sendJson(res, 400, { error: "File uploads are only supported for coding sessions" });
+						return sendJson(res, 404, { error: "Session not found" });
+					}
+
+					const workspaceDir = codingSession.metadata.cwd;
+					const results: string[] = [];
+
+					for (const part of fileParts) {
+						const targetPath = resolve(workspaceDir, part.filename!);
+						if (!targetPath.startsWith(workspaceDir)) {
+							return sendJson(res, 400, { error: "Invalid filename" });
+						}
+						await writeFile(targetPath, part.data);
+						results.push(part.filename!);
+					}
+
+					return sendJson(res, 200, { ok: true, files: results });
+				} catch (err) {
+					return sendJson(res, 500, { error: (err as Error).message });
+				}
+			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
 				const body = await readBody(req);
 				const text = String(body.text || "");
@@ -583,6 +679,10 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 
 			return sendJson(res, 404, { error: "Not found" });
 		} catch (error) {
+			if (res.headersSent) {
+				if (!res.writableEnded) res.end();
+				return;
+			}
 			return sendJson(res, 500, { error: (error as Error).message });
 		}
 	});

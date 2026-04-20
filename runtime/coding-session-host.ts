@@ -90,6 +90,7 @@ export interface CodingSessionHostConfig {
 	hostRole?: "local" | "remote";
 	workspaceArchiveExcludes?: string[];
 	maxWorkspaceArchiveBytes?: number;
+	agentDir?: string;
 }
 
 export class CodingSessionHost implements SessionHost {
@@ -97,6 +98,7 @@ export class CodingSessionHost implements SessionHost {
 	readonly hostRole: "local" | "remote";
 
 	private readonly hostCwd: string;
+	private readonly agentDir: string;
 	private readonly sessionsDir: string;
 	private readonly registryPath: string;
 	private readonly workspaceRootDir: string;
@@ -114,6 +116,7 @@ export class CodingSessionHost implements SessionHost {
 		this.hostId = config.hostId ?? "magpie-coding-host";
 		this.hostRole = config.hostRole ?? "remote";
 		this.hostCwd = config.hostCwd;
+		this.agentDir = config.agentDir ?? resolve(process.env.HOME || "", ".pi/agent");
 		this.sessionsDir = resolve(config.storageDir, "sessions");
 		this.registryPath = resolve(config.storageDir, "coding-sessions.json");
 		this.workspaceRootDir = config.workspaceRootDir;
@@ -485,6 +488,8 @@ export class CodingSessionHost implements SessionHost {
 		if (!model) throw new Error(`Model not found: ${modelRef}`);
 		const systemPrompt = this.buildSystemPromptText ? await this.buildSystemPromptText() : "You are a helpful coding assistant. Be concise and effective.";
 		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: this.agentDir,
 			systemPromptOverride: () => systemPrompt,
 			appendSystemPromptOverride: () => [],
 		});

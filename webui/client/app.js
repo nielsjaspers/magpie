@@ -316,13 +316,14 @@ async function sendMessage() {
   if (!state.activeSessionId) return;
   
   const text = els.composer.value.trim();
-  const hasAttachments = state.attachments.length > 0;
+  const currentAttachments = state.attachments.slice(); // copy before clearing
+  const hasAttachments = currentAttachments.length > 0;
   
   if (!text && !hasAttachments) return;
   
   let displayText = text;
   if (hasAttachments) {
-    const fileNames = state.attachments.map(f => f.name).join(', ');
+    const fileNames = currentAttachments.map(f => f.name).join(', ');
     displayText = text ? `${text}\n\n*[Attached: ${fileNames}]*` : `*[Attached: ${fileNames}]*`;
   }
   
@@ -340,6 +341,18 @@ async function sendMessage() {
   els.sendBtn.classList.add('loading');
   
   try {
+    // Upload files to the session workspace first
+    if (hasAttachments) {
+      const formData = new FormData();
+      for (const file of currentAttachments) {
+        formData.append('file', file);
+      }
+      await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/files`, {
+        method: 'POST',
+        body: formData
+      });
+    }
+    
     await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/message`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

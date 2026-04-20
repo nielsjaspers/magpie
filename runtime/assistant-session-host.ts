@@ -54,6 +54,7 @@ export interface AssistantSessionHostConfig {
 	tools?: unknown[];
 	hostId?: string;
 	hostRole?: "local" | "remote";
+	agentDir?: string;
 }
 
 export interface AssistantSessionRuntime {
@@ -131,6 +132,7 @@ export class AssistantSessionHost implements SessionHost {
 	readonly hostRole: "local" | "remote";
 
 	private readonly hostCwd: string;
+	private readonly agentDir: string;
 	private readonly storageDir: string;
 	private readonly sessionsDir: string;
 	private readonly registryPath: string;
@@ -147,6 +149,7 @@ export class AssistantSessionHost implements SessionHost {
 		this.hostId = config.hostId ?? "magpie-host";
 		this.hostRole = config.hostRole ?? "remote";
 		this.hostCwd = config.hostCwd;
+		this.agentDir = config.agentDir ?? resolve(process.env.HOME || "", ".pi/agent");
 		this.storageDir = config.storageDir;
 		this.sessionsDir = resolve(this.storageDir, "sessions");
 		this.registryPath = resolve(this.storageDir, "thread-sessions.json");
@@ -613,6 +616,8 @@ export class AssistantSessionHost implements SessionHost {
 		if (!model) throw new Error(`Model not found: ${modelRef}`);
 		const systemPrompt = await this.buildSystemPromptText();
 		const resourceLoader = new DefaultResourceLoader({
+			cwd: this.hostCwd,
+			agentDir: this.agentDir,
 			systemPromptOverride: () => systemPrompt,
 			appendSystemPromptOverride: () => [],
 		});
