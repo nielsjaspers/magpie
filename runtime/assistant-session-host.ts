@@ -34,6 +34,13 @@ import type {
 	Unsubscribe,
 	WorkspaceMode,
 } from "./session-host-types.js";
+import { deriveAssistantOwner, isSameOwner } from "./session-ownership.js";
+import {
+	addSessionSubscriber,
+	clearSessionWatchers,
+	getSessionWatchers,
+	removeSessionSubscriber,
+} from "./session-watchers.js";
 
 export interface AssistantSessionHostConfig {
 	hostCwd: string;
@@ -340,16 +347,7 @@ export class AssistantSessionHost implements SessionHost {
 		if (modelRef) {
 			await this.getRuntime(sessionId, modelRef);
 		}
-		const listeners = this.listeners.get(sessionId) ?? new Set<HostedSessionListener>();
-		listeners.add(listener);
-		this.listeners.set(sessionId, listeners);
-		let watcherChanged = false;
-		if (watcher) {
-			const sessionWatchers = this.watchers.get(sessionId) ?? new Map<HostedSessionListener, SessionWatcher>();
-			watcherChanged = !sessionWatchers.has(listener);
-			sessionWatchers.set(listener, watcher);
-			this.watchers.set(sessionId, sessionWatchers);
-		}
+		const { watcherChanged } = addSessionSubscriber(this.listeners, this.watchers, sessionId, listener, watcher);
 		const snapshot = await this.getSnapshot(sessionId, modelRef);
 		if (snapshot) {
 			await listener({ type: "snapshot", session: snapshot });
@@ -357,16 +355,8 @@ export class AssistantSessionHost implements SessionHost {
 		}
 		if (watcherChanged) await this.emitStatus(sessionId, modelRef);
 		return () => {
-			const current = this.listeners.get(sessionId);
-			if (current) {
-				current.delete(listener);
-				if (current.size === 0) this.listeners.delete(sessionId);
-			}
-			const sessionWatchers = this.watchers.get(sessionId);
-			if (!sessionWatchers) return;
-			const removedWatcher = sessionWatchers.delete(listener);
-			if (sessionWatchers.size === 0) this.watchers.delete(sessionId);
-			if (removedWatcher) void this.emitStatus(sessionId, modelRef);
+			const { watcherRemoved } = removeSessionSubscriber(this.listeners, this.watchers, sessionId, listener);
+			if (watcherRemoved) void this.emitStatus(sessionId, modelRef);
 		};
 	}
 
@@ -537,7 +527,7 @@ export class AssistantSessionHost implements SessionHost {
 		await this.writeRegistry(registry);
 		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
 		this.runtimes.delete(sessionId);
-		this.watchers.delete(sessionId);
+		clearSessionWatchers(this.watchers, sessionId);
 	}
 
 	private async emit(sessionId: string, event: HostedSessionEvent) {
@@ -555,7 +545,7 @@ export class AssistantSessionHost implements SessionHost {
 	}
 
 	private getWatchers(sessionId: string): SessionWatcher[] {
-		return [...(this.watchers.get(sessionId)?.values() ?? [])];
+		return getSessionWatchers(this.watchers, sessionId);
 	}
 
 	private async ensurePromptableSession(sessionId: string, modelRef: string) {
@@ -734,21 +724,6 @@ export class AssistantSessionHost implements SessionHost {
 			watchers: this.getWatchers(sessionId),
 		};
 	}
-}
-
-function isSameOwner(left: SessionOwner | undefined, right: SessionOwner | undefined) {
-	if (!left || !right) return false;
-	return left.kind === right.kind && left.hostId === right.hostId && left.actorId === right.actorId;
-}
-
-function deriveAssistantOwner(hostId: string, channel: AssistantChannel | undefined, source: SendMessageInput["source"]): SessionOwner {
-	if (source === "telegram" || channel === "telegram") {
-		return { kind: "system", hostId, displayName: "Telegram assistant session" };
-	}
-	if (source === "web" || channel === "web") {
-		return { kind: "remote_web", hostId, displayName: "Remote web assistant session" };
-	}
-	return { kind: source === "schedule" ? "schedule" : "system", hostId, displayName: source === "schedule" ? "Scheduled assistant session" : "Assistant session" };
 }
 
 function extractTextFromUnknownContent(content: unknown): string | undefined {

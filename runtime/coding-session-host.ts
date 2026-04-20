@@ -31,6 +31,20 @@ import type {
 	Unsubscribe,
 } from "./session-host-types.js";
 import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "../remote/workspace.js";
+import {
+	canActorMutateCodingSession,
+	canClaimCodingOwnership,
+	codingOwnershipErrorMessage,
+	deriveCodingOwner,
+	isSameOwner,
+	resolveCodingMessageOwner,
+} from "./session-ownership.js";
+import {
+	addSessionSubscriber,
+	clearSessionWatchers,
+	getSessionWatchers,
+	removeSessionSubscriber,
+} from "./session-watchers.js";
 
 interface CodingSessionRegistryEntry {
 	sessionPath: string;
@@ -126,7 +140,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd,
 			workspaceDir: cwd,
 			modelRef,
-			owner: input.owner ?? deriveOwner(this.hostId, this.hostRole, input.origin, "system"),
+			owner: input.owner ?? deriveCodingOwner(this.hostId, this.hostRole, input.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId, modelRef);
 		if (!metadata) throw new Error(`Failed to create coding session metadata for ${sessionId}`);
@@ -162,7 +176,7 @@ export class CodingSessionHost implements SessionHost {
 			workspaceDir: targetWorkspace,
 			originalCwd: bundle.metadata.cwd,
 			modelRef: bundle.metadata.summary || undefined,
-			owner: input.owner ?? bundle.metadata.owner ?? deriveOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
+			owner: input.owner ?? bundle.metadata.owner ?? deriveCodingOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import coding session metadata for ${sessionId}`);
@@ -309,16 +323,7 @@ export class CodingSessionHost implements SessionHost {
 
 	async subscribe(sessionId: string, listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string): Promise<Unsubscribe> {
 		if (!(await this.hasStoredSession(sessionId))) throw new Error(`Session not found: ${sessionId}`);
-		const listeners = this.listeners.get(sessionId) ?? new Set<HostedSessionListener>();
-		listeners.add(listener);
-		this.listeners.set(sessionId, listeners);
-		let watcherChanged = false;
-		if (watcher) {
-			const sessionWatchers = this.watchers.get(sessionId) ?? new Map<HostedSessionListener, SessionWatcher>();
-			watcherChanged = !sessionWatchers.has(listener);
-			sessionWatchers.set(listener, watcher);
-			this.watchers.set(sessionId, sessionWatchers);
-		}
+		const { watcherChanged } = addSessionSubscriber(this.listeners, this.watchers, sessionId, listener, watcher);
 		const snapshot = await this.getSnapshot(sessionId, modelRef);
 		if (snapshot) {
 			await listener({ type: "snapshot", session: snapshot });
@@ -326,16 +331,8 @@ export class CodingSessionHost implements SessionHost {
 		}
 		if (watcherChanged) await this.emitStatus(sessionId, modelRef);
 		return () => {
-			const current = this.listeners.get(sessionId);
-			if (current) {
-				current.delete(listener);
-				if (current.size === 0) this.listeners.delete(sessionId);
-			}
-			const sessionWatchers = this.watchers.get(sessionId);
-			if (!sessionWatchers) return;
-			const removedWatcher = sessionWatchers.delete(listener);
-			if (sessionWatchers.size === 0) this.watchers.delete(sessionId);
-			if (removedWatcher) void this.emitStatus(sessionId, modelRef);
+			const { watcherRemoved } = removeSessionSubscriber(this.listeners, this.watchers, sessionId, listener);
+			if (watcherRemoved) void this.emitStatus(sessionId, modelRef);
 		};
 	}
 
@@ -343,7 +340,7 @@ export class CodingSessionHost implements SessionHost {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
 		if (entry?.owner && actor && !canActorMutateCodingSession(entry.owner, actor)) {
-			throw new Error(`Session ${entry.sessionPath} is owned by ${entry.owner.displayName || entry.owner.kind}; explicit transfer is required before interrupting it.`);
+			throw new Error(codingOwnershipErrorMessage(entry.sessionPath, entry.owner, "interrupting"));
 		}
 		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
 		runtime.runState = "aborting";
@@ -361,7 +358,7 @@ export class CodingSessionHost implements SessionHost {
 		const entry = registry[sessionId];
 		if (!entry) throw new Error(`Session not found: ${sessionId}`);
 		if (!canClaimCodingOwnership(entry.owner, owner)) {
-			throw new Error(`Session ${entry.sessionPath} is owned by ${entry.owner?.displayName || entry.owner?.kind}; explicit transfer is required before changing ownership.`);
+			throw new Error(codingOwnershipErrorMessage(entry.sessionPath, entry.owner, "changing ownership"));
 		}
 		const changed = !isSameOwner(entry.owner, owner);
 		entry.owner = owner;
@@ -391,7 +388,7 @@ export class CodingSessionHost implements SessionHost {
 		await this.writeRegistry(registry);
 		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
 		this.runtimes.delete(sessionId);
-		this.watchers.delete(sessionId);
+		clearSessionWatchers(this.watchers, sessionId);
 	}
 
 	private async getMetadata(sessionId: string, modelRef?: string): Promise<HostedSessionMetadata | undefined> {
@@ -463,7 +460,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd,
 			workspaceDir: cwd,
 			modelRef,
-			owner: deriveOwner(this.hostId, this.hostRole, "remote", "system"),
+			owner: deriveCodingOwner(this.hostId, this.hostRole, "remote", "system"),
 		});
 		return session;
 	}
@@ -567,7 +564,7 @@ export class CodingSessionHost implements SessionHost {
 	}
 
 	private getWatchers(sessionId: string): SessionWatcher[] {
-		return [...(this.watchers.get(sessionId)?.values() ?? [])];
+		return getSessionWatchers(this.watchers, sessionId);
 	}
 
 	private matchesFilter(summary: HostedSessionSummary, filter?: SessionFilter): boolean {
@@ -609,65 +606,6 @@ export class CodingSessionHost implements SessionHost {
 			watchers: this.getWatchers(sessionId),
 		};
 	}
-}
-
-function isSameOwner(left: SessionOwner | undefined, right: SessionOwner | undefined) {
-	if (!left || !right) return false;
-	return left.kind === right.kind && left.hostId === right.hostId && left.actorId === right.actorId;
-}
-
-function canClaimCodingOwnership(currentOwner: SessionOwner | undefined, nextOwner: SessionOwner) {
-	if (!currentOwner) return true;
-	return isSameOwner(currentOwner, nextOwner);
-}
-
-function canActorMutateCodingSession(currentOwner: SessionOwner, actor: SessionOwner) {
-	if (isSameOwner(currentOwner, actor)) return true;
-	if (
-		currentOwner.kind === "remote_dispatch"
-		&& actor.kind === "remote_web"
-		&& currentOwner.hostId === actor.hostId
-	) {
-		return true;
-	}
-	return false;
-}
-
-function resolveCodingMessageOwner(
-	hostId: string,
-	hostRole: "local" | "remote",
-	entry: CodingSessionRegistryEntry,
-	input: SendMessageInput,
-): SessionOwner {
-	if (input.source === "system") return entry.owner ?? deriveOwner(hostId, hostRole, entry.origin, input.source);
-	const actor = input.actor ?? deriveOwner(hostId, hostRole, entry.origin, input.source);
-	if (!entry.owner) return actor;
-	if (!canActorMutateCodingSession(entry.owner, actor)) {
-		throw new Error(`Session ${entry.sessionPath} is owned by ${entry.owner.displayName || entry.owner.kind}; explicit transfer is required before mutating it.`);
-	}
-	return entry.owner;
-}
-
-function deriveOwner(hostId: string, hostRole: "local" | "remote", origin: HostedSessionMetadata["origin"] | undefined, source: SendMessageInput["source"]): SessionOwner {
-	if (hostRole === "local") {
-		return {
-			kind: source === "schedule" ? "schedule" : "local_tui",
-			hostId,
-			displayName: source === "schedule" ? "Scheduled local run" : "Local TUI",
-		};
-	}
-	if (origin === "local" || origin === "imported") {
-		return {
-			kind: "remote_dispatch",
-			hostId,
-			displayName: "Remote dispatched session",
-		};
-	}
-	return {
-		kind: source === "schedule" ? "schedule" : "remote_web",
-		hostId,
-		displayName: source === "schedule" ? "Scheduled remote run" : "Remote web session",
-	};
 }
 
 function sanitizeSessionIdForFilename(sessionId: string): string {
