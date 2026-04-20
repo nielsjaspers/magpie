@@ -382,7 +382,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 			}
 
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/models") {
-				const models = modelRegistry.list();
+				const models = modelRegistry.models; // 'models' getter instead of 'list()' function
 				return sendJson(res, 200, { models, defaultModel: defaultModelRef });
 			}
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/sessions") {

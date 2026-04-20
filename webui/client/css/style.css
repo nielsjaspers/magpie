@@ -1,10 +1,4 @@
 /* Magpie Refined Aesthetics */
-@font-face {
-  font-family: 'Ancizar';
-  /* Replace with the actual URL to Ancizar if available, or fallback */
-  src: local('Ancizar'), local('Helvetica Neue'), local('Helvetica'), local('Arial'), sans-serif;
-}
-
 :root {
   /* Editorial Palette */
   --bg-color: #F2EADF; /* Warm cream paper */
@@ -24,7 +18,7 @@
   --font-display: 'Fraunces', ui-serif, serif;
   
   /* Fallback to system fonts but use a nice readable stack for body */
-  --font-body: 'Ancizar', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-body: 'Ancizar Serif', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   
   /* Spacing & Structure */
   --sidebar-width: 320px;
@@ -141,7 +135,8 @@ h1, h2, h3, h4, h5, h6 {
 
 .session-item {
   display: flex;
-  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
   padding: var(--spacing-md);
   background: transparent;
   border: 1px solid transparent;
@@ -153,6 +148,15 @@ h1, h2, h3, h4, h5, h6 {
 
 .session-item:hover {
   background: rgba(255, 255, 255, 0.4);
+}
+
+.session-item:hover .hide-session-btn {
+  opacity: 1;
+}
+
+.session-item-content {
+  flex: 1;
+  min-width: 0;
 }
 
 .session-item.active {
@@ -176,6 +180,27 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+.hide-session-btn {
+  opacity: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  transition: opacity 0.2s ease;
+  flex-shrink: 0;
+}
+.hide-session-btn:hover {
+  color: var(--danger-color);
+}
+
+@media (max-width: 768px) {
+  .hide-session-btn {
+    opacity: 1;
+  }
+}
+
 
 /* Main Content */
 .main-content {
@@ -233,30 +258,22 @@ h1, h2, h3, h4, h5, h6 {
   align-items: center;
 }
 
-.model-select {
+.model-select-composer {
   appearance: none;
   background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 6px 28px 6px 12px;
+  border: none;
   font-family: var(--font-body);
-  font-size: 13px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  max-width: 180px;
-  text-overflow: ellipsis;
-}
-
-.model-select:focus {
-  outline: none;
-  border-color: var(--text-secondary);
-}
-
-.select-icon {
-  position: absolute;
-  right: 10px;
-  pointer-events: none;
+  font-size: 11px;
   color: var(--text-muted);
+  cursor: pointer;
+  max-width: 60px;
+  text-align: center;
+  padding: 0;
+}
+
+.model-select-composer:focus {
+  outline: none;
+  color: var(--text-primary);
 }
 
 /* Messages Area */
@@ -381,16 +398,19 @@ h1, h2, h3, h4, h5, h6 {
   max-width: 100%;
 }
 
-/* System Message */
+/* System Message / Tool calls */
 .message.system {
   align-items: center;
+  margin-top: calc(-0.25 * var(--spacing-lg)); /* Slightly pull closer, not completely flush */
+  margin-bottom: calc(-0.25 * var(--spacing-lg));
+  z-index: 1;
 }
 
 .message.system .message-content {
   font-size: 13px;
   color: var(--text-muted);
   font-style: italic;
-  padding: var(--spacing-sm) var(--spacing-md);
+  padding: 0 var(--spacing-md);
 }
 
 /* Composer Area */
@@ -583,6 +603,24 @@ h1, h2, h3, h4, h5, h6 {
   cursor: not-allowed;
 }
 
+.send-btn.loading svg {
+  display: none;
+}
+
+.send-btn.loading .spinner {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  100% { transform: rotate(360deg); }
+}
+
 /* Drag & Drop */
 .drop-overlay {
   position: absolute;
@@ -634,8 +672,9 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 @media (max-width: 768px) {
-  /* Hide desktop sidebar */
   .sidebar {
+    width: 95vw;
+    max-width: 500px;
     position: absolute;
     top: 0;
     left: -100%;

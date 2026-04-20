@@ -23,7 +23,8 @@ const els = {
   attachBtn: document.getElementById('attachBtn'),
   copyIdBtn: document.getElementById('copyIdBtn'),
   interruptBtn: document.getElementById('interruptBtn'),
-  newSessionBtn: document.getElementById('newSessionBtn'),
+  newAssistantBtn: document.getElementById('newAssistantBtn'),
+  newCodingBtn: document.getElementById('newCodingBtn'),
   mobileNewSessionBtn: document.getElementById('mobileNewSessionBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
   sidebar: document.getElementById('sidebar'),
@@ -57,8 +58,9 @@ async function init() {
 
 function setupEventListeners() {
   els.refreshBtn.addEventListener('click', refreshSessions);
-  els.newSessionBtn.addEventListener('click', createSession);
-  els.mobileNewSessionBtn.addEventListener('click', createSession);
+  els.newAssistantBtn.addEventListener('click', () => createSession('assistant'));
+  els.newCodingBtn.addEventListener('click', () => createSession('coding'));
+  els.mobileNewSessionBtn.addEventListener('click', () => createSession('assistant'));
   els.sendBtn.addEventListener('click', sendMessage);
   els.interruptBtn.addEventListener('click', interruptSession);
   
@@ -253,11 +255,14 @@ function connectStream(sessionId) {
 
 // --- Actions ---
 
-async function createSession() {
+async function createSession(kind = 'assistant') {
   try {
     const modelRef = getSelectedModel();
-    // Defaulting to assistant session from web UI for now. Can be expanded to modal later.
-    const body = { kind: 'assistant', origin: 'assistant', assistantChannel: 'web', title: 'New Conversation', modelRef };
+    const title = 'New ' + (kind === 'coding' ? 'Coding' : 'Conversation');
+    
+    const body = kind === 'coding'
+      ? { kind: 'coding', origin: 'remote', workspaceMode: 'attached', title, modelRef }
+      : { kind: 'assistant', origin: 'assistant', assistantChannel: 'web', title, modelRef };
     
     const result = await request('/api/v1/sessions', {
       method: 'POST',
@@ -297,7 +302,7 @@ async function sendMessage() {
   renderAttachments();
   
   els.sendBtn.disabled = true;
-  els.sendBtn.innerHTML = `<svg class="spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
+  els.sendBtn.classList.add('loading');
   
   try {
     await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/message`, {
@@ -311,7 +316,7 @@ async function sendMessage() {
     renderMessages();
   } finally {
     els.sendBtn.disabled = false;
-    els.sendBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
+    els.sendBtn.classList.remove('loading');
   }
 }
 
@@ -354,6 +359,31 @@ function renderModelSelect() {
   });
 }
 
+async function archiveSession(sessionId, event) {
+  event.stopPropagation(); // Don't trigger the row click
+  try {
+    await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' }
+    });
+    // If we just archived the active session, clear it
+    if (state.activeSessionId === sessionId) {
+      state.activeSessionId = null;
+      els.sessionTitle.textContent = 'Select a session';
+      els.sessionMeta.textContent = '';
+      state.activeMessages = [];
+      renderMessages();
+      if (state.stream) {
+        state.stream.close();
+        state.stream = null;
+      }
+    }
+    await refreshSessions();
+  } catch (err) {
+    console.error('Failed to archive session', err);
+  }
+}
+
 function renderSessionsList() {
   els.sessionList.innerHTML = '';
   
@@ -371,11 +401,17 @@ function renderSessionsList() {
     const kind = session.kind === 'coding' ? 'Coding' : 'Assistant';
     
     el.innerHTML = `
-      <div class="session-item-title" title="${title}">${title}</div>
-      <div class="session-item-meta">${kind} · ${session.updatedAt.split('T')[0]}</div>
+      <div class="session-item-content">
+        <div class="session-item-title" title="${title}">${title}</div>
+        <div class="session-item-meta">${kind} · ${session.updatedAt.split('T')[0]}</div>
+      </div>
+      <button class="hide-session-btn" aria-label="Archive" title="Archive session">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
+      </button>
     `;
     
     el.onclick = () => openSession(session.sessionId);
+    el.querySelector('.hide-session-btn').onclick = (e) => archiveSession(session.sessionId, e);
     els.sessionList.appendChild(el);
   });
 }
