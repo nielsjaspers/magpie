@@ -70,6 +70,7 @@ export interface HostedSessionSummary {
 }
 
 export interface HostedSessionStatus extends HostedSessionSummary {
+	activeTurnId?: string;
 	queueDepth?: number;
 	lastError?: string;
 	watchers?: SessionWatcher[];
@@ -140,11 +141,26 @@ export interface AcceptedMessage {
 	runState: HostedSessionRunState;
 }
 
+export interface HostedSessionHandle {
+	metadata: HostedSessionMetadata;
+	getPiSession(modelRef?: string): Promise<unknown>;
+	getStatus(modelRef?: string): Promise<HostedSessionStatus | undefined>;
+	getSnapshot(modelRef?: string, limit?: number): Promise<HostedSessionSnapshot | undefined>;
+	subscribe(listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string): Promise<Unsubscribe>;
+	sendUserMessage(input: SendMessageInput): Promise<AcceptedMessage>;
+	interrupt(actor?: SessionOwner, modelRef?: string): Promise<void>;
+	claimOwnership(owner: SessionOwner): Promise<void>;
+	releaseOwnership(owner?: SessionOwner): Promise<void>;
+	archive(reason?: ArchiveReason): Promise<void>;
+	export(modelRef?: string): Promise<ExportedSessionBundle>;
+}
+
 export interface SessionHost {
 	hostId: string;
 	hostRole: "local" | "remote";
-	createSession(input: CreateSessionInput): Promise<HostedSessionMetadata>;
-	importSession(input: ImportSessionInput): Promise<HostedSessionMetadata>;
+	getSession(sessionId: string, modelRef?: string): Promise<HostedSessionHandle | undefined>;
+	createSession(input: CreateSessionInput): Promise<HostedSessionHandle>;
+	importSession(input: ImportSessionInput): Promise<HostedSessionHandle>;
 	exportSession(sessionId: string, modelRef?: string): Promise<ExportedSessionBundle>;
 	sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage>;
 	listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]>;

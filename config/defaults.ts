@@ -117,7 +117,7 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		tarExclude: ["node_modules", ".pi/sessions", "dist", "build", ".venv", "__pycache__", ".git"],
 	},
 	webui: {
-		enabled: true,
+		enabled: false,
 		port: 8787,
 		bind: "localhost",
 	},

@@ -62,6 +62,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		const config = await loadConfig(ctx.cwd);
+		if (config.webui?.enabled !== true) return;
 		serverState ??= { activeSessions: 0 };
 		serverState.activeSessions += 1;
 		try {
@@ -74,7 +76,9 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_shutdown", async (_event, _ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
+		const config = await loadConfig(ctx.cwd);
+		if (config.webui?.enabled !== true) return;
 		if (!serverState) return;
 		serverState.activeSessions = Math.max(0, serverState.activeSessions - 1);
 		await maybeStopServer();

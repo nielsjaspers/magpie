@@ -65,30 +65,39 @@ export async function createSessionRoute(host: SessionHost, input: CreateSession
 	if (input.kind !== "assistant") {
 		throw new Error("Only assistant session creation is supported by the current host");
 	}
-	const metadata = await host.createSession({
+	const session = await host.createSession({
 		...input,
 		owner: input.owner ?? (input.assistantChannel === "web"
 			? { kind: "remote_web", hostId: host.hostId, displayName: "Remote web assistant session" }
 			: undefined),
 	});
-	return { sessionId: metadata.sessionId, metadata };
+	return { sessionId: session.metadata.sessionId, metadata: session.metadata };
+}
+
+async function requireSessionHandle(host: SessionHost, sessionId: string, modelRef?: string) {
+	const session = await host.getSession(sessionId, modelRef);
+	if (!session) throw new Error(`Session not found: ${sessionId}`);
+	return session;
 }
 
 export async function getSessionStatusRoute(host: SessionHost, sessionId: string, modelRef?: string) {
-	const status = await host.getStatus(sessionId, modelRef);
+	const session = await requireSessionHandle(host, sessionId, modelRef);
+	const status = await session.getStatus(modelRef);
 	if (!status) throw new Error(`Session not found: ${sessionId}`);
 	return status;
 }
 
 export async function getSessionSnapshotRoute(host: SessionHost, sessionId: string, modelRef?: string, limit = 50) {
-	const snapshot = await host.getSnapshot(sessionId, modelRef, limit);
+	const session = await requireSessionHandle(host, sessionId, modelRef);
+	const snapshot = await session.getSnapshot(modelRef, limit);
 	if (!snapshot) throw new Error(`Session not found: ${sessionId}`);
 	return snapshot;
 }
 
 export async function sendSessionMessageRoute(host: SessionHost, sessionId: string, input: SendMessageInput) {
-	const accepted = await host.sendUserMessage(sessionId, input);
-	const snapshot = await host.getSnapshot(sessionId, input.modelRef, 8);
+	const session = await requireSessionHandle(host, sessionId, input.modelRef);
+	const accepted = await session.sendUserMessage(input);
+	const snapshot = await session.getSnapshot(input.modelRef, 8);
 	const text = snapshot?.messages.at(-1)?.role === "assistant" ? snapshot.messages.at(-1)?.text || "" : "";
 	return { sessionId, accepted, text };
 }

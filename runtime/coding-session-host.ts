@@ -16,6 +16,7 @@ import type {
 	CreateSessionInput,
 	ExportedSessionBundle,
 	HostedSessionEvent,
+	HostedSessionHandle,
 	HostedSessionListener,
 	HostedSessionMetadata,
 	HostedSessionRunState,
@@ -45,6 +46,7 @@ import {
 	getSessionWatchers,
 	removeSessionSubscriber,
 } from "./session-watchers.js";
+import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
 
 interface CodingSessionRegistryEntry {
 	sessionPath: string;
@@ -69,6 +71,7 @@ interface CodingSessionRuntime {
 	sessionPromise: Promise<AgentSession>;
 	queue: Promise<void>;
 	runState: HostedSessionRunState;
+	activeTurnId?: string;
 	queueDepth: number;
 	lastError?: string;
 	cwd: string;
@@ -122,7 +125,13 @@ export class CodingSessionHost implements SessionHost {
 		this.maxWorkspaceArchiveBytes = config.maxWorkspaceArchiveBytes;
 	}
 
-	async createSession(input: CreateSessionInput): Promise<HostedSessionMetadata> {
+	async getSession(sessionId: string, modelRef?: string): Promise<HostedSessionHandle | undefined> {
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) return undefined;
+		return this.createHandle(sessionId, metadata);
+	}
+
+	async createSession(input: CreateSessionInput): Promise<HostedSessionHandle> {
 		if (input.kind !== "coding") throw new Error(`Unsupported session kind for coding host: ${input.kind}`);
 		const sessionId = randomUUID();
 		const modelRef = input.modelRef?.trim();
@@ -144,10 +153,10 @@ export class CodingSessionHost implements SessionHost {
 		});
 		const metadata = await this.getMetadata(sessionId, modelRef);
 		if (!metadata) throw new Error(`Failed to create coding session metadata for ${sessionId}`);
-		return metadata;
+		return this.createHandle(sessionId, metadata);
 	}
 
-	async importSession(input: ImportSessionInput): Promise<HostedSessionMetadata> {
+	async importSession(input: ImportSessionInput): Promise<HostedSessionHandle> {
 		const { bundle } = input;
 		if (bundle.metadata.kind !== "coding") throw new Error(`Unsupported imported session kind for coding host: ${bundle.metadata.kind}`);
 		await this.ensureDirs();
@@ -180,7 +189,7 @@ export class CodingSessionHost implements SessionHost {
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import coding session metadata for ${sessionId}`);
-		return metadata;
+		return this.createHandle(sessionId, metadata);
 	}
 
 	async exportSession(sessionId: string, modelRef?: string): Promise<ExportedSessionBundle> {
@@ -233,6 +242,7 @@ export class CodingSessionHost implements SessionHost {
 		const accepted: AcceptedMessage = { sessionId, accepted: true, queued, runState: queued ? "running" : runtime.runState };
 		const pending = runtime.queue.then(async () => {
 			runtime.runState = "running";
+			runtime.activeTurnId = randomUUID();
 			await this.persistRuntimeState(sessionId, runtime);
 			await this.emitStatus(sessionId, modelRef);
 			try {
@@ -254,12 +264,14 @@ export class CodingSessionHost implements SessionHost {
 					unsubscribe();
 				}
 				runtime.runState = "idle";
+				runtime.activeTurnId = undefined;
 				runtime.lastError = undefined;
 				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "message_complete" });
 				await this.emitStatus(sessionId, modelRef);
 			} catch (error) {
 				runtime.runState = "error";
+				runtime.activeTurnId = undefined;
 				runtime.lastError = error instanceof Error ? error.message : String(error);
 				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "error", error: runtime.lastError });
@@ -290,7 +302,7 @@ export class CodingSessionHost implements SessionHost {
 		const hasRuntime = this.runtimes.has(sessionId);
 		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
 		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
-		const runtime = resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
+		const runtime = hasRuntime && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
 		let messageCount: number | undefined;
 		if (runtime) {
 			const session = await runtime.sessionPromise;
@@ -305,7 +317,7 @@ export class CodingSessionHost implements SessionHost {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
 		const resolvedModelRef = modelRef?.trim() || entry?.modelRef;
-		const runtime = entry && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
+		const runtime = this.runtimes.has(sessionId) && entry && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
 		let messages: HostedSessionSnapshot["messages"] = [];
 		if (runtime) {
 			const session = await runtime.sessionPromise;
@@ -344,11 +356,13 @@ export class CodingSessionHost implements SessionHost {
 		}
 		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
 		runtime.runState = "aborting";
+		runtime.activeTurnId ??= randomUUID();
 		await this.persistRuntimeState(sessionId, runtime);
 		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
 		const session = await runtime.sessionPromise;
 		await session.abort();
 		runtime.runState = "idle";
+		runtime.activeTurnId = undefined;
 		await this.persistRuntimeState(sessionId, runtime);
 		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
 	}
@@ -433,6 +447,7 @@ export class CodingSessionHost implements SessionHost {
 				queue: Promise.resolve(),
 				runState: "idle",
 				queueDepth: 0,
+				activeTurnId: undefined,
 				cwd,
 				modelRef,
 			};
@@ -579,9 +594,25 @@ export class CodingSessionHost implements SessionHost {
 		return [summary.sessionId, summary.title, summary.cwd].some((value) => value?.toLowerCase().includes(query));
 	}
 
+	private createHandle(sessionId: string, metadata: HostedSessionMetadata): HostedSessionHandle {
+		return {
+			metadata,
+			getPiSession: async (modelRef?: string) => (await this.getRuntimeForExistingSession(sessionId, modelRef)).sessionPromise,
+			getStatus: async (modelRef?: string) => await this.getStatus(sessionId, modelRef),
+			getSnapshot: async (modelRef?: string, limit?: number) => await this.getSnapshot(sessionId, modelRef, limit),
+			subscribe: async (listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string) => await this.subscribe(sessionId, listener, watcher, modelRef),
+			sendUserMessage: async (input: SendMessageInput) => await this.sendUserMessage(sessionId, input),
+			interrupt: async (actor?: SessionOwner, modelRef?: string) => await this.interrupt(sessionId, actor, modelRef),
+			claimOwnership: async (owner: SessionOwner) => await this.claimOwnership(sessionId, owner),
+			releaseOwnership: async (owner?: SessionOwner) => await this.releaseOwnership(sessionId, owner),
+			archive: async (reason?: ArchiveReason) => await this.archiveSession(sessionId, reason),
+			export: async (modelRef?: string) => await this.exportSession(sessionId, modelRef),
+		};
+	}
+
 	private toSummary(sessionId: string, entry: CodingSessionRegistryEntry): HostedSessionSummary {
 		const runtime = this.runtimes.get(sessionId);
-		return {
+		return buildHostedSessionSummary({
 			sessionId,
 			title: entry.title,
 			kind: "coding",
@@ -592,19 +623,21 @@ export class CodingSessionHost implements SessionHost {
 			cwd: entry.cwd ?? this.hostCwd,
 			owner: entry.owner,
 			watcherCount: this.getWatchers(sessionId).length,
+			sessionPath: entry.sessionPath,
 			loaded: this.runtimes.has(sessionId),
-		};
+		});
 	}
 
 	private toStatus(sessionId: string, entry: CodingSessionRegistryEntry, runtime: CodingSessionRuntime | undefined, messageCount?: number): HostedSessionStatus {
 		const summary = this.toSummary(sessionId, entry);
-		return {
-			...summary,
+		return buildHostedSessionStatus({
+			summary,
+			activeTurnId: runtime?.activeTurnId,
 			messageCount,
 			queueDepth: runtime?.queueDepth ?? 0,
 			lastError: runtime?.lastError ?? entry.lastError,
 			watchers: this.getWatchers(sessionId),
-		};
+		});
 	}
 }
 

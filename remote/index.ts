@@ -325,7 +325,7 @@ export function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/remote/import") {
 				const body = await readBody(req);
 				const bundle = deserializeSessionBundle(body.bundle as any);
-				const metadata = bundle.metadata.kind === "coding"
+				const session = bundle.metadata.kind === "coding"
 					? await webRuntime.codingHost.importSession({
 						bundle,
 						owner: {
@@ -335,7 +335,7 @@ export function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
 						},
 					})
 					: await webRuntime.host.importSession({ bundle });
-				sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
+				sendJson(res, 201, { sessionId: session.metadata.sessionId, metadata: session.metadata });
 				return true;
 			}
 			const remoteMatch = requestUrl.pathname.match(/^\/api\/v1\/remote\/sessions\/([^/]+)$/);
@@ -350,12 +350,14 @@ export function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
 				return true;
 			}
 			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/fetch") {
-				const body = await readBody(req);
+			if (sessionPath && (req.method === "POST" || req.method === "GET") && sessionPath.suffix === "/fetch") {
+				const body = req.method === "POST" ? await readBody(req) : {};
 				sendJson(res, 200, await prepareFetch(webRuntime.remote, webRuntime.codingHost, {
 					sessionId: sessionPath.sessionId,
 					fetchedAt: new Date().toISOString(),
-					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
+					targetCwd: typeof body.targetCwd === "string"
+						? body.targetCwd
+						: requestUrl.searchParams.get("targetCwd") || undefined,
 				}));
 				return true;
 			}

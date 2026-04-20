@@ -223,12 +223,18 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 		return [...codingSessions, ...assistantSessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	};
 
+	const getSessionAny = async (sessionId: string, modelRef?: string) => {
+		return await host.getSession(sessionId, modelRef) ?? await codingHost.getSession(sessionId, modelRef);
+	};
+
 	const getSessionStatusAny = async (sessionId: string, modelRef?: string) => {
-		return await host.getStatus(sessionId, modelRef) ?? await codingHost.getStatus(sessionId, modelRef);
+		const session = await getSessionAny(sessionId, modelRef);
+		return session ? await session.getStatus(modelRef) : undefined;
 	};
 
 	const getSessionSnapshotAny = async (sessionId: string, modelRef?: string, limit = 20) => {
-		return await host.getSnapshot(sessionId, modelRef, limit) ?? await codingHost.getSnapshot(sessionId, modelRef, limit);
+		const session = await getSessionAny(sessionId, modelRef);
+		return session ? await session.getSnapshot(modelRef, limit) : undefined;
 	};
 
 	const subscribeAny = async (sessionId: string, listener: any, watcher: { assistant?: any; coding?: any }, modelRef?: string) => {
@@ -400,13 +406,13 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				const body = await readBody(req);
 				const input = parseCreateSessionInput(body, defaultModelRef);
 				if (input.kind === "assistant") return sendJson(res, 201, await createSessionRoute(host, input));
-				const metadata = await codingHost.createSession({
+				const session = await codingHost.createSession({
 					...input,
 					workspaceMode: "attached",
 					origin: input.origin === "assistant" ? "remote" : input.origin,
 					owner: { kind: "remote_web", hostId: codingHost.hostId, displayName: "Remote web session" },
 				});
-				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
+				return sendJson(res, 201, { sessionId: session.metadata.sessionId, metadata: session.metadata });
 			}
 
 			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
@@ -432,15 +438,15 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				const body = await readBody(req);
 				const modelRef = typeof body.modelRef === "string" && body.modelRef.trim() ? body.modelRef : defaultModelRef;
 				try {
-					const bundle = await host.getStatus(sessionPath.sessionId, modelRef)
-						? await host.exportSession(sessionPath.sessionId, modelRef)
-						: await codingHost.exportSession(sessionPath.sessionId, modelRef);
+					const session = await getSessionAny(sessionPath.sessionId, modelRef);
+					if (!session) return sendJson(res, 404, { error: "Session not found" });
+					const bundle = await session.export(modelRef);
 					return sendJson(res, 200, serializeSessionBundle(bundle));
 				} catch {
 					return sendJson(res, 404, { error: "Session not found" });
 				}
 			}
-			if (sessionPath && req.method === "GET" && sessionPath.suffix === "") {
+			if (sessionPath && req.method === "GET" && (sessionPath.suffix === "" || sessionPath.suffix === "/status")) {
 				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
 				const status = await getSessionStatusAny(sessionPath.sessionId, modelRef);
 				if (!status) return sendJson(res, 404, { error: "Session not found" });

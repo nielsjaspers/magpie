@@ -18,6 +18,7 @@ import type {
 	ExportedSessionBundle,
 	ImportSessionInput,
 	HostedSessionEvent,
+	HostedSessionHandle,
 	HostedSessionListener,
 	HostedSessionLocation,
 	HostedSessionMetadata,
@@ -41,6 +42,7 @@ import {
 	getSessionWatchers,
 	removeSessionSubscriber,
 } from "./session-watchers.js";
+import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
 
 export interface AssistantSessionHostConfig {
 	hostCwd: string;
@@ -59,6 +61,7 @@ export interface AssistantSessionRuntime {
 	queue: Promise<void>;
 	sessionFilePromise: Promise<string | undefined>;
 	runState: HostedSessionRunState;
+	activeTurnId?: string;
 	queueDepth: number;
 	lastError?: string;
 }
@@ -91,6 +94,7 @@ export interface AssistantThreadStatus {
 	sessionId?: string;
 	createdAt?: string;
 	runState?: HostedSessionRunState;
+	activeTurnId?: string;
 	queueDepth?: number;
 	lastError?: string;
 	assistantChannel?: AssistantChannel;
@@ -153,7 +157,13 @@ export class AssistantSessionHost implements SessionHost {
 		this.tools = config.tools;
 	}
 
-	async createSession(input: CreateSessionInput): Promise<HostedSessionMetadata> {
+	async getSession(sessionId: string, modelRef?: string): Promise<HostedSessionHandle | undefined> {
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) return undefined;
+		return this.createHandle(sessionId, metadata);
+	}
+
+	async createSession(input: CreateSessionInput): Promise<HostedSessionHandle> {
 		if (input.kind !== "assistant") {
 			throw new Error(`Unsupported session kind for current host: ${input.kind}`);
 		}
@@ -170,10 +180,10 @@ export class AssistantSessionHost implements SessionHost {
 			workspaceMode: input.workspaceMode ?? "none",
 			modelRef,
 		});
-		return resolved.metadata;
+		return this.createHandle(resolved.sessionId, resolved.metadata);
 	}
 
-	async importSession(input: ImportSessionInput): Promise<HostedSessionMetadata> {
+	async importSession(input: ImportSessionInput): Promise<HostedSessionHandle> {
 		const { bundle } = input;
 		if (bundle.metadata.kind !== "assistant") {
 			throw new Error(`Unsupported imported session kind for current host: ${bundle.metadata.kind}`);
@@ -199,7 +209,7 @@ export class AssistantSessionHost implements SessionHost {
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import session metadata for ${sessionId}`);
-		return metadata;
+		return this.createHandle(sessionId, metadata);
 	}
 
 	async exportSession(sessionId: string, modelRef?: string): Promise<ExportedSessionBundle> {
@@ -254,6 +264,7 @@ export class AssistantSessionHost implements SessionHost {
 				queue: Promise.resolve(),
 				sessionFilePromise: Promise.resolve(undefined),
 				runState: "idle",
+				activeTurnId: undefined,
 				queueDepth: 0,
 			};
 			runtime.sessionFilePromise = runtime.sessionPromise.then((session) => session.sessionFile);
@@ -312,7 +323,7 @@ export class AssistantSessionHost implements SessionHost {
 		const entry = registry[sessionId];
 		const hasRuntime = this.runtimes.has(sessionId);
 		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
-		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
+		const runtime = hasRuntime && modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		let messageCount: number | undefined;
 		if (runtime) {
 			const session = await runtime.sessionPromise;
@@ -324,7 +335,7 @@ export class AssistantSessionHost implements SessionHost {
 	async getSnapshot(sessionId: string, modelRef?: string, limit = 20): Promise<HostedSessionSnapshot | undefined> {
 		const metadata = await this.getMetadata(sessionId, modelRef);
 		if (!metadata) return undefined;
-		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
+		const runtime = this.runtimes.has(sessionId) && modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		let messages: HostedSessionSnapshot["messages"] = [];
 		if (runtime) {
 			const session = await runtime.sessionPromise;
@@ -364,11 +375,13 @@ export class AssistantSessionHost implements SessionHost {
 		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		if (!runtime) return;
 		runtime.runState = "aborting";
+		runtime.activeTurnId ??= randomUUID();
 		await this.updateRegistryState(sessionId, { runState: runtime.runState, updatedAt: new Date().toISOString() });
 		await this.emitStatus(sessionId, modelRef);
 		const session = await runtime.sessionPromise;
 		await session.abort();
 		runtime.runState = "idle";
+		runtime.activeTurnId = undefined;
 		await this.updateRegistryState(sessionId, { runState: runtime.runState, updatedAt: new Date().toISOString() });
 		await this.emitStatus(sessionId, modelRef);
 	}
@@ -386,6 +399,7 @@ export class AssistantSessionHost implements SessionHost {
 			sessionId: status.sessionId,
 			createdAt: status.createdAt,
 			runState: status.runState,
+			activeTurnId: status.activeTurnId,
 			queueDepth: status.queueDepth,
 			lastError: status.lastError,
 			assistantChannel: status.assistantChannel,
@@ -406,6 +420,7 @@ export class AssistantSessionHost implements SessionHost {
 			sessionId: snapshot.status.sessionId,
 			createdAt: snapshot.status.createdAt,
 			runState: snapshot.status.runState,
+			activeTurnId: snapshot.status.activeTurnId,
 			queueDepth: snapshot.status.queueDepth,
 			lastError: snapshot.status.lastError,
 			assistantChannel: snapshot.status.assistantChannel,
@@ -431,6 +446,7 @@ export class AssistantSessionHost implements SessionHost {
 		};
 		const pending = runtime.queue.then(async () => {
 			runtime.runState = "running";
+			runtime.activeTurnId = randomUUID();
 			await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
 			await this.emitStatus(sessionId, input.modelRef);
 			try {
@@ -449,6 +465,7 @@ export class AssistantSessionHost implements SessionHost {
 					},
 				});
 				runtime.runState = "idle";
+				runtime.activeTurnId = undefined;
 				runtime.lastError = undefined;
 				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
 				await this.emit(sessionId, { type: "message_complete" });
@@ -456,6 +473,7 @@ export class AssistantSessionHost implements SessionHost {
 				return result;
 			} catch (error) {
 				runtime.runState = "error";
+				runtime.activeTurnId = undefined;
 				runtime.lastError = error instanceof Error ? error.message : String(error);
 				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: runtime.lastError, updatedAt: new Date().toISOString() });
 				await this.emit(sessionId, { type: "error", error: runtime.lastError });
@@ -475,7 +493,7 @@ export class AssistantSessionHost implements SessionHost {
 		const entry = registry[sessionId];
 		const hasRuntime = this.runtimes.has(sessionId);
 		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
-		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
+		const runtime = hasRuntime && modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		const runState = runtime?.runState ?? (entry.lastError ? "error" : "idle");
 		return {
 			sessionId,
@@ -688,9 +706,30 @@ export class AssistantSessionHost implements SessionHost {
 		].some((value) => value?.toLowerCase().includes(query));
 	}
 
+	private createHandle(sessionId: string, metadata: HostedSessionMetadata): HostedSessionHandle {
+		return {
+			metadata,
+			getPiSession: async (modelRef?: string) => {
+				const registry = await this.readRegistry();
+				const resolvedModelRef = modelRef?.trim() || registry[sessionId]?.modelRef;
+				if (!resolvedModelRef) throw new Error("modelRef is required for assistant session runtime access");
+				return (await this.getRuntime(sessionId, resolvedModelRef)).sessionPromise;
+			},
+			getStatus: async (modelRef?: string) => await this.getStatus(sessionId, modelRef),
+			getSnapshot: async (modelRef?: string, limit?: number) => await this.getSnapshot(sessionId, modelRef, limit),
+			subscribe: async (listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string) => await this.subscribe(sessionId, listener, watcher, modelRef),
+			sendUserMessage: async (input: SendMessageInput) => await this.sendUserMessage(sessionId, input),
+			interrupt: async (actor?: SessionOwner, modelRef?: string) => await this.interrupt(sessionId, actor, modelRef),
+			claimOwnership: async (owner: SessionOwner) => await this.claimOwnership(sessionId, owner),
+			releaseOwnership: async (owner?: SessionOwner) => await this.releaseOwnership(sessionId, owner),
+			archive: async (reason?: ArchiveReason) => await this.archiveSession(sessionId, reason),
+			export: async (modelRef?: string) => await this.exportSession(sessionId, modelRef),
+		};
+	}
+
 	private toSummary(sessionId: string, entry: AssistantSessionRegistryEntry): HostedSessionSummary {
 		const runtime = this.runtimes.get(sessionId);
-		return {
+		return buildHostedSessionSummary({
 			sessionId,
 			title: entry.title,
 			kind: entry.kind ?? "assistant",
@@ -705,7 +744,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantThreadId: entry.assistantThreadId,
 			sessionPath: entry.sessionPath,
 			loaded: this.runtimes.has(sessionId),
-		};
+		});
 	}
 
 	private toStatus(
@@ -715,14 +754,14 @@ export class AssistantSessionHost implements SessionHost {
 		messageCount?: number,
 	): HostedSessionStatus {
 		const summary = this.toSummary(sessionId, entry);
-		return {
-			...summary,
-			owner: entry.owner,
+		return buildHostedSessionStatus({
+			summary,
+			activeTurnId: runtime?.activeTurnId,
 			messageCount,
 			queueDepth: runtime?.queueDepth ?? 0,
 			lastError: runtime?.lastError ?? entry.lastError,
 			watchers: this.getWatchers(sessionId),
-		};
+		});
 	}
 }
 

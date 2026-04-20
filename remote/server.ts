@@ -35,19 +35,19 @@ export async function acceptDispatch(
 		hostId: codingHost.hostId,
 		displayName: "Remote dispatched session",
 	};
-	const metadata = await codingHost.importSession({ bundle, owner: remoteOwner });
+	const session = await codingHost.importSession({ bundle, owner: remoteOwner });
 	await storeRemoteBundle(runtime.store, input.payload, {
 		...bundle,
 		metadata: {
 			...bundle.metadata,
 			location: "remote",
-			remoteSessionId: metadata.sessionId,
+			remoteSessionId: session.metadata.sessionId,
 			owner: remoteOwner,
 		},
 	});
 	const modelRef = input.payload.modelRef?.trim() || bundle.metadata.summary?.trim() || defaultModelRef;
 	if (input.payload.note?.trim()) {
-		void codingHost.sendUserMessage(metadata.sessionId, {
+		void session.sendUserMessage({
 			text: input.payload.note.trim(),
 			modelRef,
 			source: "system",
@@ -58,9 +58,9 @@ export async function acceptDispatch(
 	}
 	return {
 		ok: true,
-		sessionId: metadata.sessionId,
+		sessionId: session.metadata.sessionId,
 		receivedAt: new Date().toISOString(),
-		metadata,
+		metadata: session.metadata,
 	};
 }
 
@@ -69,7 +69,9 @@ export async function prepareFetch(
 	codingHost: CodingSessionHost,
 	payload: FetchPayload,
 ) {
-	const exported = await codingHost.exportSession(payload.sessionId);
+	const session = await codingHost.getSession(payload.sessionId);
+	if (!session) throw new Error(`Session not found: ${payload.sessionId}`);
+	const exported = await session.export();
 	return {
 		ok: true,
 		sessionId: payload.sessionId,
@@ -84,9 +86,11 @@ export async function deleteRemoteSession(
 	codingHost: CodingSessionHost,
 	payload: FetchPayload,
 ) {
-	const exported = await codingHost.exportSession(payload.sessionId);
+	const session = await codingHost.getSession(payload.sessionId);
+	if (!session) throw new Error(`Session not found: ${payload.sessionId}`);
+	const exported = await session.export();
 	const record = await archiveRemoteBundle(runtime.store, payload, exported);
-	await codingHost.archiveSession(payload.sessionId, "fetched");
+	await session.archive("fetched");
 	return {
 		ok: true,
 		sessionId: payload.sessionId,
