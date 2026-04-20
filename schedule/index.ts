@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { loadConfig } from "../config/config.js";
+import { loadConfig, resolveSubagentModelRef } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import type { ScheduleBackend, ScheduleEntry, ScheduleRunState, ScheduleStore } from "./types.js";
 
@@ -146,6 +146,11 @@ async function writeManagedCrontab(managed: string[]) {
 }
 
 function createRunnerScript(entry: ScheduleEntry, piCommand: string): string {
+	const runtimeNodeDir = dirname(process.execPath);
+	const inheritedPath = process.env.PATH || "";
+	const runnerPath = [runtimeNodeDir, inheritedPath, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+		.filter(Boolean)
+		.join(":");
 	const cleanup = entry.backend === "cron_fallback" && entry.cronId
 		? `
 if command -v crontab >/dev/null 2>&1; then
@@ -158,7 +163,7 @@ fi
 		: "";
 	return `#!/usr/bin/env bash
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PATH=${shellEscape(runnerPath)}
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STATE_PATH=${shellEscape(entry.statePath)}
 RESULT_PATH=${shellEscape(entry.resultPath)}
@@ -283,27 +288,15 @@ async function scheduleTask(ctx: ExtensionContext, input: { when: string; task: 
 	return entry;
 }
 
-async function interpretScheduleRequestWithSubagent(
-	ctx: ExtensionContext,
-	subagentCore: SubagentCoreAPI,
-	raw: string,
-) {
-	const config = await loadConfig(ctx.cwd);
-	const result = await subagentCore.runSubagent(ctx, config, {
-		role: "custom",
-		label: "schedule-interpret",
-		task: [
-			"Interpret this scheduling request and return exactly one JSON object.",
-			"Required fields: when (string), task (string).",
-			"Only support one-shot scheduling for now.",
-			"If the request sounds recurring (for example 'every 2 hours'), still return the best one-shot interpretation only if unambiguous; otherwise return JSON with an error field explaining that recurring schedules are not supported yet.",
-			`User request: ${raw}`,
-		].join("\n\n"),
-		tools: "readonly",
-		timeout: 120000,
-	});
-	if (result.exitCode !== 0 || !result.output.trim()) throw new Error(result.errorMessage || "Schedule interpretation failed.");
-	const parsed = JSON.parse(result.output.trim()) as { when?: string; task?: string; error?: string };
+function renderScheduleInterpretProgress(partialOutput: string, toolCalls: Array<{ name: string }>) {
+	const lines = ["⏳ schedule: interpreting request"];
+	for (const item of toolCalls.slice(-6)) lines.push(`  → ${item.name}`);
+	if (partialOutput.trim()) lines.push(`  ${partialOutput.trim().split("\n")[0]}`);
+	return lines;
+}
+
+function parseInterpretedScheduleOutput(output: string) {
+	const parsed = JSON.parse(output.trim()) as { when?: string; task?: string; error?: string };
 	if (parsed.error?.trim()) throw new Error(parsed.error.trim());
 	if (!parsed.when?.trim() || !parsed.task?.trim()) throw new Error("Schedule interpretation did not return both when and task.");
 	return { when: parsed.when.trim(), task: parsed.task.trim() };
@@ -393,32 +386,62 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			let when: string | undefined;
-			let task: string | undefined;
 			const explicit = raw.match(/^(in\s+\d+\s+(?:minute|minutes|hour|hours|day|days)|\d{4}-\d{2}-\d{2}[^\s]*)\s+([\s\S]+)$/i);
 			if (explicit) {
-				when = explicit[1].trim();
-				task = explicit[2].trim();
-			} else if (subagentCore) {
 				try {
-					const interpreted = await interpretScheduleRequestWithSubagent(ctx, subagentCore, raw);
-					when = interpreted.when;
-					task = interpreted.task;
+					const entry = await scheduleTask(ctx, { when: explicit[1].trim(), task: explicit[2].trim() });
+					ctx.ui.notify(`Scheduled ${entry.id} for ${entry.runAt} using ${entry.backend}`, "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-					return;
 				}
-			} else {
+				return;
+			}
+			if (!subagentCore) {
 				ctx.ui.notify("Could not parse schedule request, and subagent core is unavailable for natural-language interpretation.", "error");
 				return;
 			}
-
-			try {
-				const entry = await scheduleTask(ctx, { when, task });
-				ctx.ui.notify(`Scheduled ${entry.id} for ${entry.runAt} using ${entry.backend}`, "info");
-			} catch (error) {
+			const config = await loadConfig(ctx.cwd);
+			const scheduleModel = resolveSubagentModelRef(config.subagents.schedule);
+			const widgetKey = `magpie-schedule-${Date.now()}`;
+			ctx.ui.setWidget(widgetKey, ["⏳ schedule: interpreting request"], { placement: "aboveEditor" });
+			void subagentCore.runSubagent(ctx, config, {
+				role: "custom",
+				label: "schedule-interpret",
+				task: [
+					"Interpret this scheduling request and return exactly one JSON object.",
+					"Required fields: when (string), task (string).",
+					"Only support one-shot scheduling for now.",
+					"If the request sounds recurring (for example 'every 2 hours'), return JSON with an error field explaining that recurring schedules are not supported yet.",
+					`User request: ${raw}`,
+				].join("\n\n"),
+				context: [
+					"You are running as a background /schedule interpretation subagent.",
+					"Return only valid JSON and do not ask follow-up questions.",
+				].join("\n"),
+				model: scheduleModel?.model,
+				thinkingLevel: scheduleModel?.thinkingLevel,
+				tools: "readonly",
+				timeout: 120000,
+			}, undefined, (progress) => {
+				ctx.ui.setWidget(widgetKey, renderScheduleInterpretProgress(progress.partialOutput, progress.toolCalls), { placement: "aboveEditor" });
+			}).then(async (result) => {
+				ctx.ui.setWidget(widgetKey, undefined);
+				if (result.exitCode !== 0 || !result.output.trim()) {
+					ctx.ui.notify(result.errorMessage || "Schedule interpretation failed.", "error");
+					return;
+				}
+				try {
+					const interpreted = parseInterpretedScheduleOutput(result.output);
+					const entry = await scheduleTask(ctx, interpreted);
+					ctx.ui.notify(`Scheduled ${entry.id} for ${entry.runAt} using ${entry.backend}`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+			}).catch((error) => {
+				ctx.ui.setWidget(widgetKey, undefined);
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-			}
+			});
+			ctx.ui.notify("Interpreting schedule request in background…", "info");
 		},
 	});
 }

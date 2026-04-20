@@ -64,6 +64,7 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		session: { model: "github-copilot/gpt-5-mini", thinkingLevel: "minimal" },
 		memory: { model: "github-copilot/gpt-5-mini", thinkingLevel: "minimal" },
 		commit: { model: "github-copilot/gpt-5-mini", thinkingLevel: "low" },
+		schedule: { model: "github-copilot/gpt-5-mini", thinkingLevel: "low" },
 		custom: "github-copilot/gpt-5-mini",
 	},
 	handoff: {

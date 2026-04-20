@@ -148,6 +148,7 @@ export interface MagpieConfig {
 		titling?: SubagentModelRef;
 		lookAt?: SubagentModelRef;
 		commit?: SubagentModelRef;
+		schedule?: SubagentModelRef;
 		custom?: SubagentModelRef;
 	};
 	handoff?: {
