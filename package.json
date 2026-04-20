@@ -27,6 +27,7 @@
       "memory/index.ts",
       "research/index.ts",
       "remote/index.ts",
+      "schedule/index.ts",
       "web/web-fetch.ts",
       "web/web-search.ts",
       "spinner/index.ts",

@@ -120,4 +120,7 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		port: 8787,
 		bind: "localhost",
 	},
+	schedule: {
+		notifier: "none",
+	},
 };

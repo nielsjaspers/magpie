@@ -86,6 +86,14 @@ export interface WebUiConfig {
 	};
 }
 
+export interface ScheduleConfig {
+	notifier?: "macos" | "telegram" | "none";
+	telegram?: {
+		botToken?: string;
+		chatId?: string;
+	};
+}
+
 export interface ProviderAuthConfig {
 	apiKey?: string;
 }
@@ -165,6 +173,7 @@ export interface MagpieConfig {
 	telegram?: TelegramConfig;
 	remote?: RemoteConfig;
 	webui?: WebUiConfig;
+	schedule?: ScheduleConfig;
 }
 
 export interface ResolvedSubagentModel {
