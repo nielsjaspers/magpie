@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -27,6 +27,7 @@ import type {
 	SessionHost,
 	Unsubscribe,
 } from "./session-host-types.js";
+import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "../remote/workspace.js";
 
 interface CodingSessionRegistryEntry {
 	sessionPath: string;
@@ -38,6 +39,9 @@ interface CodingSessionRegistryEntry {
 	workspaceMode?: HostedSessionMetadata["workspaceMode"];
 	title?: string;
 	cwd?: string;
+	workspaceDir?: string;
+	originalCwd?: string;
+	modelRef?: string;
 	lastError?: string;
 }
 
@@ -49,17 +53,22 @@ interface CodingSessionRuntime {
 	runState: HostedSessionRunState;
 	queueDepth: number;
 	lastError?: string;
+	cwd: string;
+	modelRef: string;
 }
 
 export interface CodingSessionHostConfig {
 	hostCwd: string;
 	storageDir: string;
+	workspaceRootDir: string;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	resolveModel: (ref: string) => unknown;
 	buildSystemPrompt?: () => Promise<string>;
 	hostId?: string;
 	hostRole?: "local" | "remote";
+	workspaceArchiveExcludes?: string[];
+	maxWorkspaceArchiveBytes?: number;
 }
 
 export class CodingSessionHost implements SessionHost {
@@ -69,10 +78,13 @@ export class CodingSessionHost implements SessionHost {
 	private readonly hostCwd: string;
 	private readonly sessionsDir: string;
 	private readonly registryPath: string;
+	private readonly workspaceRootDir: string;
 	private readonly authStorage: AuthStorage;
 	private readonly modelRegistry: ModelRegistry;
 	private readonly resolveModelRef: (ref: string) => unknown;
 	private readonly buildSystemPromptText?: () => Promise<string>;
+	private readonly workspaceArchiveExcludes: string[];
+	private readonly maxWorkspaceArchiveBytes?: number;
 	private readonly runtimes = new Map<string, CodingSessionRuntime>();
 	private readonly listeners = new Map<string, Set<HostedSessionListener>>();
 
@@ -82,29 +94,33 @@ export class CodingSessionHost implements SessionHost {
 		this.hostCwd = config.hostCwd;
 		this.sessionsDir = resolve(config.storageDir, "sessions");
 		this.registryPath = resolve(config.storageDir, "coding-sessions.json");
+		this.workspaceRootDir = config.workspaceRootDir;
 		this.authStorage = config.authStorage;
 		this.modelRegistry = config.modelRegistry;
 		this.resolveModelRef = config.resolveModel;
 		this.buildSystemPromptText = config.buildSystemPrompt;
+		this.workspaceArchiveExcludes = config.workspaceArchiveExcludes ?? [];
+		this.maxWorkspaceArchiveBytes = config.maxWorkspaceArchiveBytes;
 	}
 
 	async createSession(input: CreateSessionInput): Promise<HostedSessionMetadata> {
 		if (input.kind !== "coding") throw new Error(`Unsupported session kind for coding host: ${input.kind}`);
 		const sessionId = randomUUID();
-		const cwd = input.cwd?.trim() || this.hostCwd;
 		const modelRef = input.modelRef?.trim();
 		if (!modelRef) throw new Error("modelRef is required to create a coding session");
+		const cwd = input.cwd?.trim() || await this.ensureWorkspaceDirectory(sessionId);
 		const runtime = await this.getRuntime(sessionId, cwd, modelRef);
 		const session = await runtime.sessionPromise;
 		if (!session.sessionFile) throw new Error("Persistent coding session did not produce a session file");
 		await this.upsertRegistryEntry(sessionId, {
 			sessionPath: session.sessionFile,
-			kind: "coding",
 			origin: input.origin,
 			location: this.hostRole === "remote" ? "remote" : "local",
 			workspaceMode: input.workspaceMode ?? "attached",
 			title: input.title,
 			cwd,
+			workspaceDir: cwd,
+			modelRef,
 		});
 		const metadata = await this.getMetadata(sessionId, modelRef);
 		if (!metadata) throw new Error(`Failed to create coding session metadata for ${sessionId}`);
@@ -117,16 +133,25 @@ export class CodingSessionHost implements SessionHost {
 		await this.ensureDirs();
 		const sessionId = bundle.metadata.sessionId || randomUUID();
 		const sessionPath = resolve(this.sessionsDir, `${sanitizeSessionIdForFilename(sessionId)}.jsonl`);
+		const targetWorkspace = input.targetCwd?.trim() || await this.ensureWorkspaceDirectory(sessionId);
+		if (bundle.workspace?.archive) {
+			await ensureCleanDirectory(targetWorkspace);
+			await extractWorkspaceArchiveToDir(bundle.workspace.archive, targetWorkspace);
+		} else {
+			await mkdir(targetWorkspace, { recursive: true });
+		}
 		await writeFile(sessionPath, Buffer.from(bundle.sessionJsonl), "utf8");
 		this.runtimes.delete(sessionId);
 		await this.upsertRegistryEntry(sessionId, {
 			sessionPath,
-			kind: "coding",
 			origin: bundle.metadata.origin,
 			location: this.hostRole === "remote" ? "remote" : bundle.metadata.location,
 			workspaceMode: bundle.metadata.workspaceMode ?? "attached",
 			title: bundle.metadata.title,
-			cwd: input.targetCwd?.trim() || bundle.metadata.cwd || this.hostCwd,
+			cwd: targetWorkspace,
+			workspaceDir: targetWorkspace,
+			originalCwd: bundle.metadata.cwd,
+			modelRef: bundle.metadata.summary || undefined,
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import coding session metadata for ${sessionId}`);
@@ -140,18 +165,38 @@ export class CodingSessionHost implements SessionHost {
 		const entry = registry[sessionId];
 		if (!entry?.sessionPath || !existsSync(entry.sessionPath)) throw new Error(`Session file not found for export: ${sessionId}`);
 		const sessionJsonl = await readFile(entry.sessionPath);
-		return { metadata, sessionJsonl };
+		const workspaceCwd = entry.workspaceDir || entry.cwd;
+		const workspace = workspaceCwd && existsSync(workspaceCwd)
+			? {
+				archive: await createWorkspaceArchiveFromDir(workspaceCwd, {
+					excludes: this.workspaceArchiveExcludes,
+					maxBytes: this.maxWorkspaceArchiveBytes,
+				}),
+				format: "tar.gz" as const,
+			}
+			: undefined;
+		return {
+			metadata: {
+				...metadata,
+				cwd: entry.originalCwd || metadata.cwd,
+				summary: entry.modelRef || metadata.summary,
+			},
+			sessionJsonl,
+			workspace,
+		};
 	}
 
 	async sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage> {
-		if (!input.modelRef?.trim()) throw new Error("modelRef is required to send a message");
-		const runtime = await this.getRuntimeForExistingSession(sessionId, input.modelRef);
+		const modelRef = input.modelRef?.trim() || (await this.readRegistry())[sessionId]?.modelRef;
+		if (!modelRef) throw new Error("modelRef is required to send a message");
+		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
 		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
 		runtime.queueDepth += 1;
 		const accepted: AcceptedMessage = { sessionId, accepted: true, queued, runState: queued ? "running" : runtime.runState };
 		const pending = runtime.queue.then(async () => {
 			runtime.runState = "running";
-			await this.emitStatus(sessionId, input.modelRef);
+			await this.persistRuntimeState(sessionId, runtime);
+			await this.emitStatus(sessionId, modelRef);
 			try {
 				const session = await runtime.sessionPromise;
 				const unsubscribe = session.subscribe((event) => {
@@ -172,13 +217,15 @@ export class CodingSessionHost implements SessionHost {
 				}
 				runtime.runState = "idle";
 				runtime.lastError = undefined;
+				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "message_complete" });
-				await this.emitStatus(sessionId, input.modelRef);
+				await this.emitStatus(sessionId, modelRef);
 			} catch (error) {
 				runtime.runState = "error";
 				runtime.lastError = error instanceof Error ? error.message : String(error);
+				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "error", error: runtime.lastError });
-				await this.emitStatus(sessionId, input.modelRef);
+				await this.emitStatus(sessionId, modelRef);
 				throw error;
 			} finally {
 				runtime.queueDepth = Math.max(0, runtime.queueDepth - 1);
@@ -204,7 +251,8 @@ export class CodingSessionHost implements SessionHost {
 		const entry = registry[sessionId];
 		const hasRuntime = this.runtimes.has(sessionId);
 		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
-		const runtime = modelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, modelRef) : this.runtimes.get(sessionId);
+		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
+		const runtime = resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
 		let messageCount: number | undefined;
 		if (runtime) {
 			const session = await runtime.sessionPromise;
@@ -218,7 +266,8 @@ export class CodingSessionHost implements SessionHost {
 		if (!metadata) return undefined;
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
-		const runtime = entry && modelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, modelRef) : this.runtimes.get(sessionId);
+		const resolvedModelRef = modelRef?.trim() || entry?.modelRef;
+		const runtime = entry && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
 		let messages: HostedSessionSnapshot["messages"] = [];
 		if (runtime) {
 			const session = await runtime.sessionPromise;
@@ -229,7 +278,7 @@ export class CodingSessionHost implements SessionHost {
 					text: extractTextFromSessionMessage(message),
 				}));
 		}
-		const status = await this.getStatus(sessionId, modelRef);
+		const status = await this.getStatus(sessionId, resolvedModelRef);
 		if (!status) return undefined;
 		return { metadata, status, messages };
 	}
@@ -255,11 +304,23 @@ export class CodingSessionHost implements SessionHost {
 	async interrupt(sessionId: string, modelRef?: string): Promise<void> {
 		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
 		runtime.runState = "aborting";
-		await this.emitStatus(sessionId, modelRef);
+		await this.persistRuntimeState(sessionId, runtime);
+		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
 		const session = await runtime.sessionPromise;
 		await session.abort();
 		runtime.runState = "idle";
-		await this.emitStatus(sessionId, modelRef);
+		await this.persistRuntimeState(sessionId, runtime);
+		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
+	}
+
+	async archiveSession(sessionId: string): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) return;
+		entry.location = "archived";
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		this.runtimes.delete(sessionId);
 	}
 
 	private async getMetadata(sessionId: string, modelRef?: string): Promise<HostedSessionMetadata | undefined> {
@@ -267,7 +328,8 @@ export class CodingSessionHost implements SessionHost {
 		const entry = registry[sessionId];
 		const hasRuntime = this.runtimes.has(sessionId);
 		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
-		const runtime = entry && modelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, modelRef) : this.runtimes.get(sessionId);
+		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
+		const runtime = entry && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
 		const runState = runtime?.runState ?? (entry.lastError ? "error" : "idle");
 		return {
 			sessionId,
@@ -281,6 +343,7 @@ export class CodingSessionHost implements SessionHost {
 			workspaceMode: entry.workspaceMode ?? "attached",
 			cwd: entry.cwd || this.hostCwd,
 			sourceSessionPath: entry.sessionPath,
+			summary: entry.modelRef,
 		};
 	}
 
@@ -288,7 +351,7 @@ export class CodingSessionHost implements SessionHost {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
 		if (!entry) throw new Error(`Session not found: ${sessionId}`);
-		const resolvedModelRef = modelRef?.trim();
+		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
 		if (!resolvedModelRef) throw new Error("modelRef is required for coding session runtime access");
 		return await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef);
 	}
@@ -301,6 +364,8 @@ export class CodingSessionHost implements SessionHost {
 				queue: Promise.resolve(),
 				runState: "idle",
 				queueDepth: 0,
+				cwd,
+				modelRef,
 			};
 			this.runtimes.set(sessionId, runtime);
 		}
@@ -313,18 +378,19 @@ export class CodingSessionHost implements SessionHost {
 		const existingPath = registry[sessionId]?.sessionPath;
 		if (existingPath && existsSync(existingPath)) {
 			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, cwd), modelRef, cwd);
-			await this.upsertRegistryEntry(sessionId, { sessionPath: existingPath, cwd });
+			await this.upsertRegistryEntry(sessionId, { sessionPath: existingPath, cwd, workspaceDir: cwd, modelRef });
 			return session;
 		}
 		const session = await this.instantiateAgentSession(SessionManager.create(cwd, this.sessionsDir), modelRef, cwd);
 		if (!session.sessionFile) throw new Error("Persistent coding session did not produce a session file");
 		await this.upsertRegistryEntry(sessionId, {
 			sessionPath: session.sessionFile,
-			kind: "coding",
 			origin: "remote",
 			location: this.hostRole === "remote" ? "remote" : "local",
 			workspaceMode: "attached",
 			cwd,
+			workspaceDir: cwd,
+			modelRef,
 		});
 		return session;
 	}
@@ -349,9 +415,16 @@ export class CodingSessionHost implements SessionHost {
 		return session;
 	}
 
+	private async ensureWorkspaceDirectory(sessionId: string): Promise<string> {
+		const dir = resolve(this.workspaceRootDir, sanitizeSessionIdForFilename(sessionId));
+		await mkdir(dir, { recursive: true });
+		return dir;
+	}
+
 	private async ensureDirs() {
 		await mkdir(this.sessionsDir, { recursive: true });
 		await mkdir(dirname(this.registryPath), { recursive: true });
+		await mkdir(this.workspaceRootDir, { recursive: true });
 	}
 
 	private async readRegistry(): Promise<CodingSessionRegistry> {
@@ -381,6 +454,9 @@ export class CodingSessionHost implements SessionHost {
 			workspaceMode: patch.workspaceMode ?? current?.workspaceMode ?? "attached",
 			title: patch.title ?? current?.title,
 			cwd: patch.cwd ?? current?.cwd ?? this.hostCwd,
+			workspaceDir: patch.workspaceDir ?? current?.workspaceDir ?? patch.cwd ?? current?.cwd ?? this.hostCwd,
+			originalCwd: patch.originalCwd ?? current?.originalCwd,
+			modelRef: patch.modelRef ?? current?.modelRef,
 			lastError: patch.lastError ?? current?.lastError,
 		};
 		await this.writeRegistry(registry);
@@ -390,6 +466,18 @@ export class CodingSessionHost implements SessionHost {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
 		return Boolean(entry?.sessionPath && (existsSync(entry.sessionPath) || this.runtimes.has(sessionId)));
+	}
+
+	private async persistRuntimeState(sessionId: string, runtime: CodingSessionRuntime) {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) return;
+		entry.updatedAt = new Date().toISOString();
+		entry.lastError = runtime.lastError;
+		entry.modelRef = runtime.modelRef;
+		entry.cwd = runtime.cwd;
+		entry.workspaceDir = runtime.cwd;
+		await this.writeRegistry(registry);
 	}
 
 	private async emit(sessionId: string, event: HostedSessionEvent) {

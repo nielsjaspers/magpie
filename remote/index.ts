@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
 import { createEnrollmentCode, createRemoteAuthStore, listEnrolledDevices } from "./auth.js";
 import { claimRemoteEnrollmentCode, dispatchSession, listDispatchedSessions } from "./client.js";
 import { serializeSessionBundle } from "./transport.js";
 import type { DispatchPayload } from "./types.js";
+import { createWorkspaceArchiveFromDir } from "./workspace.js";
 
 function resolveRemoteHost(config: Awaited<ReturnType<typeof loadConfig>>) {
 	const remote = getRemoteConfig(config);
@@ -37,6 +38,38 @@ async function writeDeviceTokenToConfig(cwd: string, hostName: string, token: st
 	config.remote.hosts[hostName].deviceToken = token;
 	await writeFile(path, JSON.stringify(config, null, 2) + "\n", "utf8");
 	return path;
+}
+
+function getCurrentSessionModelRef(ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never): string | undefined {
+	const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i];
+		if (entry?.type !== "model_change") continue;
+		if (typeof entry.provider === "string" && typeof entry.modelId === "string") return `${entry.provider}/${entry.modelId}`;
+	}
+	const currentModel = (ctx as any).model;
+	if (currentModel && typeof currentModel.provider === "string" && typeof currentModel.id === "string") return `${currentModel.provider}/${currentModel.id}`;
+	if (currentModel && typeof currentModel.providerId === "string" && typeof currentModel.modelId === "string") return `${currentModel.providerId}/${currentModel.modelId}`;
+	return undefined;
+}
+
+async function archiveDispatchedLocalSession(sessionFile: string, remoteHost: string, remoteSessionId: string) {
+	const archiveDir = resolve(process.env.HOME || "", ".pi/agent/magpie-dispatched");
+	await mkdir(archiveDir, { recursive: true });
+	const archivedPath = resolve(archiveDir, basename(sessionFile));
+	await rename(sessionFile, archivedPath);
+	await mkdir(dirname(sessionFile), { recursive: true });
+	await writeFile(sessionFile, JSON.stringify({
+		type: "custom",
+		customType: "magpie:dispatched-stub",
+		timestamp: new Date().toISOString(),
+		data: {
+			remoteHost,
+			dispatchedAt: new Date().toISOString(),
+			remoteSessionId,
+		},
+	}) + "\n", "utf8");
+	return archivedPath;
 }
 
 function formatExpiry(expiresAt: string): string {
@@ -124,10 +157,17 @@ export default function (pi: ExtensionAPI) {
 				const raw = await readFile(sessionFile);
 				const sessionId = basename(sessionFile, ".jsonl");
 				const now = new Date().toISOString();
+				const modelRef = getCurrentSessionModelRef(ctx);
+				const remoteConfig = getRemoteConfig(config);
+				const workspace = await createWorkspaceArchiveFromDir(ctx.cwd, {
+					excludes: remoteConfig?.tarExclude,
+					maxBytes: remoteConfig?.maxTarSize,
+				});
 				const payload: DispatchPayload = {
 					sessionId,
 					originalCwd: ctx.cwd,
 					dispatchedAt: now,
+					modelRef,
 					note: rest.join(" ").trim() || undefined,
 				};
 				const bundle = serializeSessionBundle({
@@ -143,10 +183,13 @@ export default function (pi: ExtensionAPI) {
 						workspaceMode: "attached",
 						cwd: ctx.cwd,
 						sourceSessionPath: sessionFile,
+						summary: modelRef,
 					},
 					sessionJsonl: raw,
+					workspace: { archive: workspace, format: "tar.gz" },
 				});
 				const result = await dispatchSession(remoteHost.baseUrl, payload, bundle, remoteHost.deviceToken);
+				await archiveDispatchedLocalSession(sessionFile, remoteHost.name, result.sessionId);
 				ctx.ui.notify(`Dispatched ${result.sessionId} to ${remoteHost.name} (${remoteHost.baseUrl})`, "info");
 				return;
 			}

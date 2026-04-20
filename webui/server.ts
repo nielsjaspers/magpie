@@ -10,6 +10,7 @@ import {
 	acceptDispatch,
 	createRemoteServerRuntime,
 	deleteRemoteSession,
+	getStoredRemoteBundle,
 	listRemoteSessions,
 	prepareFetch,
 } from "../remote/server.js";
@@ -22,7 +23,6 @@ import {
 } from "../remote/auth.js";
 import { buildRemoteBundleSnapshot } from "../remote/snapshot.js";
 import { deserializeSessionBundle, serializeSessionBundle } from "../remote/transport.js";
-import { loadRemoteBundle } from "../remote/store.js";
 import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
@@ -121,12 +121,15 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 	const codingHost = new CodingSessionHost({
 		hostCwd: cwd,
 		storageDir: resolve(process.env.HOME || "", ".pi/agent/magpie-remote-hosted"),
+		workspaceRootDir: resolve(process.env.HOME || "", ".pi/agent/magpie-workspaces"),
 		authStorage,
 		modelRegistry,
 		resolveModel,
 		buildSystemPrompt: async () => "You are a helpful coding assistant. Be concise, careful, and effective.",
 		hostId: "magpie-remote-coding-host",
 		hostRole: "remote",
+		workspaceArchiveExcludes: loadedConfig.remote?.tarExclude,
+		maxWorkspaceArchiveBytes: loadedConfig.remote?.maxTarSize,
 	});
 
 	return {
@@ -317,7 +320,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/dispatch") {
 				const body = await readBody(req);
-				return sendJson(res, 201, await acceptDispatch(remote, {
+				return sendJson(res, 201, await acceptDispatch(remote, codingHost, defaultModelRef, {
 					payload: body.payload as any,
 					bundle: body.bundle as any,
 				}));
@@ -333,16 +336,19 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/sessions") {
 				const body = await readBody(req);
 				const input = parseCreateSessionInput(body, defaultModelRef);
-				if (input.kind !== "assistant") {
-					return sendJson(res, 400, { error: "Only assistant session creation is supported by the current host" });
-				}
-				return sendJson(res, 201, await createSessionRoute(host, input));
+				if (input.kind === "assistant") return sendJson(res, 201, await createSessionRoute(host, input));
+				const metadata = await codingHost.createSession({
+					...input,
+					workspaceMode: "attached",
+					origin: input.origin === "assistant" ? "remote" : input.origin,
+				});
+				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
 			}
 
 			const remoteMatch = requestUrl.pathname.match(/^\/api\/v1\/remote\/sessions\/([^/]+)$/);
 			if (req.method === "GET" && remoteMatch?.[1]) {
 				const sessionId = decodeURIComponent(remoteMatch[1]);
-				const loaded = await loadRemoteBundle(remote.store, sessionId);
+				const loaded = await getStoredRemoteBundle(remote, sessionId);
 				if (!loaded) return sendJson(res, 404, { error: "Remote session not found" });
 				return sendJson(res, 200, buildRemoteBundleSnapshot(loaded.serialized, 80));
 			}
@@ -393,7 +399,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/fetch") {
 				const body = await readBody(req);
-				return sendJson(res, 200, await prepareFetch(remote, {
+				return sendJson(res, 200, await prepareFetch(remote, codingHost, {
 					sessionId: sessionPath.sessionId,
 					fetchedAt: new Date().toISOString(),
 					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
@@ -424,7 +430,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			}
 			if (sessionPath && req.method === "DELETE" && sessionPath.suffix === "") {
 				const body = await readBody(req);
-				return sendJson(res, 200, await deleteRemoteSession(remote, {
+				return sendJson(res, 200, await deleteRemoteSession(remote, codingHost, {
 					sessionId: sessionPath.sessionId,
 					fetchedAt: new Date().toISOString(),
 					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,

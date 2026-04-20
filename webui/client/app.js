@@ -48,13 +48,11 @@ function renderRemoteSessions() {
       <div>${session.sessionId}</div>
       <div class="meta">remote bundle · ${session.updatedAt}${meta}</div>
       <div class="row" style="margin-top:8px;">
-        <button class="secondary view-remote">View</button>
-        <button class="secondary import-remote">Import</button>
+        <button class="secondary view-remote">View archive</button>
         <button class="secondary delete-remote">Archive</button>
       </div>
     `;
     el.querySelector('.view-remote').onclick = () => viewRemote(session.sessionId);
-    el.querySelector('.import-remote').onclick = () => importRemote(session.sessionId);
     el.querySelector('.delete-remote').onclick = () => deleteRemote(session.sessionId);
     remoteListEl.appendChild(el);
   }
@@ -182,21 +180,6 @@ async function dispatchActiveSession() {
     }),
   });
   await refreshRemoteSessions();
-}
-
-async function importRemote(sessionId) {
-  const fetched = await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/fetch`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ targetCwd: '' }),
-  });
-  const imported = await request('/api/v1/remote/import', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ bundle: fetched.bundle }),
-  });
-  await refreshSessions();
-  await openSession(imported.sessionId);
 }
 
 async function deleteRemote(sessionId) {

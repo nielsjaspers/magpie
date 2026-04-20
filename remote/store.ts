@@ -109,13 +109,16 @@ export async function loadRemoteBundle(
 export async function archiveRemoteBundle(
 	store: RemoteBundleStore,
 	payload: FetchPayload,
+	bundle?: ExportedSessionBundle,
 ): Promise<RemoteStoredSessionRecord | undefined> {
 	await ensureStore(store);
 	const index = await readIndex(store);
 	const record = index.sessions[payload.sessionId];
 	if (!record || record.archivedAt || !existsSync(record.bundlePath)) return undefined;
 	const archivedPath = archiveBundlePath(store, payload.sessionId);
-	const serialized = await readFile(record.bundlePath, "utf8");
+	const serialized = bundle
+		? JSON.stringify(serializeSessionBundle(bundle))
+		: await readFile(record.bundlePath, "utf8");
 	await writeFile(archivedPath, serialized, "utf8");
 	await rm(record.bundlePath, { force: true });
 	const updated: RemoteStoredSessionRecord = {

@@ -6,6 +6,7 @@ export interface DispatchPayload {
 	dispatchedAt: string;
 	magpieVersion?: string;
 	piVersion?: string;
+	modelRef?: string;
 	note?: string;
 }
 
