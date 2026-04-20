@@ -70,7 +70,7 @@ export async function listDispatchedSessions(baseUrl: string, deviceToken?: stri
 	}>(baseUrl, "/api/v1/remote/sessions", undefined, deviceToken);
 }
 
-export async function fetchRemoteSession(baseUrl: string, payload: FetchPayload) {
+export async function fetchRemoteSession(baseUrl: string, payload: FetchPayload, deviceToken?: string) {
 	return await requestJson<{
 		ok: boolean;
 		sessionId: string;
@@ -81,7 +81,7 @@ export async function fetchRemoteSession(baseUrl: string, payload: FetchPayload)
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(payload),
-	});
+	}, deviceToken);
 }
 
 export async function importRemoteBundle(baseUrl: string, bundle: SerializedSessionBundle) {
@@ -119,7 +119,7 @@ export async function fetchAndImportRemoteSession(baseUrl: string, payload: Fetc
 	};
 }
 
-export async function deleteFetchedRemoteSession(baseUrl: string, payload: FetchPayload) {
+export async function deleteFetchedRemoteSession(baseUrl: string, payload: FetchPayload, deviceToken?: string) {
 	return await requestJson<{
 		ok: boolean;
 		sessionId: string;
@@ -128,5 +128,5 @@ export async function deleteFetchedRemoteSession(baseUrl: string, payload: Fetch
 		method: "DELETE",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(payload),
-	});
+	}, deviceToken);
 }

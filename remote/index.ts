@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
 import { createEnrollmentCode, createRemoteAuthStore, listEnrolledDevices } from "./auth.js";
-import { claimRemoteEnrollmentCode, dispatchSession, listDispatchedSessions } from "./client.js";
-import { serializeSessionBundle } from "./transport.js";
+import { claimRemoteEnrollmentCode, deleteFetchedRemoteSession, dispatchSession, fetchRemoteSession, listDispatchedSessions } from "./client.js";
+import { deserializeSessionBundle, serializeSessionBundle } from "./transport.js";
 import type { DispatchPayload } from "./types.js";
-import { createWorkspaceArchiveFromDir } from "./workspace.js";
+import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "./workspace.js";
 
 function resolveRemoteHost(config: Awaited<ReturnType<typeof loadConfig>>) {
 	const remote = getRemoteConfig(config);
@@ -53,6 +53,14 @@ function getCurrentSessionModelRef(ctx: Parameters<NonNullable<ExtensionAPI["reg
 	return undefined;
 }
 
+interface DispatchedStubData {
+	remoteHost?: string;
+	dispatchedAt?: string;
+	remoteSessionId?: string;
+	originalSessionPath?: string;
+	archivedSessionPath?: string;
+}
+
 async function archiveDispatchedLocalSession(sessionFile: string, remoteHost: string, remoteSessionId: string) {
 	const archiveDir = resolve(process.env.HOME || "", ".pi/agent/magpie-dispatched");
 	await mkdir(archiveDir, { recursive: true });
@@ -67,9 +75,51 @@ async function archiveDispatchedLocalSession(sessionFile: string, remoteHost: st
 			remoteHost,
 			dispatchedAt: new Date().toISOString(),
 			remoteSessionId,
+			originalSessionPath: sessionFile,
+			archivedSessionPath: archivedPath,
 		},
 	}) + "\n", "utf8");
 	return archivedPath;
+}
+
+function parseDispatchedStubEntry(entry: any): DispatchedStubData | undefined {
+	if (!entry || entry.type !== "custom" || entry.customType !== "magpie:dispatched-stub") return undefined;
+	return typeof entry.data === "object" && entry.data ? entry.data as DispatchedStubData : undefined;
+}
+
+async function resolveCurrentStub(ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never): Promise<DispatchedStubData | undefined> {
+	const entries = ctx.sessionManager.getEntries() as unknown as Array<Record<string, unknown>>;
+	const fromEntries = [...entries].reverse().map(parseDispatchedStubEntry).find(Boolean);
+	if (fromEntries) return fromEntries;
+	const sessionFile = ctx.sessionManager.getSessionFile();
+	if (!sessionFile || !existsSync(sessionFile)) return undefined;
+	try {
+		const firstLine = (await readFile(sessionFile, "utf8")).split(/\r?\n/, 1)[0];
+		if (!firstLine?.trim()) return undefined;
+		return parseDispatchedStubEntry(JSON.parse(firstLine));
+	} catch {
+		return undefined;
+	}
+}
+
+async function restoreFetchedLocalSession(
+	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	remoteSessionId: string,
+	bundle: { metadata: { sourceSessionPath?: string }; sessionJsonl: Uint8Array; workspace?: { archive: Uint8Array } },
+	stub?: DispatchedStubData,
+) {
+	await ensureCleanDirectory(ctx.cwd);
+	if (bundle.workspace?.archive) await extractWorkspaceArchiveToDir(bundle.workspace.archive, ctx.cwd);
+	const restorePath = stub?.originalSessionPath?.trim()
+		|| ctx.sessionManager.getSessionFile()
+		|| bundle.metadata.sourceSessionPath?.trim();
+	if (!restorePath) throw new Error(`Unable to determine local session path for fetched session ${remoteSessionId}`);
+	await mkdir(dirname(restorePath), { recursive: true });
+	await writeFile(restorePath, Buffer.from(bundle.sessionJsonl), "utf8");
+	if (stub?.archivedSessionPath?.trim() && existsSync(stub.archivedSessionPath) && stub.archivedSessionPath !== restorePath) {
+		await rm(stub.archivedSessionPath, { force: true });
+	}
+	return restorePath;
 }
 
 function formatExpiry(expiresAt: string): string {
@@ -79,8 +129,30 @@ function formatExpiry(expiresAt: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("session_start", async (_event, ctx) => {
+		const stub = await resolveCurrentStub(ctx as any);
+		if (!stub?.remoteSessionId) return;
+		pi.setActiveTools([]);
+		if (ctx.hasUI) {
+			ctx.ui.notify(`This session is dispatched to ${stub.remoteHost || "remote"} as ${stub.remoteSessionId}. Use /remote get ${stub.remoteSessionId} to fetch it back.`, "warning");
+		}
+	});
+
+	pi.on("before_agent_start", async (event, ctx) => {
+		const stub = await resolveCurrentStub(ctx as any);
+		if (!stub?.remoteSessionId) return;
+		return {
+			systemPrompt: `${event.systemPrompt}\n\nThis session is a dispatched Magpie stub. Do not continue work locally. Tell the user to run /remote get ${stub.remoteSessionId} to fetch the remote-owned session back first.`,
+			message: {
+				customType: "magpie:dispatched-stub-notice",
+				content: `This session is dispatched to ${stub.remoteHost || "remote"} as ${stub.remoteSessionId}. Fetch it back before continuing.`,
+				display: true,
+			},
+		};
+	});
+
 	pi.registerCommand("remote", {
-		description: "Remote session tools: /remote enroll [CODE], /remote send [note], /remote list, /remote devices",
+		description: "Remote session tools: /remote enroll [CODE], /remote send [note], /remote get [SESSION_ID], /remote list, /remote devices",
 		handler: async (args, ctx) => {
 			const config = await loadConfig(ctx.cwd);
 			const [subcommand, ...rest] = (args?.trim() || "").split(/\s+/).filter(Boolean);
@@ -140,6 +212,51 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			if (action === "get") {
+				const stub = await resolveCurrentStub(ctx);
+				const remoteSessionId = rest[0]?.trim() || stub?.remoteSessionId?.trim();
+				const remoteHostName = stub?.remoteHost?.trim() || remoteHost?.name;
+				const resolvedRemoteHost = remoteHostName && config.remote?.hosts?.[remoteHostName]
+					? {
+						name: remoteHostName,
+						baseUrl: config.remote.hosts[remoteHostName]?.tailscaleUrl?.trim() || config.remote.hosts[remoteHostName]?.publicUrl?.trim() || remoteHost?.baseUrl,
+						deviceToken: config.remote.hosts[remoteHostName]?.deviceToken?.trim() || remoteHost?.deviceToken,
+					}
+					: remoteHost;
+				if (!remoteSessionId) {
+					ctx.ui.notify("Usage: /remote get <SESSION_ID> (or run it from an open dispatched stub session)", "error");
+					return;
+				}
+				if (!resolvedRemoteHost?.baseUrl) {
+					ctx.ui.notify("Configure the remote host URL before fetching a remote session.", "error");
+					return;
+				}
+				if (!resolvedRemoteHost.deviceToken) {
+					ctx.ui.notify(`No device token configured for ${resolvedRemoteHost.name}. Run /remote enroll <CODE> first.`, "error");
+					return;
+				}
+				const fetched = await fetchRemoteSession(resolvedRemoteHost.baseUrl, {
+					sessionId: remoteSessionId,
+					fetchedAt: new Date().toISOString(),
+					targetCwd: ctx.cwd,
+				}, resolvedRemoteHost.deviceToken);
+				const bundle = deserializeSessionBundle(fetched.bundle);
+				const restoredPath = await restoreFetchedLocalSession(ctx, remoteSessionId, bundle, stub);
+				let remoteArchived = false;
+				try {
+					await deleteFetchedRemoteSession(resolvedRemoteHost.baseUrl, {
+						sessionId: remoteSessionId,
+						fetchedAt: new Date().toISOString(),
+						targetCwd: ctx.cwd,
+					}, resolvedRemoteHost.deviceToken);
+					remoteArchived = true;
+				} catch (error) {
+					ctx.ui.notify(`Local restore succeeded, but remote cleanup failed: ${(error as Error).message}`, "warning");
+				}
+				ctx.ui.notify(`Fetched ${remoteSessionId} into ${ctx.cwd}\nSession restored at ${restoredPath}${remoteArchived ? "" : "\nRemote copy still exists."}`, "info");
+				return;
+			}
+
 			if (action === "send") {
 				if (!remoteHost) {
 					ctx.ui.notify("Configure remote.defaultHost and remote.hosts.<name>.tailscaleUrl/publicUrl first.", "error");
@@ -194,7 +311,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			ctx.ui.notify("Usage: /remote enroll | /remote enroll <CODE> | /remote send [note] | /remote list | /remote devices", "info");
+			ctx.ui.notify("Usage: /remote enroll | /remote enroll <CODE> | /remote send [note] | /remote get [SESSION_ID] | /remote list | /remote devices", "info");
 		},
 	});
 }
