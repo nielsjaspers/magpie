@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type {
 	AcceptedMessage,
+	ArchiveReason,
 	AssistantChannel,
 	CreateSessionInput,
 	ExportedSessionBundle,
@@ -28,6 +29,7 @@ import type {
 	SessionFilter,
 	SessionHost,
 	SessionOrigin,
+	SessionOwner,
 	Unsubscribe,
 	WorkspaceMode,
 } from "./session-host-types.js";
@@ -65,6 +67,7 @@ interface AssistantSessionRegistryEntry {
 	assistantThreadId?: string;
 	title?: string;
 	modelRef?: string;
+	owner?: SessionOwner;
 	lastError?: string;
 }
 
@@ -183,6 +186,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantChannel: bundle.metadata.assistantChannel,
 			assistantThreadId: bundle.metadata.assistantThreadId,
 			title: bundle.metadata.title,
+			owner: input.owner ?? bundle.metadata.owner,
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import session metadata for ${sessionId}`);
@@ -206,6 +210,16 @@ export class AssistantSessionHost implements SessionHost {
 
 	async sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage> {
 		if (!input.modelRef?.trim()) throw new Error("modelRef is required to send a message");
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (entry) {
+			const nextOwner = input.actor ?? deriveAssistantOwner(this.hostId, entry.assistantChannel, input.source);
+			const changed = !isSameOwner(entry.owner, nextOwner);
+			entry.owner = nextOwner;
+			entry.updatedAt = new Date().toISOString();
+			await this.writeRegistry(registry);
+			if (changed) await this.emit(sessionId, { type: "ownership_changed", owner: nextOwner });
+		}
 		const { accepted } = await this.promptSession(sessionId, {
 			text: input.text,
 			modelRef: input.modelRef,
@@ -257,6 +271,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantThreadId: input.assistantThreadId,
 			title: input.title,
 			modelRef: input.modelRef,
+			owner: input.owner ?? deriveAssistantOwner(this.hostId, input.assistantChannel, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId, input.modelRef);
 		if (!metadata) throw new Error(`Failed to resolve session metadata for ${sessionId}`);
@@ -468,9 +483,44 @@ export class AssistantSessionHost implements SessionHost {
 			workspaceMode: entry.workspaceMode ?? "none",
 			cwd: this.hostCwd,
 			sourceSessionPath: entry.sessionPath,
+			owner: entry.owner,
 			assistantChannel: entry.assistantChannel,
 			assistantThreadId: entry.assistantThreadId,
 		};
+	}
+
+	async claimOwnership(sessionId: string, owner: SessionOwner): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		const changed = !isSameOwner(entry.owner, owner);
+		entry.owner = owner;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		if (changed) await this.emit(sessionId, { type: "ownership_changed", owner });
+	}
+
+	async releaseOwnership(sessionId: string, owner?: SessionOwner): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		const changed = Boolean(entry.owner) && (!owner || isSameOwner(entry.owner, owner));
+		if (changed) entry.owner = undefined;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		if (changed) await this.emit(sessionId, { type: "ownership_changed", owner: entry.owner });
+	}
+
+	async archiveSession(sessionId: string, _reason: ArchiveReason = "manual"): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) return;
+		entry.location = "archived";
+		entry.owner = undefined;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
+		this.runtimes.delete(sessionId);
 	}
 
 	private async emit(sessionId: string, event: HostedSessionEvent) {
@@ -524,6 +574,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantChannel: parseAssistantThreadKey(threadKey)?.channel,
 			assistantThreadId: parseAssistantThreadKey(threadKey)?.threadId,
 			modelRef,
+			owner: deriveAssistantOwner(this.hostId, parseAssistantThreadKey(threadKey)?.channel, "system"),
 		});
 		return session;
 	}
@@ -589,6 +640,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantThreadId: patch.assistantThreadId ?? current?.assistantThreadId,
 			title: patch.title ?? current?.title,
 			modelRef: patch.modelRef ?? current?.modelRef,
+			owner: patch.owner ?? current?.owner,
 			lastError: patch.lastError ?? current?.lastError,
 		};
 		await this.writeRegistry(registry);
@@ -613,6 +665,7 @@ export class AssistantSessionHost implements SessionHost {
 		if (filter.runState && summary.runState !== filter.runState) return false;
 		if (filter.assistantChannel && summary.assistantChannel !== filter.assistantChannel) return false;
 		if (!filter.includeArchived && summary.location === "archived") return false;
+		if (filter.ownerKind && summary.owner?.kind !== filter.ownerKind) return false;
 		if (!filter.query?.trim()) return true;
 		const query = filter.query.trim().toLowerCase();
 		return [
@@ -635,6 +688,7 @@ export class AssistantSessionHost implements SessionHost {
 			createdAt: entry.createdAt ?? entry.updatedAt,
 			updatedAt: entry.updatedAt,
 			cwd: this.hostCwd,
+			owner: entry.owner,
 			assistantChannel: entry.assistantChannel,
 			assistantThreadId: entry.assistantThreadId,
 			sessionPath: entry.sessionPath,
@@ -651,11 +705,27 @@ export class AssistantSessionHost implements SessionHost {
 		const summary = this.toSummary(sessionId, entry);
 		return {
 			...summary,
+			owner: entry.owner,
 			messageCount,
 			queueDepth: runtime?.queueDepth ?? 0,
 			lastError: runtime?.lastError ?? entry.lastError,
 		};
 	}
+}
+
+function isSameOwner(left: SessionOwner | undefined, right: SessionOwner | undefined) {
+	if (!left || !right) return false;
+	return left.kind === right.kind && left.hostId === right.hostId && left.actorId === right.actorId;
+}
+
+function deriveAssistantOwner(hostId: string, channel: AssistantChannel | undefined, source: SendMessageInput["source"]): SessionOwner {
+	if (source === "telegram" || channel === "telegram") {
+		return { kind: "system", hostId, displayName: "Telegram assistant session" };
+	}
+	if (source === "web" || channel === "web") {
+		return { kind: "remote_web", hostId, displayName: "Remote web assistant session" };
+	}
+	return { kind: source === "schedule" ? "schedule" : "system", hostId, displayName: source === "schedule" ? "Scheduled assistant session" : "Assistant session" };
 }
 
 function extractTextFromUnknownContent(content: unknown): string | undefined {

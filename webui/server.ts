@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
-import { AssistantSessionHost, createAssistantThreadKey } from "../runtime/assistant-session-host.js";
+import { AssistantSessionHost, createAssistantThreadKey, parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
 import { createRemoteServerRuntime } from "../remote/server.js";
 import {
@@ -51,6 +51,16 @@ function resolveModel(ref: string) {
 	const model = modelRegistry.find(parsed.provider, parsed.modelId);
 	if (!model) throw new Error(`Model not found: ${ref}`);
 	return model;
+}
+
+function ownerForAssistantChannel(hostId: string, channel?: "telegram" | "web" | "internal") {
+	if (channel === "web") {
+		return { kind: "remote_web" as const, hostId, displayName: "Remote web assistant session" };
+	}
+	if (channel === "telegram") {
+		return { kind: "system" as const, hostId, displayName: "Telegram assistant session" };
+	}
+	return { kind: "system" as const, hostId, displayName: "Assistant session" };
 }
 
 async function tryReadText(path: string): Promise<string | undefined> {
@@ -231,7 +241,21 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 	};
 
 	const promptAny = async (sessionId: string, text: string, modelRef: string) => {
-		if (await host.getStatus(sessionId, modelRef)) {
+		const parsedAssistantThread = parseAssistantThreadKey(sessionId);
+		const assistantStatus = parsedAssistantThread ? undefined : await host.getStatus(sessionId, modelRef);
+		if (parsedAssistantThread || assistantStatus) {
+			if (parsedAssistantThread) {
+				await host.resolveAssistantSession({
+					kind: "assistant",
+					origin: "assistant",
+					assistantChannel: parsedAssistantThread.channel,
+					assistantThreadId: parsedAssistantThread.threadId,
+					workspaceMode: "none",
+					modelRef,
+					owner: ownerForAssistantChannel(host.hostId, parsedAssistantThread.channel),
+				});
+			}
+			await host.claimOwnership(sessionId, ownerForAssistantChannel(host.hostId, parsedAssistantThread?.channel ?? assistantStatus?.assistantChannel));
 			const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
 			const { accepted, result } = await host.promptSession(sessionId, { text, modelRef }, (event) => {
 				if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
@@ -239,7 +263,12 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 			});
 			return { accepted, text: result.text || "", toolEvents };
 		}
-		const accepted = await codingHost.sendUserMessage(sessionId, { text, modelRef, source: "web" });
+		const accepted = await codingHost.sendUserMessage(sessionId, {
+			text,
+			modelRef,
+			source: "web",
+			actor: { kind: "remote_web", hostId: codingHost.hostId, displayName: "Remote web session" },
+		});
 		const snapshot = await codingHost.getSnapshot(sessionId, modelRef, 8);
 		const last = snapshot?.messages.at(-1);
 		return { accepted, text: last?.role === "assistant" ? last.text || "" : "", toolEvents: [] };
@@ -325,6 +354,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					if (filter.kind && session.kind !== filter.kind) return false;
 					if (filter.location && session.location !== filter.location) return false;
 					if (filter.runState && session.runState !== filter.runState) return false;
+					if (filter.ownerKind && session.owner?.kind !== filter.ownerKind) return false;
 					if (filter.assistantChannel && session.assistantChannel !== filter.assistantChannel) return false;
 					if (!filter.includeArchived && session.location === "archived") return false;
 					if (!filter.query?.trim()) return true;
@@ -353,6 +383,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					...input,
 					workspaceMode: "attached",
 					origin: input.origin === "assistant" ? "remote" : input.origin,
+					owner: { kind: "remote_web", hostId: codingHost.hostId, displayName: "Remote web session" },
 				});
 				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
 			}
@@ -462,6 +493,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					workspaceMode: "none",
 					title,
 					modelRef,
+					owner: ownerForAssistantChannel(host.hostId, channel),
 				});
 				return sendJson(res, 200, {
 					sessionId: resolved.sessionId,
@@ -479,6 +511,16 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				const modelRef = String(body.modelRef || defaultModelRef);
 				if (!threadId || !text) return sendJson(res, 400, { error: "threadId and text are required" });
 				const threadKey = createAssistantThreadKey(channel, threadId);
+				await host.resolveAssistantSession({
+					kind: "assistant",
+					origin: "assistant",
+					assistantChannel: channel,
+					assistantThreadId: threadId,
+					workspaceMode: "none",
+					modelRef,
+					owner: ownerForAssistantChannel(host.hostId, channel),
+				});
+				await host.claimOwnership(threadKey, ownerForAssistantChannel(host.hostId, channel));
 				const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
 				const { accepted, result } = await host.promptSession(threadKey, { text, modelRef }, (event) => {
 					if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });

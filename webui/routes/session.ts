@@ -12,12 +12,16 @@ export function normalizeAssistantChannel(value: string | null | undefined): Ass
 }
 
 export function parseSessionFilter(searchParams: URLSearchParams): SessionFilter {
+	const ownerKind = searchParams.get("ownerKind");
 	return {
 		kind: searchParams.get("kind") === "assistant" || searchParams.get("kind") === "coding"
 			? searchParams.get("kind") as SessionFilter["kind"]
 			: undefined,
 		location: searchParams.get("location") as SessionFilter["location"] ?? undefined,
 		runState: searchParams.get("runState") as SessionFilter["runState"] ?? undefined,
+		ownerKind: ownerKind === "local_tui" || ownerKind === "remote_web" || ownerKind === "remote_dispatch" || ownerKind === "schedule" || ownerKind === "system"
+			? ownerKind as SessionFilter["ownerKind"]
+			: undefined,
 		assistantChannel: normalizeAssistantChannel(searchParams.get("assistantChannel")),
 		query: searchParams.get("query") || undefined,
 		includeArchived: searchParams.get("includeArchived") === "1",
@@ -61,7 +65,12 @@ export async function createSessionRoute(host: SessionHost, input: CreateSession
 	if (input.kind !== "assistant") {
 		throw new Error("Only assistant session creation is supported by the current host");
 	}
-	const metadata = await host.createSession(input);
+	const metadata = await host.createSession({
+		...input,
+		owner: input.owner ?? (input.assistantChannel === "web"
+			? { kind: "remote_web", hostId: host.hostId, displayName: "Remote web assistant session" }
+			: undefined),
+	});
 	return { sessionId: metadata.sessionId, metadata };
 }
 

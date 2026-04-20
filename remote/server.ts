@@ -30,10 +30,20 @@ export async function acceptDispatch(
 	input: { payload: DispatchPayload; bundle: SerializedSessionBundle },
 ) {
 	const bundle = deserializeSessionBundle(input.bundle);
-	const metadata = await codingHost.importSession({ bundle });
+	const remoteOwner = {
+		kind: "remote_dispatch" as const,
+		hostId: codingHost.hostId,
+		displayName: "Remote dispatched session",
+	};
+	const metadata = await codingHost.importSession({ bundle, owner: remoteOwner });
 	await storeRemoteBundle(runtime.store, input.payload, {
 		...bundle,
-		metadata: { ...bundle.metadata, location: "remote", remoteSessionId: metadata.sessionId },
+		metadata: {
+			...bundle.metadata,
+			location: "remote",
+			remoteSessionId: metadata.sessionId,
+			owner: remoteOwner,
+		},
 	});
 	const modelRef = input.payload.modelRef?.trim() || bundle.metadata.summary?.trim() || defaultModelRef;
 	if (input.payload.note?.trim()) {
@@ -41,6 +51,7 @@ export async function acceptDispatch(
 			text: input.payload.note.trim(),
 			modelRef,
 			source: "system",
+			actor: remoteOwner,
 		}).catch(() => {
 			// surfaced via hosted session status/events
 		});
@@ -75,7 +86,7 @@ export async function deleteRemoteSession(
 ) {
 	const exported = await codingHost.exportSession(payload.sessionId);
 	const record = await archiveRemoteBundle(runtime.store, payload, exported);
-	await codingHost.archiveSession(payload.sessionId);
+	await codingHost.archiveSession(payload.sessionId, "fetched");
 	return {
 		ok: true,
 		sessionId: payload.sessionId,

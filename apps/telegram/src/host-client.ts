@@ -68,16 +68,16 @@ export async function sendAssistantMessage(config: TelegramAppConfig, threadId: 
 		}>;
 	}>(
 		config.hostUrl,
-		`/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/message`,
-		{ text, modelRef },
+		"/api/v1/assistant/message",
+		{ channel: "telegram", threadId, text, modelRef },
 	);
 }
 
 export async function resetAssistantThread(config: TelegramAppConfig, threadId: string, _modelRef: string) {
 	return await postJson<{ ok: boolean }>(
 		config.hostUrl,
-		`/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/reset`,
-		{},
+		"/api/v1/assistant/reset",
+		{ channel: "telegram", threadId },
 	);
 }
 
@@ -108,7 +108,7 @@ export async function getAssistantThreadStatus(config: TelegramAppConfig, thread
 			lastError?: string;
 			assistantChannel?: string;
 			assistantThreadId?: string;
-		}>(config.hostUrl, `/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}`, { modelRef });
+		}>(config.hostUrl, "/api/v1/assistant/status", { channel: "telegram", threadId, modelRef });
 	} catch (error) {
 		if (error instanceof HostRequestError && error.status === 404) {
 			return {
@@ -171,7 +171,7 @@ export async function getAssistantThreadSnapshot(config: TelegramAppConfig, thre
 				assistantThreadId?: string;
 			};
 			messages: Array<{ role: string; text?: string }>;
-		}>(config.hostUrl, `/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/snapshot`, { modelRef, limit });
+		}>(config.hostUrl, "/api/v1/assistant/snapshot", { channel: "telegram", threadId, modelRef, limit });
 	} catch (error) {
 		if (error instanceof HostRequestError && error.status === 404) {
 			return {

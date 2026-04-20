@@ -238,6 +238,11 @@ async function dispatchCurrentSession(
 			cwd: ctx.cwd,
 			sourceSessionPath: sessionFile,
 			summary: modelRef,
+			owner: {
+				kind: "local_tui",
+				hostId: "local",
+				displayName: "Local TUI",
+			},
 		},
 		sessionJsonl: raw,
 		workspace: { archive: workspace, format: "tar.gz" },

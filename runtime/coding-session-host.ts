@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type {
 	AcceptedMessage,
+	ArchiveReason,
 	CreateSessionInput,
 	ExportedSessionBundle,
 	HostedSessionEvent,
@@ -123,7 +124,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd,
 			workspaceDir: cwd,
 			modelRef,
-			owner: deriveOwner(this.hostId, this.hostRole, input.origin, "system"),
+			owner: input.owner ?? deriveOwner(this.hostId, this.hostRole, input.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId, modelRef);
 		if (!metadata) throw new Error(`Failed to create coding session metadata for ${sessionId}`);
@@ -155,7 +156,7 @@ export class CodingSessionHost implements SessionHost {
 			workspaceDir: targetWorkspace,
 			originalCwd: bundle.metadata.cwd,
 			modelRef: bundle.metadata.summary || undefined,
-			owner: deriveOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
+			owner: input.owner ?? bundle.metadata.owner ?? deriveOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import coding session metadata for ${sessionId}`);
@@ -197,11 +198,15 @@ export class CodingSessionHost implements SessionHost {
 		if (!modelRef) throw new Error("modelRef is required to send a message");
 		if (input.source === "telegram") throw new Error("Telegram may not mutate coding sessions");
 		if (entry?.owner?.kind === "local_tui" && this.hostRole === "remote") throw new Error("Remote host may not mutate a local-owned coding session");
+		const nextOwner = entry ? resolveCodingMessageOwner(this.hostId, this.hostRole, entry, input) : undefined;
 		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
 		runtime.modelRef = modelRef;
 		if (entry) {
-			entry.owner = deriveOwner(this.hostId, this.hostRole, entry.origin, input.source);
+			const ownerChanged = !isSameOwner(entry.owner, nextOwner);
+			entry.owner = nextOwner;
+			entry.updatedAt = new Date().toISOString();
 			await this.writeRegistry(registry);
+			if (ownerChanged) await this.emit(sessionId, { type: "ownership_changed", owner: nextOwner });
 		}
 		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
 		runtime.queueDepth += 1;
@@ -326,13 +331,40 @@ export class CodingSessionHost implements SessionHost {
 		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
 	}
 
-	async archiveSession(sessionId: string): Promise<void> {
+	async claimOwnership(sessionId: string, owner: SessionOwner): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		if (!canClaimCodingOwnership(entry.owner, owner)) {
+			throw new Error(`Session ${entry.sessionPath} is owned by ${entry.owner?.displayName || entry.owner?.kind}; explicit transfer is required before changing ownership.`);
+		}
+		const changed = !isSameOwner(entry.owner, owner);
+		entry.owner = owner;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		if (changed) await this.emit(sessionId, { type: "ownership_changed", owner });
+	}
+
+	async releaseOwnership(sessionId: string, owner?: SessionOwner): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		const changed = Boolean(entry.owner) && (!owner || isSameOwner(entry.owner, owner));
+		if (changed) entry.owner = undefined;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		if (changed) await this.emit(sessionId, { type: "ownership_changed", owner: entry.owner });
+	}
+
+	async archiveSession(sessionId: string, _reason: ArchiveReason = "manual"): Promise<void> {
 		const registry = await this.readRegistry();
 		const entry = registry[sessionId];
 		if (!entry) return;
 		entry.location = "archived";
+		entry.owner = undefined;
 		entry.updatedAt = new Date().toISOString();
 		await this.writeRegistry(registry);
+		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
 		this.runtimes.delete(sessionId);
 	}
 
@@ -514,6 +546,7 @@ export class CodingSessionHost implements SessionHost {
 		if (filter.location && summary.location !== filter.location) return false;
 		if (filter.runState && summary.runState !== filter.runState) return false;
 		if (!filter.includeArchived && summary.location === "archived") return false;
+		if (filter.ownerKind && summary.owner?.kind !== filter.ownerKind) return false;
 		if (!filter.query?.trim()) return true;
 		const query = filter.query.trim().toLowerCase();
 		return [summary.sessionId, summary.title, summary.cwd].some((value) => value?.toLowerCase().includes(query));
@@ -539,6 +572,43 @@ export class CodingSessionHost implements SessionHost {
 		const summary = this.toSummary(sessionId, entry);
 		return { ...summary, messageCount, queueDepth: runtime?.queueDepth ?? 0, lastError: runtime?.lastError ?? entry.lastError };
 	}
+}
+
+function isSameOwner(left: SessionOwner | undefined, right: SessionOwner | undefined) {
+	if (!left || !right) return false;
+	return left.kind === right.kind && left.hostId === right.hostId && left.actorId === right.actorId;
+}
+
+function canClaimCodingOwnership(currentOwner: SessionOwner | undefined, nextOwner: SessionOwner) {
+	if (!currentOwner) return true;
+	return isSameOwner(currentOwner, nextOwner);
+}
+
+function canActorMutateCodingSession(currentOwner: SessionOwner, actor: SessionOwner) {
+	if (isSameOwner(currentOwner, actor)) return true;
+	if (
+		currentOwner.kind === "remote_dispatch"
+		&& actor.kind === "remote_web"
+		&& currentOwner.hostId === actor.hostId
+	) {
+		return true;
+	}
+	return false;
+}
+
+function resolveCodingMessageOwner(
+	hostId: string,
+	hostRole: "local" | "remote",
+	entry: CodingSessionRegistryEntry,
+	input: SendMessageInput,
+): SessionOwner {
+	if (input.source === "system") return entry.owner ?? deriveOwner(hostId, hostRole, entry.origin, input.source);
+	const actor = input.actor ?? deriveOwner(hostId, hostRole, entry.origin, input.source);
+	if (!entry.owner) return actor;
+	if (!canActorMutateCodingSession(entry.owner, actor)) {
+		throw new Error(`Session ${entry.sessionPath} is owned by ${entry.owner.displayName || entry.owner.kind}; explicit transfer is required before mutating it.`);
+	}
+	return entry.owner;
 }
 
 function deriveOwner(hostId: string, hostRole: "local" | "remote", origin: HostedSessionMetadata["origin"] | undefined, source: SendMessageInput["source"]): SessionOwner {

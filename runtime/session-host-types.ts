@@ -12,6 +12,13 @@ export interface SessionOwner {
 	displayName?: string;
 }
 
+export interface SessionWatcher {
+	id: string;
+	kind: "web" | "local_status" | "telegram" | "system";
+	hostId: string;
+	actorId?: string;
+}
+
 export interface HostedSessionMetadata {
 	sessionId: string;
 	kind: HostedSessionKind;
@@ -37,6 +44,7 @@ export interface SessionFilter {
 	kind?: HostedSessionKind;
 	location?: HostedSessionLocation;
 	runState?: HostedSessionRunState;
+	ownerKind?: SessionOwner["kind"];
 	query?: string;
 	assistantChannel?: AssistantChannel;
 	includeArchived?: boolean;
@@ -81,6 +89,7 @@ export type HostedSessionEvent =
 	| { type: "message_complete"; messageId?: string }
 	| { type: "tool_start"; toolName: string; args?: unknown }
 	| { type: "tool_end"; toolName: string; result?: unknown; isError?: boolean }
+	| { type: "ownership_changed"; owner?: SessionOwner }
 	| { type: "error"; error: string };
 
 export type HostedSessionListener = (event: HostedSessionEvent) => void | Promise<void>;
@@ -92,6 +101,7 @@ export interface CreateSessionInput {
 	title?: string;
 	cwd?: string;
 	workspaceMode?: WorkspaceMode;
+	owner?: SessionOwner;
 	assistantChannel?: AssistantChannel;
 	assistantThreadId?: string;
 	modelRef?: string;
@@ -109,13 +119,17 @@ export interface ExportedSessionBundle {
 export interface ImportSessionInput {
 	bundle: ExportedSessionBundle;
 	targetCwd?: string;
+	owner?: SessionOwner;
 }
 
 export interface SendMessageInput {
 	text: string;
 	modelRef?: string;
+	actor?: SessionOwner;
 	source?: "tui" | "web" | "telegram" | "schedule" | "system";
 }
+
+export type ArchiveReason = "dispatched" | "fetched" | "completed" | "cancelled" | "manual";
 
 export interface AcceptedMessage {
 	sessionId: string;
@@ -136,4 +150,7 @@ export interface SessionHost {
 	getSnapshot(sessionId: string, modelRef?: string, limit?: number): Promise<HostedSessionSnapshot | undefined>;
 	subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe>;
 	interrupt(sessionId: string, modelRef?: string): Promise<void>;
+	claimOwnership(sessionId: string, owner: SessionOwner): Promise<void>;
+	releaseOwnership(sessionId: string, owner?: SessionOwner): Promise<void>;
+	archiveSession(sessionId: string, reason?: ArchiveReason): Promise<void>;
 }
