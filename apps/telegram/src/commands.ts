@@ -3,6 +3,29 @@ import type { TelegramAppConfig } from "./config.js";
 import { getAssistantThreadSnapshot, getAssistantThreadStatus, resetAssistantThread } from "./host-client.js";
 import { getActiveModel, setActiveModel } from "./session.js";
 
+export const TELEGRAM_LOCAL_COMMANDS = [
+	"help",
+	"start",
+	"model",
+	"session",
+	"peek",
+	"restart",
+	"new",
+	"clear",
+] as const;
+
+const TELEGRAM_LOCAL_COMMAND_SET = new Set<string>(TELEGRAM_LOCAL_COMMANDS);
+
+export function extractTelegramCommandName(text: string): string | undefined {
+	const match = text.trim().match(/^\/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(?:\s|$)/);
+	return match?.[1]?.toLowerCase();
+}
+
+export function isTelegramLocalCommand(text: string): boolean {
+	const commandName = extractTelegramCommandName(text);
+	return commandName ? TELEGRAM_LOCAL_COMMAND_SET.has(commandName) : false;
+}
+
 const HELP_TEXT = `Available commands:
 
 /model           Show current model
@@ -14,10 +37,15 @@ const HELP_TEXT = `Available commands:
 /clear           Clear session
 /help            Show this help message
 
+All other slash commands are forwarded to Magpie (e.g. /schedule ...).
 Just type anything else to chat.`;
 
 export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 	bot.command("help", async (ctx) => {
+		await ctx.reply(HELP_TEXT);
+	});
+
+	bot.command("start", async (ctx) => {
 		await ctx.reply(HELP_TEXT);
 	});
 

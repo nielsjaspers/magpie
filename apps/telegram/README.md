@@ -59,6 +59,9 @@ Telegram reads Magpie config/auth from the normal Magpie locations:
 
 Prompt files are resolved relative to the active Magpie config scope directory:
 
+Built-in Telegram commands (`/help`, `/model`, `/session`, etc.) are handled by the bot.
+All other slash commands (for example `/schedule ...`) are forwarded to Magpie.
+
 - project first (`.pi/...`)
 - then global (`~/.pi/agent/...`)
 

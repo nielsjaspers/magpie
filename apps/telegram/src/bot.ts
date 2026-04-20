@@ -1,5 +1,5 @@
 import { Bot, GrammyError, HttpError } from "grammy";
-import { registerCommands } from "./commands.js";
+import { isTelegramLocalCommand, registerCommands } from "./commands.js";
 import { resolveAssistantThread, sendAssistantMessage } from "./host-client.js";
 import { getActiveModel } from "./session.js";
 import { splitMessage } from "./utils.js";
@@ -38,7 +38,8 @@ export function createBot(config: TelegramAppConfig): Bot {
 
 	bot.on("message:text", async (ctx) => {
 		const text = ctx.message.text.trim();
-		if (!text || text.startsWith("/")) return;
+		if (!text) return;
+		if (isTelegramLocalCommand(text)) return;
 
 		const chatId = String(ctx.chat.id);
 		const { ref } = getActiveModel();

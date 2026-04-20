@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import * as chrono from "chrono-node";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
@@ -15,15 +16,22 @@ import {
 	resolvePromptText,
 	resolveSubagentModelRef,
 } from "../config/config.js";
+import type { MagpieAuthConfig, MagpieConfig, ThinkingLevel } from "../config/types.js";
 import { getActiveModeName } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
-import type { MagpieAuthConfig, MagpieConfig, ThinkingLevel } from "../config/types.js";
-import type { ScheduleBackend, ScheduleEntry, ScheduleRunState, ScheduleStore } from "./types.js";
+import type {
+	ScheduleBackend,
+	ScheduleEntry,
+	ScheduleRunRecord,
+	ScheduleStore,
+	ScheduleType,
+} from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const CRON_BEGIN = "# MAGPIE-SCHEDULE-BEGIN";
 const CRON_END = "# MAGPIE-SCHEDULE-END";
 const SCHEDULE_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const COMMON_PATHS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 const SCHEDULE_BACKGROUND_PROMPT = [
 	"You are running as a scheduled background Magpie task.",
 	"Actually perform the requested work in the working directory using tools when needed.",
@@ -42,7 +50,23 @@ interface ScheduleRuntimeOptions {
 	thinkingLevel?: ThinkingLevel;
 	systemPrompt?: { strategy: "append" | "replace"; text: string };
 	notifier: ScheduleNotifier;
-	sessionDir: string;
+	sessionRootDir: string;
+}
+
+interface ParsedScheduleRequest {
+	type: ScheduleType;
+	when: string;
+	runAt?: string;
+	cronExpr?: string;
+}
+
+interface ScheduleTaskInput {
+	when: string;
+	task: string;
+	model?: string;
+	mode?: string;
+	cwd?: string;
+	notify?: boolean;
 }
 
 function createScheduleStore(baseDir = resolve(homedir(), ".pi/agent/magpie-schedules")): ScheduleStore {
@@ -60,21 +84,6 @@ async function ensureStore(store: ScheduleStore) {
 	await mkdir(dirname(store.indexPath), { recursive: true });
 }
 
-async function readIndex(store: ScheduleStore): Promise<ScheduleEntry[]> {
-	await ensureStore(store);
-	if (!existsSync(store.indexPath)) return [];
-	try {
-		return JSON.parse(await readFile(store.indexPath, "utf8")) as ScheduleEntry[];
-	} catch {
-		return [];
-	}
-}
-
-async function writeIndex(store: ScheduleStore, entries: ScheduleEntry[]) {
-	await ensureStore(store);
-	await writeFile(store.indexPath, JSON.stringify(entries, null, 2) + "\n", "utf8");
-}
-
 function createId() {
 	return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -83,17 +92,94 @@ function shellEscape(value: string) {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function parseWhenSpec(input: string): Date | undefined {
-	const relative = input.trim().match(/^in\s+(\d+)\s+(minute|minutes|hour|hours|day|days)$/i);
+function isCronExpression(value: string) {
+	const parts = value.trim().split(/\s+/);
+	return parts.length === 5 && parts.every(Boolean);
+}
+
+function parseTimeOfDay(input: string | undefined) {
+	if (!input?.trim()) return { hour: 9, minute: 0 };
+	const parsed = chrono.parseDate(input, new Date(), { forwardDate: true });
+	if (!parsed) return undefined;
+	return { hour: parsed.getHours(), minute: parsed.getMinutes() };
+}
+
+function parseRecurringNaturalWhen(input: string): string | undefined {
+	const trimmed = input.trim();
+	if (!trimmed) return undefined;
+	const lower = trimmed.toLowerCase();
+
+	if (/^(every\s+hour|hourly)$/.test(lower)) return "0 * * * *";
+	let match = lower.match(/^every\s+(\d+)\s+minutes?$/);
+	if (match) {
+		const step = Number(match[1]);
+		if (step >= 1 && step <= 59) return `*/${step} * * * *`;
+	}
+	match = lower.match(/^every\s+(\d+)\s+hours?$/);
+	if (match) {
+		const step = Number(match[1]);
+		if (step >= 1 && step <= 23) return `0 */${step} * * *`;
+	}
+
+	match = lower.match(/^(?:every|each)\s+day(?:\s+at\s+(.+))?$/) || lower.match(/^daily(?:\s+at\s+(.+))?$/);
+	if (match) {
+		const tod = parseTimeOfDay(match[1]);
+		if (tod) return `${tod.minute} ${tod.hour} * * *`;
+	}
+
+	match = lower.match(/^(?:every|each)\s+weekdays?(?:\s+at\s+(.+))?$/);
+	if (match) {
+		const tod = parseTimeOfDay(match[1]);
+		if (tod) return `${tod.minute} ${tod.hour} * * 1-5`;
+	}
+
+	const dayMap: Record<string, number> = {
+		sunday: 0,
+		monday: 1,
+		tuesday: 2,
+		wednesday: 3,
+		thursday: 4,
+		friday: 5,
+		saturday: 6,
+	};
+	match = lower.match(/^(?:every|each)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(.+))?$/);
+	if (match) {
+		const tod = parseTimeOfDay(match[2]);
+		if (tod) return `${tod.minute} ${tod.hour} * * ${dayMap[match[1]]}`;
+	}
+
+	match = lower.match(/^every\s+week(?:\s+on\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday))?(?:\s+at\s+(.+))?$/);
+	if (match) {
+		const day = match[1] || "monday";
+		const tod = parseTimeOfDay(match[2]);
+		if (tod) return `${tod.minute} ${tod.hour} * * ${dayMap[day]}`;
+	}
+
+	return undefined;
+}
+
+function parseWhenSpec(input: string): ParsedScheduleRequest | undefined {
+	const trimmed = input.trim();
+	if (!trimmed) return undefined;
+	if (trimmed.startsWith("cron:")) {
+		const cronExpr = trimmed.slice(5).trim();
+		if (!isCronExpression(cronExpr)) throw new Error(`Invalid cron expression: ${cronExpr}`);
+		return { type: "recurring", when: trimmed, cronExpr };
+	}
+	const recurringCron = parseRecurringNaturalWhen(trimmed);
+	if (recurringCron) return { type: "recurring", when: trimmed, cronExpr: recurringCron };
+	const relative = trimmed.match(/^in\s+(\d+)\s+(minute|minutes|hour|hours|day|days)$/i);
 	if (relative) {
 		const amount = Number(relative[1]);
 		const unit = relative[2].toLowerCase();
 		const now = Date.now();
 		const delta = unit.startsWith("minute") ? amount * 60_000 : unit.startsWith("hour") ? amount * 3_600_000 : amount * 86_400_000;
-		return new Date(now + delta);
+		return { type: "one-shot", when: trimmed, runAt: new Date(now + delta).toISOString() };
 	}
-	const parsed = new Date(input);
-	if (Number.isFinite(parsed.getTime())) return parsed;
+	const parsed = chrono.parseDate(trimmed, new Date(), { forwardDate: true });
+	if (parsed && Number.isFinite(parsed.getTime())) return { type: "one-shot", when: trimmed, runAt: parsed.toISOString() };
+	const legacy = new Date(trimmed);
+	if (Number.isFinite(legacy.getTime())) return { type: "one-shot", when: trimmed, runAt: legacy.toISOString() };
 	return undefined;
 }
 
@@ -105,10 +191,6 @@ function formatAtTimestamp(date: Date): string {
 	const minute = String(date.getMinutes()).padStart(2, "0");
 	const second = String(date.getSeconds()).padStart(2, "0");
 	return `${year}${month}${day}${hour}${minute}.${second}`;
-}
-
-function cronSpecForDate(date: Date): string {
-	return `${date.getMinutes()} ${date.getHours()} ${date.getDate()} ${date.getMonth() + 1} *`;
 }
 
 async function commandExists(command: string): Promise<boolean> {
@@ -128,6 +210,78 @@ async function resolveCommandPath(command: string): Promise<string | undefined> 
 	} catch {
 		return undefined;
 	}
+}
+
+function normalizeRunRecord(entry: any): ScheduleRunRecord | undefined {
+	if (!entry || typeof entry !== "object") return undefined;
+	if (typeof entry.resultPath !== "string" || !entry.resultPath.trim()) return undefined;
+	const startedAt = typeof entry.startedAt === "string" && entry.startedAt.trim() ? entry.startedAt : entry.endedAt || "";
+	if (!startedAt) return undefined;
+	return {
+		startedAt,
+		endedAt: typeof entry.endedAt === "string" ? entry.endedAt : undefined,
+		exitCode: typeof entry.exitCode === "number" ? entry.exitCode : undefined,
+		resultPath: entry.resultPath,
+		statePath: typeof entry.statePath === "string" ? entry.statePath : undefined,
+		sessionDir: typeof entry.sessionDir === "string" ? entry.sessionDir : undefined,
+	};
+}
+
+function normalizeEntry(entry: any): ScheduleEntry | undefined {
+	if (!entry || typeof entry !== "object") return undefined;
+	if (typeof entry.id !== "string" || typeof entry.task !== "string" || typeof entry.cwd !== "string") return undefined;
+	const runs = Array.isArray(entry.runs)
+		? entry.runs.map(normalizeRunRecord).filter(Boolean) as ScheduleRunRecord[]
+		: [];
+	if (runs.length === 0 && typeof entry.resultPath === "string") {
+		const migrated = normalizeRunRecord({
+			startedAt: entry.createdAt,
+			endedAt: undefined,
+			exitCode: undefined,
+			resultPath: entry.resultPath,
+			statePath: entry.statePath,
+			sessionDir: entry.sessionDir,
+		});
+		if (migrated) runs.push(migrated);
+	}
+	return {
+		id: entry.id,
+		type: entry.type === "recurring" ? "recurring" : "one-shot",
+		cwd: entry.cwd,
+		task: entry.task,
+		model: typeof entry.model === "string" ? entry.model : undefined,
+		mode: typeof entry.mode === "string" ? entry.mode : undefined,
+		when: typeof entry.when === "string" ? entry.when : "",
+		runAt: typeof entry.runAt === "string" ? entry.runAt : undefined,
+		cronExpr: typeof entry.cronExpr === "string" ? entry.cronExpr : undefined,
+		backend: entry.backend === "cron_fallback" ? "cron_fallback" : "at",
+		scriptPath: typeof entry.scriptPath === "string" ? entry.scriptPath : "",
+		resultPath: typeof entry.resultPath === "string" ? entry.resultPath : runs.at(-1)?.resultPath,
+		statePath: typeof entry.statePath === "string" ? entry.statePath : runs.at(-1)?.statePath,
+		sessionDir: typeof entry.sessionDir === "string" ? entry.sessionDir : undefined,
+		createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString(),
+		notify: entry.notify !== false,
+		atJobId: typeof entry.atJobId === "string" ? entry.atJobId : undefined,
+		cronId: typeof entry.cronId === "string" ? entry.cronId : undefined,
+		cancelledAt: typeof entry.cancelledAt === "string" ? entry.cancelledAt : undefined,
+		runs,
+	};
+}
+
+async function readIndex(store: ScheduleStore): Promise<ScheduleEntry[]> {
+	await ensureStore(store);
+	if (!existsSync(store.indexPath)) return [];
+	try {
+		const raw = JSON.parse(await readFile(store.indexPath, "utf8")) as unknown[];
+		return Array.isArray(raw) ? raw.map(normalizeEntry).filter(Boolean) as ScheduleEntry[] : [];
+	} catch {
+		return [];
+	}
+}
+
+async function writeIndex(store: ScheduleStore, entries: ScheduleEntry[]) {
+	await ensureStore(store);
+	await writeFile(store.indexPath, JSON.stringify(entries, null, 2) + "\n", "utf8");
 }
 
 async function installCronLine(id: string, line: string) {
@@ -180,7 +334,7 @@ function createPiCommand(entry: ScheduleEntry, piCommand: string, runtime: Sched
 	const args = [
 		shellEscape(piCommand),
 		"--print",
-		`--session-dir ${shellEscape(runtime.sessionDir)}`,
+		`--session-dir \"$SESSION_DIR\"`,
 		`--tools ${shellEscape(SCHEDULE_BUILTIN_TOOLS.join(","))}`,
 	];
 	if (runtime.model) args.push(`--model ${shellEscape(runtime.model)}`);
@@ -199,9 +353,9 @@ function createNotificationScript(entry: ScheduleEntry, runtime: ScheduleRuntime
 		return `
 if command -v osascript >/dev/null 2>&1; then
   SUMMARY="$(head -c 200 "$RESULT_PATH" 2>/dev/null | tr '\n' ' ' | tr '\r' ' ' || true)"
-  MAGPIE_NOTIFY_TITLE=${shellEscape(`Magpie schedule ${entry.id}`)} \
-  MAGPIE_NOTIFY_SUBTITLE="Completed ($EXIT_CODE)" \
-  MAGPIE_NOTIFY_MESSAGE="$SUMMARY" \
+  MAGPIE_NOTIFY_TITLE=${shellEscape("Magpie")} \\
+  MAGPIE_NOTIFY_SUBTITLE=${shellEscape(`Scheduled task ${entry.id} complete`)} \\
+  MAGPIE_NOTIFY_MESSAGE="$SUMMARY" \\
   osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
 on run
   set ttl to system attribute "MAGPIE_NOTIFY_TITLE"
@@ -215,28 +369,55 @@ fi
 	}
 	return `
 if command -v curl >/dev/null 2>&1; then
-  TELEGRAM_HEADER=${shellEscape(`Magpie schedule ${entry.id} completed ($EXIT_CODE)
-Task: ${entry.task}
-Cwd: ${entry.cwd}
-
-`)}
+  TELEGRAM_HEADER=${shellEscape(`Magpie schedule ${entry.id} completed ($EXIT_CODE)\nTask: ${entry.task}\nCwd: ${entry.cwd}\n\n`)}
   TELEGRAM_BODY="$(head -c 3500 "$RESULT_PATH" 2>/dev/null || true)"
   TELEGRAM_TEXT="\${TELEGRAM_HEADER}\${TELEGRAM_BODY}"
-  curl -sS -X POST ${shellEscape(`https://api.telegram.org/bot${runtime.notifier.botToken}/sendMessage`)} \
-    --data-urlencode ${shellEscape(`chat_id=${runtime.notifier.chatId}`)} \
-    --data-urlencode "text=$TELEGRAM_TEXT" \
+  curl -sS -X POST ${shellEscape(`https://api.telegram.org/bot${runtime.notifier.botToken}/sendMessage`)} \\
+    --data-urlencode ${shellEscape(`chat_id=${runtime.notifier.chatId}`)} \\
+    --data-urlencode "text=$TELEGRAM_TEXT" \\
     >/dev/null 2>&1 || true
 fi
 `;
 }
 
-function createRunnerScript(entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions): string {
+function createIndexUpdateScript(store: ScheduleStore, entry: ScheduleEntry) {
+	return `
+${shellEscape(process.execPath)} <<'NODE' >/dev/null 2>&1 || true
+const fs = require('node:fs');
+const path = ${JSON.stringify(store.indexPath)};
+const entryId = ${JSON.stringify(entry.id)};
+const run = {
+  startedAt: process.env.MAGPIE_RUN_STARTED_AT,
+  endedAt: process.env.MAGPIE_RUN_ENDED_AT,
+  exitCode: Number(process.env.MAGPIE_RUN_EXIT_CODE),
+  resultPath: process.env.MAGPIE_RUN_RESULT_PATH,
+  statePath: process.env.MAGPIE_RUN_STATE_PATH,
+  sessionDir: process.env.MAGPIE_RUN_SESSION_DIR,
+};
+try {
+  const entries = JSON.parse(fs.readFileSync(path, 'utf8'));
+  if (!Array.isArray(entries)) process.exit(0);
+  const idx = entries.findIndex((item) => item && item.id === entryId);
+  if (idx < 0) process.exit(0);
+  const current = entries[idx] || {};
+  const runs = Array.isArray(current.runs) ? current.runs : [];
+  runs.push(run);
+  current.runs = runs;
+  current.resultPath = run.resultPath;
+  current.statePath = run.statePath;
+  current.sessionDir = run.sessionDir;
+  entries[idx] = current;
+  fs.writeFileSync(path, JSON.stringify(entries, null, 2) + '\n', 'utf8');
+} catch {}
+NODE
+`;
+}
+
+function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions): string {
 	const runtimeNodeDir = dirname(process.execPath);
 	const inheritedPath = process.env.PATH || "";
-	const runnerPath = [runtimeNodeDir, inheritedPath, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
-		.filter(Boolean)
-		.join(":");
-	const cleanup = entry.backend === "cron_fallback" && entry.cronId
+	const runnerPath = [runtimeNodeDir, inheritedPath, ...COMMON_PATHS].filter(Boolean).join(":");
+	const cleanup = entry.type === "one-shot" && entry.backend === "cron_fallback" && entry.cronId
 		? `
 if command -v crontab >/dev/null 2>&1; then
   TMP_CRON="$(mktemp)"
@@ -248,14 +429,18 @@ fi
 		: "";
 	const piInvocation = createPiCommand(entry, piCommand, runtime);
 	const notify = createNotificationScript(entry, runtime);
+	const updateIndex = createIndexUpdateScript(store, entry);
 	return `#!/usr/bin/env bash
 set -euo pipefail
 export PATH=${shellEscape(runnerPath)}
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-STATE_PATH=${shellEscape(entry.statePath)}
-RESULT_PATH=${shellEscape(entry.resultPath)}
-SESSION_DIR=${shellEscape(runtime.sessionDir)}
-mkdir -p "$(dirname "$STATE_PATH")" "$(dirname "$RESULT_PATH")" "$SESSION_DIR"
+RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+RESULT_DIR=${shellEscape(resolve(store.resultsDir, entry.id))}
+SESSION_ROOT=${shellEscape(runtime.sessionRootDir)}
+RESULT_PATH="$RESULT_DIR/$RUN_STAMP.result.md"
+STATE_PATH="$RESULT_DIR/$RUN_STAMP.state"
+SESSION_DIR="$SESSION_ROOT/$RUN_STAMP"
+mkdir -p "$RESULT_DIR" "$SESSION_DIR"
 printf 'startedAt=%s\nresultPath=%s\nsessionDir=%s\n' "$STARTED_AT" "$RESULT_PATH" "$SESSION_DIR" > "$STATE_PATH"
 ${cleanup}
 EXIT_CODE=0
@@ -270,23 +455,34 @@ else
 fi
 ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'startedAt=%s\nendedAt=%s\nexitCode=%s\nresultPath=%s\nsessionDir=%s\n' "$STARTED_AT" "$ENDED_AT" "$EXIT_CODE" "$RESULT_PATH" "$SESSION_DIR" > "$STATE_PATH"
+export MAGPIE_RUN_STARTED_AT="$STARTED_AT"
+export MAGPIE_RUN_ENDED_AT="$ENDED_AT"
+export MAGPIE_RUN_EXIT_CODE="$EXIT_CODE"
+export MAGPIE_RUN_RESULT_PATH="$RESULT_PATH"
+export MAGPIE_RUN_STATE_PATH="$STATE_PATH"
+export MAGPIE_RUN_SESSION_DIR="$SESSION_DIR"
+${updateIndex}
 ${notify}
 exit "$EXIT_CODE"
 `;
 }
 
-async function chooseBackend(): Promise<ScheduleBackend> {
+async function chooseBackend(type: ScheduleType): Promise<ScheduleBackend> {
 	const hasCron = await commandExists("crontab");
+	if (type === "recurring") {
+		if (!hasCron) throw new Error("Recurring schedules require 'crontab'.");
+		return "cron_fallback";
+	}
 	if (process.platform === "darwin" && hasCron) return "cron_fallback";
 	if (await commandExists("at")) return "at";
 	if (hasCron) return "cron_fallback";
 	throw new Error("Neither 'at' nor 'crontab' is available on this system.");
 }
 
-async function scheduleOneShot(entry: ScheduleEntry): Promise<ScheduleEntry> {
-	const backend = await chooseBackend();
-	if (backend === "at") {
-		const atTime = formatAtTimestamp(new Date(entry.runAt));
+async function scheduleEntry(entry: ScheduleEntry): Promise<ScheduleEntry> {
+	const backend = await chooseBackend(entry.type);
+	if (entry.type === "one-shot" && backend === "at") {
+		const atTime = formatAtTimestamp(new Date(entry.runAt!));
 		const result = await new Promise<string>((resolve, reject) => {
 			const child = execFile("at", ["-t", atTime], (error, stdout, stderr) => {
 				if (error) reject(new Error(stderr || stdout || error.message));
@@ -298,7 +494,9 @@ async function scheduleOneShot(entry: ScheduleEntry): Promise<ScheduleEntry> {
 		return { ...entry, backend, atJobId: jobId };
 	}
 	const cronId = `magpie-schedule-${entry.id}`;
-	const cronLine = `${cronSpecForDate(new Date(entry.runAt))} /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`;
+	const cronLine = entry.type === "recurring"
+		? `${entry.cronExpr} /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`
+		: `${new Date(entry.runAt!).getMinutes()} ${new Date(entry.runAt!).getHours()} ${new Date(entry.runAt!).getDate()} ${new Date(entry.runAt!).getMonth() + 1} * /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`;
 	await installCronLine(cronId, cronLine);
 	return { ...entry, backend, cronId };
 }
@@ -312,47 +510,35 @@ async function cancelScheduledEntry(entry: ScheduleEntry) {
 	}
 }
 
-async function readRunState(path: string): Promise<ScheduleRunState | undefined> {
-	if (!existsSync(path)) return undefined;
-	try {
-		const raw = await readFile(path, "utf8");
-		const values = Object.fromEntries(raw.split(/\r?\n/).filter(Boolean).map((line) => {
-			const idx = line.indexOf("=");
-			return [line.slice(0, idx), line.slice(idx + 1)];
-		}));
-		return {
-			startedAt: values.startedAt,
-			endedAt: values.endedAt,
-			exitCode: values.exitCode ? Number(values.exitCode) : undefined,
-			resultPath: values.resultPath || path.replace(/\.state$/, ".result.md"),
-			sessionDir: values.sessionDir,
-		};
-	} catch {
-		return undefined;
-	}
-}
-
-function describeEntryStatus(entry: ScheduleEntry, state?: ScheduleRunState) {
+function describeEntryStatus(entry: ScheduleEntry) {
 	if (entry.cancelledAt) return `cancelled at ${entry.cancelledAt}`;
-	if (state?.endedAt) return `completed (${state.exitCode ?? 0}) at ${state.endedAt}`;
-	if (state?.startedAt) return `running since ${state.startedAt}`;
-	if (Date.parse(entry.runAt) < Date.now()) return `missed/unknown after ${entry.runAt}`;
-	return `scheduled for ${entry.runAt}`;
+	const lastRun = entry.runs.at(-1);
+	if (lastRun?.endedAt) return `completed (${lastRun.exitCode ?? 0}) at ${lastRun.endedAt}`;
+	if (lastRun?.startedAt) return `running since ${lastRun.startedAt}`;
+	if (entry.type === "recurring") return `recurring (${entry.cronExpr})`;
+	if (entry.runAt && Date.parse(entry.runAt) < Date.now()) return `missed/unknown after ${entry.runAt}`;
+	return entry.runAt ? `scheduled for ${entry.runAt}` : `scheduled (${entry.when})`;
 }
 
-function formatEntry(entry: ScheduleEntry, state?: ScheduleRunState) {
+function formatEntry(entry: ScheduleEntry) {
 	return [
-		`${entry.id} · ${describeEntryStatus(entry, state)}`,
+		`${entry.id} · ${describeEntryStatus(entry)}`,
+		`- type: ${entry.type}`,
+		entry.type === "recurring" ? `- cron: ${entry.cronExpr}` : `- when: ${entry.runAt}`,
 		`- task: ${entry.task}`,
 		`- backend: ${entry.backend}`,
 		`- cwd: ${entry.cwd}`,
+		entry.mode ? `- mode: ${entry.mode}` : undefined,
 		entry.sessionDir ? `- sessionDir: ${entry.sessionDir}` : undefined,
+		`- runs: ${entry.runs.length}`,
 	].filter(Boolean).join("\n");
 }
 
 function resolveScheduleNotifier(config: MagpieConfig, auth: MagpieAuthConfig, shouldNotify: boolean): ScheduleNotifier {
 	if (!shouldNotify) return { kind: "none" };
-	const kind = config.schedule?.notifier ?? "none";
+	const explicit = config.schedule?.notifier;
+	const telegramConfigured = Boolean(config.schedule?.telegram?.chatId?.trim() && (config.schedule?.telegram?.botToken?.trim() || auth.telegram?.botToken?.trim()));
+	const kind = explicit ?? (process.platform === "darwin" ? "macos" : telegramConfigured ? "telegram" : "none");
 	if (kind === "none") return { kind: "none" };
 	if (kind === "macos") return { kind: "macos" };
 	const botToken = config.schedule?.telegram?.botToken?.trim() || auth.telegram?.botToken?.trim();
@@ -365,16 +551,18 @@ async function resolveScheduleRuntimeOptions(
 	ctx: ExtensionContext,
 	store: ScheduleStore,
 	id: string,
-	input: { model?: string; notify?: boolean },
+	input: ScheduleTaskInput,
 ) {
-	const [config, auth] = await Promise.all([loadConfig(ctx.cwd), loadAuthConfig(ctx.cwd)]);
-	const activeMode = getActiveModeName(ctx, config);
-	const mode = getMode(config, activeMode) ?? getMode(config, "smart");
-	const baseDir = getConfigBaseDir(getActiveConfigScope(ctx.cwd), ctx.cwd);
+	const cwd = resolve(input.cwd?.trim() || ctx.cwd);
+	const [config, auth] = await Promise.all([loadConfig(cwd), loadAuthConfig(cwd)]);
+	const modeName = input.mode?.trim() || getActiveModeName(ctx, config);
+	const mode = getMode(config, modeName) ?? getMode(config, "smart");
+	const baseDir = getConfigBaseDir(getActiveConfigScope(cwd), cwd);
 	const modePromptText = mode?.prompt ? await resolvePromptText(baseDir, mode.prompt) : undefined;
 	const promptParts = [modePromptText?.trim(), SCHEDULE_BACKGROUND_PROMPT].filter(Boolean) as string[];
 	return {
-		mode: mode?.name ?? activeMode,
+		cwd,
+		mode: mode?.name ?? modeName,
 		model: input.model ?? mode?.model,
 		thinkingLevel: mode?.thinkingLevel,
 		systemPrompt: promptParts.length === 0 ? undefined : {
@@ -382,15 +570,21 @@ async function resolveScheduleRuntimeOptions(
 			text: promptParts.join("\n\n"),
 		},
 		notifier: resolveScheduleNotifier(config, auth, input.notify !== false),
-		sessionDir: resolve(store.baseDir, "sessions", id),
-	} satisfies ScheduleRuntimeOptions;
+		sessionRootDir: resolve(store.baseDir, "sessions", id),
+	} satisfies ScheduleRuntimeOptions & { cwd: string };
 }
 
-async function scheduleTask(ctx: ExtensionContext, input: { when: string; task: string; model?: string; notify?: boolean }) {
+function formatNotificationSummary(notifier: ScheduleNotifier, enabled: boolean) {
+	if (!enabled || notifier.kind === "none") return "Notification disabled.";
+	if (notifier.kind === "macos") return "Notification will be sent via macOS when complete.";
+	return "Notification will be sent via Telegram when complete.";
+}
+
+async function scheduleTask(ctx: ExtensionContext, input: ScheduleTaskInput) {
 	const store = createScheduleStore();
-	const runAt = parseWhenSpec(input.when);
-	if (!runAt) throw new Error(`Could not parse time: ${input.when}`);
-	if (runAt.getTime() <= Date.now()) throw new Error("Scheduled time must be in the future.");
+	const parsed = parseWhenSpec(input.when);
+	if (!parsed) throw new Error(`Could not parse time: ${input.when}`);
+	if (parsed.type === "one-shot" && (!parsed.runAt || Date.parse(parsed.runAt) <= Date.now())) throw new Error("Scheduled time must be in the future.");
 	const piCommand = await resolveCommandPath("pi");
 	if (!piCommand) throw new Error("Could not find 'pi' on PATH for scheduled execution.");
 	const entries = await readIndex(store);
@@ -398,32 +592,32 @@ async function scheduleTask(ctx: ExtensionContext, input: { when: string; task: 
 	await ensureStore(store);
 	const runtime = await resolveScheduleRuntimeOptions(ctx, store, id, input);
 	const scriptPath = resolve(store.scriptsDir, `${id}.sh`);
-	const resultPath = resolve(store.resultsDir, `${id}.result.md`);
-	const statePath = resolve(store.resultsDir, `${id}.state`);
 	let entry: ScheduleEntry = {
 		id,
-		type: "one-shot",
-		cwd: ctx.cwd,
+		type: parsed.type,
+		cwd: runtime.cwd,
 		task: input.task,
 		model: runtime.model,
 		mode: runtime.mode,
 		when: input.when,
-		runAt: runAt.toISOString(),
+		runAt: parsed.runAt,
+		cronExpr: parsed.cronExpr,
 		backend: "at",
 		scriptPath,
-		resultPath,
-		statePath,
-		sessionDir: runtime.sessionDir,
+		resultPath: undefined,
+		statePath: undefined,
+		sessionDir: runtime.sessionRootDir,
 		createdAt: new Date().toISOString(),
 		notify: input.notify !== false,
+		runs: [],
 	};
-	entry = { ...entry, backend: await chooseBackend() };
-	await writeFile(scriptPath, createRunnerScript(entry, piCommand, runtime), "utf8");
+	entry = { ...entry, backend: await chooseBackend(entry.type) };
+	await writeFile(scriptPath, createRunnerScript(store, entry, piCommand, runtime), "utf8");
 	await chmod(scriptPath, 0o755);
-	entry = await scheduleOneShot(entry);
+	entry = await scheduleEntry(entry);
 	entries.push(entry);
 	await writeIndex(store, entries);
-	return entry;
+	return { entry, notificationSummary: formatNotificationSummary(runtime.notifier, entry.notify) };
 }
 
 function renderScheduleInterpretProgress(partialOutput: string, toolCalls: Array<{ name: string }>) {
@@ -434,10 +628,44 @@ function renderScheduleInterpretProgress(partialOutput: string, toolCalls: Array
 }
 
 function parseInterpretedScheduleOutput(output: string) {
-	const parsed = JSON.parse(output.trim()) as { when?: string; task?: string; error?: string };
+	const parsed = JSON.parse(output.trim()) as { when?: string; task?: string; mode?: string; cwd?: string; error?: string };
 	if (parsed.error?.trim()) throw new Error(parsed.error.trim());
 	if (!parsed.when?.trim() || !parsed.task?.trim()) throw new Error("Schedule interpretation did not return both when and task.");
-	return { when: parsed.when.trim(), task: parsed.task.trim() };
+	return {
+		when: parsed.when.trim(),
+		task: parsed.task.trim(),
+		mode: parsed.mode?.trim(),
+		cwd: parsed.cwd?.trim(),
+	};
+}
+
+function formatLogs(entry: ScheduleEntry) {
+	const runs = entry.type === "recurring" ? entry.runs.slice(-10) : entry.runs.slice(-1);
+	if (runs.length === 0) return `No result yet for ${entry.id}\nStatus: ${describeEntryStatus(entry)}\nBackend: ${entry.backend}`;
+	return runs.map((run, index) => [
+		entry.type === "recurring" ? `Run ${entry.runs.length - runs.length + index + 1}` : `Run`,
+		`startedAt: ${run.startedAt}`,
+		run.endedAt ? `endedAt: ${run.endedAt}` : undefined,
+		typeof run.exitCode === "number" ? `exitCode: ${run.exitCode}` : undefined,
+		run.sessionDir ? `sessionDir: ${run.sessionDir}` : undefined,
+		"",
+		existsSync(run.resultPath) ? undefined : `(missing result file: ${run.resultPath})`,
+	].filter(Boolean).join("\n") + (existsSync(run.resultPath) ? `\n${requireResultPlaceholder(run.resultPath)}` : "")).join("\n\n---\n\n");
+}
+
+function requireResultPlaceholder(path: string) {
+	return `@@RESULT:${path}`;
+}
+
+async function expandLogResultPlaceholders(text: string) {
+	const matches = [...text.matchAll(/@@RESULT:([^\n]+)/g)];
+	let rendered = text;
+	for (const match of matches) {
+		const path = match[1];
+		const body = existsSync(path) ? await readFile(path, "utf8") : `(missing result file: ${path})`;
+		rendered = rendered.replace(match[0], body);
+	}
+	return rendered;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -452,18 +680,21 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "schedule",
 		label: "Schedule",
-		description: "Schedule a one-shot task to run later via system scheduler (at first, cron fallback).",
+		description: "Schedule a task to run in the background at a future time. Works even if pi is not currently running.",
 		parameters: Type.Object({
-			when: Type.String({ description: "When to run, e.g. 'in 10 minutes' or an ISO datetime." }),
-			task: Type.String({ description: "Task prompt to run later." }),
+			when: Type.String({ description: "When to run. Accepts: 'in N minutes/hours/days', ISO 8601/natural language datetime, or cron expression prefixed with 'cron:'" }),
+			task: Type.String({ description: "The prompt to give to pi when it runs." }),
 			model: Type.Optional(Type.String({ description: "Optional provider/model override." })),
+			mode: Type.Optional(Type.String({ description: "Optional Magpie mode to use." })),
+			cwd: Type.Optional(Type.String({ description: "Optional working directory. Defaults to current cwd." })),
 			notify: Type.Optional(Type.Boolean({ description: "Whether to notify on completion. Defaults to true." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const entry = await scheduleTask(ctx, { when: params.when, task: params.task, model: params.model, notify: params.notify });
+				const { entry, notificationSummary } = await scheduleTask(ctx, params);
+				const timePart = entry.type === "recurring" ? `cron ${entry.cronExpr}` : entry.runAt;
 				return {
-					content: [{ type: "text", text: `Scheduled ${entry.id} for ${entry.runAt} using ${entry.backend}.` }],
+					content: [{ type: "text", text: `Scheduled: ${JSON.stringify(entry.task)} for ${timePart}. ${notificationSummary}` }],
 					details: { entry },
 				};
 			} catch (error) {
@@ -477,20 +708,19 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("schedule", {
-		description: "Schedule one-shot tasks: /schedule <time> <task>, /schedule list, /schedule logs <id>, /schedule cancel <id>",
+		description: "Schedule tasks: /schedule <time> <task>, /schedule cron <expr> <task>, /schedule list, /schedule logs <id>, /schedule cancel <id>",
 		handler: async (args, ctx) => {
 			const raw = args?.trim() || "";
 			const store = createScheduleStore();
 			const entries = await readIndex(store);
 
 			if (!raw) {
-				ctx.ui.notify("Usage: /schedule <time> <task> | /schedule list | /schedule logs <id> | /schedule cancel <id>", "info");
+				ctx.ui.notify("Usage: /schedule <time> <task> | /schedule cron <expr> <task> | /schedule list | /schedule logs <id> | /schedule cancel <id>", "info");
 				return;
 			}
 
 			if (raw === "list") {
-				const lines = await Promise.all(entries.map(async (entry) => formatEntry(entry, await readRunState(entry.statePath))));
-				ctx.ui.notify(lines.length ? lines.join("\n\n") : "No scheduled tasks.", "info");
+				ctx.ui.notify(entries.length ? entries.map(formatEntry).join("\n\n") : "No scheduled tasks.", "info");
 				return;
 			}
 
@@ -501,12 +731,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`No scheduled task found: ${id}`, "error");
 					return;
 				}
-				const state = await readRunState(entry.statePath);
-				if (!state?.resultPath || !existsSync(state.resultPath)) {
-					ctx.ui.notify(`No result yet for ${id}\nStatus: ${describeEntryStatus(entry, state)}\nBackend: ${entry.backend}`, "warning");
-					return;
-				}
-				ctx.ui.notify(await readFile(state.resultPath, "utf8"), "info");
+				ctx.ui.notify(await expandLogResultPlaceholders(formatLogs(entry)), "info");
 				return;
 			}
 
@@ -524,16 +749,28 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const explicit = raw.match(/^(in\s+\d+\s+(?:minute|minutes|hour|hours|day|days)|\d{4}-\d{2}-\d{2}[^\s]*)\s+([\s\S]+)$/i);
-			if (explicit) {
+			const cronMatch = raw.match(/^cron\s+([^\s]+\s+[^\s]+\s+[^\s]+\s+[^\s]+\s+[^\s]+)\s+([\s\S]+)$/i);
+			if (cronMatch) {
 				try {
-					const entry = await scheduleTask(ctx, { when: explicit[1].trim(), task: explicit[2].trim() });
-					ctx.ui.notify(`Scheduled ${entry.id} for ${entry.runAt} using ${entry.backend}`, "info");
+					const { entry, notificationSummary } = await scheduleTask(ctx, { when: `cron:${cronMatch[1].trim()}`, task: cronMatch[2].trim() });
+					ctx.ui.notify(`Scheduled ${entry.id} with cron ${entry.cronExpr}. ${notificationSummary}`, "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
 				return;
 			}
+
+			const explicit = raw.match(/^(cron:[^\s]+(?:\s+[^\s]+){4}|in\s+\d+\s+(?:minute|minutes|hour|hours|day|days)|\d{4}-\d{2}-\d{2}[^\s]*)\s+([\s\S]+)$/i);
+			if (explicit) {
+				try {
+					const { entry, notificationSummary } = await scheduleTask(ctx, { when: explicit[1].trim(), task: explicit[2].trim() });
+					ctx.ui.notify(`Scheduled ${entry.id}${entry.type === "recurring" ? ` with cron ${entry.cronExpr}` : ` for ${entry.runAt}`}. ${notificationSummary}`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+				return;
+			}
+
 			if (!subagentCore) {
 				ctx.ui.notify("Could not parse schedule request, and subagent core is unavailable for natural-language interpretation.", "error");
 				return;
@@ -548,8 +785,12 @@ export default function (pi: ExtensionAPI) {
 				task: [
 					"Interpret this scheduling request and return exactly one JSON object.",
 					"Required fields: when (string), task (string).",
-					"Only support one-shot scheduling for now.",
-					"If the request sounds recurring (for example 'every 2 hours'), return JSON with an error field explaining that recurring schedules are not supported yet.",
+					"Optional fields: mode (string), cwd (string).",
+					"If the user asks for recurring behavior (e.g. every day/each day/weekly), you MUST return when as a cron-prefixed string like 'cron:0 9 * * *'.",
+					"Do not return natural-language recurring phrases in when for recurring tasks.",
+					"Examples:",
+					"- Request: 'every day at 9 summarize unread mail' -> {\"when\":\"cron:0 9 * * *\",\"task\":\"summarize unread mail\"}",
+					"- Request: 'in 30 minutes summarize logs' -> {\"when\":\"in 30 minutes\",\"task\":\"summarize logs\"}",
 					`User request: ${raw}`,
 				].join("\n\n"),
 				context: [
@@ -570,8 +811,8 @@ export default function (pi: ExtensionAPI) {
 				}
 				try {
 					const interpreted = parseInterpretedScheduleOutput(result.output);
-					const entry = await scheduleTask(ctx, interpreted);
-					ctx.ui.notify(`Scheduled ${entry.id} for ${entry.runAt} using ${entry.backend}`, "info");
+					const { entry, notificationSummary } = await scheduleTask(ctx, interpreted);
+					ctx.ui.notify(`Scheduled ${entry.id}${entry.type === "recurring" ? ` with cron ${entry.cronExpr}` : ` for ${entry.runAt}`}. ${notificationSummary}`, "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}

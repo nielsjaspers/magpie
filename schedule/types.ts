@@ -1,5 +1,14 @@
 export type ScheduleBackend = "at" | "cron_fallback";
-export type ScheduleType = "one-shot";
+export type ScheduleType = "one-shot" | "recurring";
+
+export interface ScheduleRunRecord {
+	startedAt: string;
+	endedAt?: string;
+	exitCode?: number;
+	resultPath: string;
+	statePath?: string;
+	sessionDir?: string;
+}
 
 export interface ScheduleRunState {
 	startedAt?: string;
@@ -17,17 +26,19 @@ export interface ScheduleEntry {
 	model?: string;
 	mode?: string;
 	when: string;
-	runAt: string;
+	runAt?: string;
+	cronExpr?: string;
 	backend: ScheduleBackend;
 	scriptPath: string;
-	resultPath: string;
-	statePath: string;
+	resultPath?: string;
+	statePath?: string;
 	sessionDir?: string;
 	createdAt: string;
 	notify: boolean;
 	atJobId?: string;
 	cronId?: string;
 	cancelledAt?: string;
+	runs: ScheduleRunRecord[];
 }
 
 export interface ScheduleStore {
