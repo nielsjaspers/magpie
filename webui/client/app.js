@@ -1,12 +1,14 @@
 // State
 const state = {
   sessions: [],
+  archivedSessions: JSON.parse(localStorage.getItem('magpie_archived_sessions') || '[]'),
   activeSessionId: null,
   stream: null,
   activeMessages: [],
   models: [],
   defaultModelRef: null,
-  attachments: []
+  attachments: [],
+  showArchived: false
 };
 
 // Elements
@@ -31,7 +33,9 @@ const els = {
   mobileMenuBtn: document.getElementById('mobileMenuBtn'),
   closeSidebarBtn: document.getElementById('closeSidebarBtn'),
   sidebarBackdrop: document.getElementById('sidebarBackdrop'),
-  dropOverlay: document.getElementById('dropOverlay')
+  dropOverlay: document.getElementById('dropOverlay'),
+  toggleArchivedBtn: document.getElementById('toggleArchivedBtn'),
+  archivedList: document.getElementById('archivedList')
 };
 
 // --- Initialization ---
@@ -88,7 +92,12 @@ function setupEventListeners() {
 
   els.copyIdBtn.addEventListener('click', copySessionId);
 
-  // Mobile Sidebar
+  els.toggleArchivedBtn.addEventListener('click', () => {
+    state.showArchived = !state.showArchived;
+    els.toggleArchivedBtn.textContent = state.showArchived ? 'Hide' : 'Show';
+    els.archivedList.style.display = state.showArchived ? 'flex' : 'none';
+    if (state.showArchived) renderSessionsList(); // render into archived
+  });
   const openSidebar = () => {
     els.sidebar.classList.add('open');
     els.sidebarBackdrop.classList.add('active');
@@ -138,10 +147,35 @@ async function request(path, options = {}) {
 
 async function refreshModels() {
   try {
-    const data = await request('/api/v1/models');
-    state.models = data.models || [];
-    state.defaultModelRef = data.defaultModel;
-    renderModelSelect();
+    const response = await fetch('/api/v1/models');
+    if (response.ok) {
+      const data = await response.json();
+      state.models = data.models || [];
+      state.defaultModelRef = data.defaultModel;
+      
+      els.modelSelect.innerHTML = '';
+      
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = `Default`; // Shorter text
+      els.modelSelect.appendChild(defaultOpt);
+
+      const providers = [...new Set(state.models.map(m => m.provider))];
+      
+      providers.forEach(provider => {
+        const group = document.createElement('optgroup');
+        group.label = provider;
+        
+        state.models.filter(m => m.provider === provider).forEach(model => {
+          const opt = document.createElement('option');
+          opt.value = `${model.provider}/${model.id}`;
+          opt.textContent = model.name || model.id;
+          group.appendChild(opt);
+        });
+        
+        els.modelSelect.appendChild(group);
+      });
+    }
   } catch (err) {
     console.error('Failed to load models:', err);
   }
@@ -153,10 +187,11 @@ async function refreshSessions() {
     state.sessions = data.sessions || [];
     renderSessionsList();
     
-    // Auto open first session if none active
-    if (!state.activeSessionId && state.sessions.length > 0) {
-      await openSession(state.sessions[0].sessionId);
-    }
+        // Try to select the first active (unarchived) session
+        const activeSessions = state.sessions.filter(s => !state.archivedSessions.includes(s.sessionId));
+        if (activeSessions.length > 0) {
+          await openSession(activeSessions[0].sessionId);
+        }
   } catch (err) {
     console.error('Failed to load sessions:', err);
     els.sessionList.innerHTML = `<div class="session-item-meta" style="padding: 16px; color: var(--danger-color)">Failed to load.</div>`;
@@ -335,68 +370,52 @@ async function interruptSession() {
 
 // --- Rendering ---
 
-function renderModelSelect() {
-  els.modelSelect.innerHTML = '';
-  
-  const defaultOpt = document.createElement('option');
-  defaultOpt.value = '';
-  defaultOpt.textContent = `Default (${state.defaultModelRef})`;
-  els.modelSelect.appendChild(defaultOpt);
-
-  const providers = [...new Set(state.models.map(m => m.provider))];
-  providers.forEach(provider => {
-    const group = document.createElement('optgroup');
-    group.label = provider;
-    
-    state.models.filter(m => m.provider === provider).forEach(model => {
-      const opt = document.createElement('option');
-      opt.value = `${model.provider}/${model.id}`;
-      opt.textContent = model.name || model.id;
-      group.appendChild(opt);
-    });
-    
-    els.modelSelect.appendChild(group);
-  });
-}
 
 async function archiveSession(sessionId, event) {
-  event.stopPropagation(); // Don't trigger the row click
-  try {
-    await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json' }
-    });
-    // If we just archived the active session, clear it
-    if (state.activeSessionId === sessionId) {
-      state.activeSessionId = null;
-      els.sessionTitle.textContent = 'Select a session';
-      els.sessionMeta.textContent = '';
-      state.activeMessages = [];
-      renderMessages();
-      if (state.stream) {
-        state.stream.close();
-        state.stream = null;
-      }
-    }
-    await refreshSessions();
-  } catch (err) {
-    console.error('Failed to archive session', err);
+  event.stopPropagation();
+  if (!state.archivedSessions.includes(sessionId)) {
+    state.archivedSessions.push(sessionId);
+    localStorage.setItem('magpie_archived_sessions', JSON.stringify(state.archivedSessions));
   }
+  if (state.activeSessionId === sessionId) {
+    state.activeSessionId = null;
+    els.sessionTitle.textContent = 'Select a session';
+    els.sessionMeta.textContent = '';
+    state.activeMessages = [];
+    renderMessages();
+    if (state.stream) {
+      state.stream.close();
+      state.stream = null;
+    }
+  }
+  renderSessionsList();
+}
+
+async function unarchiveSession(sessionId, event) {
+  event.stopPropagation();
+  state.archivedSessions = state.archivedSessions.filter(id => id !== sessionId);
+  localStorage.setItem('magpie_archived_sessions', JSON.stringify(state.archivedSessions));
+  renderSessionsList();
 }
 
 function renderSessionsList() {
   els.sessionList.innerHTML = '';
+  els.archivedList.innerHTML = '';
   
-  if (state.sessions.length === 0) {
-    els.sessionList.innerHTML = `<div class="session-item-meta" style="padding: 16px;">No sessions found.</div>`;
-    return;
+  const activeList = state.sessions.filter(s => !state.archivedSessions.includes(s.sessionId));
+  const archivedList = state.sessions.filter(s => state.archivedSessions.includes(s.sessionId));
+  
+  if (activeList.length === 0) {
+    els.sessionList.innerHTML = `<div class="session-item-meta" style="padding: 16px;">No active sessions.</div>`;
+  }
+  if (state.showArchived && archivedList.length === 0) {
+    els.archivedList.innerHTML = `<div class="session-item-meta" style="padding: 16px;">No archived sessions.</div>`;
   }
   
-  state.sessions.forEach(session => {
+  const createSessionElement = (session, isArchived) => {
     const el = document.createElement('div');
     el.className = `session-item ${session.sessionId === state.activeSessionId ? 'active' : ''}`;
     
-    const owner = session.owner?.displayName || session.owner?.kind || 'unowned';
     const title = session.title || session.sessionId;
     const kind = session.kind === 'coding' ? 'Coding' : 'Assistant';
     
@@ -405,15 +424,23 @@ function renderSessionsList() {
         <div class="session-item-title" title="${title}">${title}</div>
         <div class="session-item-meta">${kind} · ${session.updatedAt.split('T')[0]}</div>
       </div>
-      <button class="hide-session-btn" aria-label="Archive" title="Archive session">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
+      <button class="hide-session-btn" aria-label="${isArchived ? 'Unarchive' : 'Archive'}" title="${isArchived ? 'Restore session' : 'Archive session'}">
+        ${isArchived 
+          ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>` 
+          : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>`
+        }
       </button>
     `;
     
     el.onclick = () => openSession(session.sessionId);
-    el.querySelector('.hide-session-btn').onclick = (e) => archiveSession(session.sessionId, e);
-    els.sessionList.appendChild(el);
-  });
+    el.querySelector('.hide-session-btn').onclick = (e) => isArchived ? unarchiveSession(session.sessionId, e) : archiveSession(session.sessionId, e);
+    return el;
+  };
+  
+  activeList.forEach(session => els.sessionList.appendChild(createSessionElement(session, false)));
+  if (state.showArchived) {
+    archivedList.forEach(session => els.archivedList.appendChild(createSessionElement(session, true)));
+  }
 }
 
 function renderMessages() {

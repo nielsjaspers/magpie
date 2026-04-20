@@ -60,6 +60,16 @@
         <div id="sessionList" class="session-list">
           <!-- Sessions rendered here -->
         </div>
+
+        <div class="session-group-header" style="margin-top: var(--spacing-lg);">
+          <h2>Archived</h2>
+          <button id="toggleArchivedBtn" class="icon-btn small text-muted" aria-label="Toggle Archived">
+            Show
+          </button>
+        </div>
+        <div id="archivedList" class="session-list" style="display: none;">
+          <!-- Archived sessions here -->
+        </div>
       </div>
     </aside>
 
@@ -107,15 +117,14 @@
             
             <textarea id="composer" class="composer-input" placeholder="Type a message... (Shift+Enter for new line)"></textarea>
             
-            <div style="display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 6px;">
+            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+              <div class="model-select-wrapper">
+                <select id="modelSelect" class="model-select-composer" aria-label="Select Model"></select>
+              </div>
               <button id="sendBtn" class="send-btn" aria-label="Send Message">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                 <div class="spinner" style="display: none;"></div>
               </button>
-              
-              <div class="model-select-wrapper" style="margin-top: 4px;">
-                <select id="modelSelect" class="model-select-composer" aria-label="Select Model"></select>
-              </div>
             </div>
           </div>
           
