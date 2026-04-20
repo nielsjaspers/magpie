@@ -111,6 +111,16 @@ export async function listEnrolledDevices(store: RemoteAuthStore): Promise<Devic
 	return index.devices;
 }
 
+export async function revokeEnrolledDevice(store: RemoteAuthStore, deviceId: string): Promise<DeviceRecord | undefined> {
+	const index = await readIndex(store);
+	const device = index.devices.find((item) => item.id === deviceId);
+	if (!device) return undefined;
+	device.revoked = true;
+	device.lastSeenAt = new Date().toISOString();
+	await writeIndex(store, index);
+	return device;
+}
+
 export function extractBearerToken(req: IncomingMessage): string | undefined {
 	const auth = req.headers.authorization;
 	if (auth?.startsWith("Bearer ")) return auth.slice("Bearer ".length).trim();

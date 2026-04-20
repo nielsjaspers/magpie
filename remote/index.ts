@@ -2,11 +2,15 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
-import { createEnrollmentCode, createRemoteAuthStore, listEnrolledDevices } from "./auth.js";
+import { createEnrollmentCode, createRemoteAuthStore, listEnrolledDevices, revokeEnrolledDevice } from "./auth.js";
 import { claimRemoteEnrollmentCode, deleteFetchedRemoteSession, dispatchSession, fetchRemoteSession, listDispatchedSessions } from "./client.js";
+import { buildRemoteBundleSnapshot } from "./snapshot.js";
+import { acceptDispatch, createRemoteServerRuntime, deleteRemoteSession, getStoredRemoteBundle, listRemoteSessions, prepareFetch } from "./server.js";
 import { deserializeSessionBundle, serializeSessionBundle } from "./transport.js";
 import type { DispatchPayload } from "./types.js";
+import type { WebUiRouteRegistration } from "../webui/types.js";
 import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "./workspace.js";
 
 function resolveRemoteHost(config: Awaited<ReturnType<typeof loadConfig>>, hostName?: string) {
@@ -154,7 +158,166 @@ function formatExpiry(expiresAt: string): string {
 	return `${expiresAt} (${minutes} min)`;
 }
 
+function formatRemoteHosts(config: Awaited<ReturnType<typeof loadConfig>>) {
+	const hosts = config.remote?.hosts ?? {};
+	const defaultHost = config.remote?.defaultHost?.trim();
+	const entries = Object.entries(hosts);
+	if (entries.length === 0) return "No remote hosts configured.";
+	return entries.map(([name, host]) => {
+		const marker = name === defaultHost ? " [default]" : "";
+		const urls = [host.tailscaleUrl?.trim(), host.publicUrl?.trim()].filter(Boolean).join(" | ") || "(no url configured)";
+		const token = host.deviceToken?.trim() ? "token: configured" : "token: missing";
+		return `${name}${marker}\n- ${urls}\n- ${token}`;
+	}).join("\n\n");
+}
+
+async function buildRemoteStatusMessage(
+	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	config: Awaited<ReturnType<typeof loadConfig>>,
+) {
+	const lines: string[] = [];
+	const stub = await resolveCurrentStub(ctx);
+	if (stub?.remoteSessionId) {
+		lines.push(`Current session: dispatched to ${stub.remoteHost || "remote"} as ${stub.remoteSessionId}`);
+	}
+	const remoteHost = resolveRemoteHost(config);
+	if (!remoteHost) {
+		lines.push("No default remote host configured.");
+		return lines.join("\n\n");
+	}
+	lines.push(`Remote host: ${remoteHost.name} (${remoteHost.baseUrl})`);
+	if (!remoteHost.deviceToken) {
+		lines.push(`No device token configured for ${remoteHost.name}. Run /remote enroll <CODE> first.`);
+		return lines.join("\n\n");
+	}
+	const result = await listDispatchedSessions(remoteHost.baseUrl, remoteHost.deviceToken);
+	lines.push(result.sessions.length === 0
+		? "Remote sessions: none"
+		: ["Remote sessions:", ...result.sessions.map((session) => `- ${session.sessionId} (${session.updatedAt})`)].join("\n"));
+	return lines.join("\n\n");
+}
+
+async function dispatchCurrentSession(
+	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	config: Awaited<ReturnType<typeof loadConfig>>,
+	note?: string,
+	hostName?: string,
+) {
+	const remoteHost = resolveRemoteHost(config, hostName);
+	if (!remoteHost) throw new Error("Configure remote.defaultHost and remote.hosts.<name>.tailscaleUrl/publicUrl first.");
+	if (!remoteHost.deviceToken) throw new Error(`No device token configured for ${remoteHost.name}. Run /remote enroll <CODE> first.`);
+	const sessionFile = ctx.sessionManager.getSessionFile();
+	if (!sessionFile) throw new Error("Current session file unavailable.");
+	const raw = await readFile(sessionFile);
+	const sessionId = basename(sessionFile, ".jsonl");
+	const now = new Date().toISOString();
+	const modelRef = getCurrentSessionModelRef(ctx);
+	const remoteConfig = getRemoteConfig(config);
+	const workspace = await createWorkspaceArchiveFromDir(ctx.cwd, {
+		excludes: remoteConfig?.tarExclude,
+		maxBytes: remoteConfig?.maxTarSize,
+	});
+	const payload: DispatchPayload = {
+		sessionId,
+		originalCwd: ctx.cwd,
+		dispatchedAt: now,
+		modelRef,
+		note: note?.trim() || undefined,
+	};
+	const bundle = serializeSessionBundle({
+		metadata: {
+			sessionId,
+			kind: "coding",
+			origin: "local",
+			location: "remote",
+			runState: "idle",
+			createdAt: now,
+			updatedAt: now,
+			title: basename(ctx.cwd),
+			workspaceMode: "attached",
+			cwd: ctx.cwd,
+			sourceSessionPath: sessionFile,
+			summary: modelRef,
+		},
+		sessionJsonl: raw,
+		workspace: { archive: workspace, format: "tar.gz" },
+	});
+	const result = await dispatchSession(remoteHost.baseUrl, payload, bundle, remoteHost.deviceToken);
+	await archiveDispatchedLocalSession(sessionFile, remoteHost.name, result.sessionId);
+	return { remoteHost, result };
+}
+
+function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
+	return [{
+		name: "remote-routes",
+		handler: async ({ req, res, requestUrl, runtime, readBody, sendJson, getSessionIdFromRequestPath }) => {
+			const webRuntime = runtime as {
+				remote: ReturnType<typeof createRemoteServerRuntime>;
+				codingHost: any;
+				host: any;
+				defaultModelRef: string;
+			};
+			if (req.method === "GET" && requestUrl.pathname === "/api/v1/remote/sessions") {
+				sendJson(res, 200, { sessions: await listRemoteSessions(webRuntime.remote) });
+				return true;
+			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/dispatch") {
+				const body = await readBody(req);
+				sendJson(res, 201, await acceptDispatch(webRuntime.remote, webRuntime.codingHost, webRuntime.defaultModelRef, {
+					payload: body.payload as any,
+					bundle: body.bundle as any,
+				}));
+				return true;
+			}
+			if (req.method === "POST" && requestUrl.pathname === "/api/v1/remote/import") {
+				const body = await readBody(req);
+				const bundle = deserializeSessionBundle(body.bundle as any);
+				const metadata = bundle.metadata.kind === "coding"
+					? await webRuntime.codingHost.importSession({ bundle })
+					: await webRuntime.host.importSession({ bundle });
+				sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
+				return true;
+			}
+			const remoteMatch = requestUrl.pathname.match(/^\/api\/v1\/remote\/sessions\/([^/]+)$/);
+			if (req.method === "GET" && remoteMatch?.[1]) {
+				const sessionId = decodeURIComponent(remoteMatch[1]);
+				const loaded = await getStoredRemoteBundle(webRuntime.remote, sessionId);
+				if (!loaded) {
+					sendJson(res, 404, { error: "Remote session not found" });
+					return true;
+				}
+				sendJson(res, 200, buildRemoteBundleSnapshot(loaded.serialized, 80));
+				return true;
+			}
+			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
+			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/fetch") {
+				const body = await readBody(req);
+				sendJson(res, 200, await prepareFetch(webRuntime.remote, webRuntime.codingHost, {
+					sessionId: sessionPath.sessionId,
+					fetchedAt: new Date().toISOString(),
+					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
+				}));
+				return true;
+			}
+			if (sessionPath && req.method === "DELETE" && sessionPath.suffix === "") {
+				const body = await readBody(req);
+				sendJson(res, 200, await deleteRemoteSession(webRuntime.remote, webRuntime.codingHost, {
+					sessionId: sessionPath.sessionId,
+					fetchedAt: new Date().toISOString(),
+					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
+				}));
+				return true;
+			}
+			return false;
+		},
+	}];
+}
+
+const DISPATCHED_WIDGET_KEY = "magpie-remote-dispatched";
+
 export default function (pi: ExtensionAPI) {
+	pi.events.emit("magpie:webui:register-routes", { routes: buildRemoteWebUiRoutes() });
+
 	pi.on("session_start", async (_event, ctx) => {
 		const stub = await resolveCurrentStub(ctx as any);
 		if (!stub?.remoteSessionId) return;
@@ -163,10 +326,34 @@ export default function (pi: ExtensionAPI) {
 		const config = await loadConfig(ctx.cwd);
 		const remoteExists = await checkRemoteSessionExists(config, stub);
 		if (remoteExists === false) {
+			ctx.ui.setWidget(DISPATCHED_WIDGET_KEY, [
+				"━━━ DISPATCHED ━━━",
+				`Sent to: ${stub.remoteHost || "remote"}`,
+				stub.dispatchedAt ? `At: ${stub.dispatchedAt}` : undefined,
+				`Remote session: ${stub.remoteSessionId}`,
+				"",
+				"Remote session is missing.",
+				"Run /remote recover to restore the archived local copy.",
+				"━━━━━━━━━━━━━━━━━━",
+			].filter(Boolean) as string[], { placement: "aboveEditor" });
 			ctx.ui.notify(`This dispatched stub points to missing remote session ${stub.remoteSessionId}. Run /remote recover to restore the archived local copy if available.`, "warning");
 			return;
 		}
+		ctx.ui.setWidget(DISPATCHED_WIDGET_KEY, [
+			"━━━ DISPATCHED ━━━",
+			`Sent to: ${stub.remoteHost || "remote"}`,
+			stub.dispatchedAt ? `At: ${stub.dispatchedAt}` : undefined,
+			`Remote session: ${stub.remoteSessionId}`,
+			"",
+			`Run /remote get ${stub.remoteSessionId} to fetch it back.`,
+			"━━━━━━━━━━━━━━━━━━",
+		].filter(Boolean) as string[], { placement: "aboveEditor" });
 		ctx.ui.notify(`This session is dispatched to ${stub.remoteHost || "remote"} as ${stub.remoteSessionId}. Use /remote get ${stub.remoteSessionId} to fetch it back.`, "warning");
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		ctx.ui.setWidget(DISPATCHED_WIDGET_KEY, undefined);
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -189,8 +376,55 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
+	pi.registerTool({
+		name: "remote_send",
+		label: "Remote Send",
+		description: "Dispatch the current coding session to a configured remote host.",
+		parameters: Type.Object({
+			host: Type.Optional(Type.String({ description: "Optional remote host name. Defaults to remote.defaultHost." })),
+			note: Type.Optional(Type.String({ description: "Optional note for the remote host to continue from." })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const config = await loadConfig(ctx.cwd);
+				const { remoteHost, result } = await dispatchCurrentSession(ctx as any, config, typeof params.note === "string" ? params.note : undefined, typeof params.host === "string" ? params.host : undefined);
+				pi.events.emit("magpie:remote:dispatched", { sessionId: result.sessionId, remoteHost: remoteHost.name });
+				return {
+					content: [{ type: "text", text: `Dispatched ${result.sessionId} to ${remoteHost.name} (${remoteHost.baseUrl})` }],
+					details: { sessionId: result.sessionId, remoteHost },
+				};
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+					details: {},
+					isError: true,
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "remote_status",
+		label: "Remote Status",
+		description: "Check configured remote host status and list remote sessions.",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			try {
+				const config = await loadConfig(ctx.cwd);
+				const text = await buildRemoteStatusMessage(ctx as any, config);
+				return { content: [{ type: "text", text }], details: {} };
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+					details: {},
+					isError: true,
+				};
+			}
+		},
+	});
+
 	pi.registerCommand("remote", {
-		description: "Remote session tools: /remote enroll [CODE], /remote send [note], /remote get [SESSION_ID], /remote recover, /remote list, /remote devices",
+		description: "Remote session tools: /remote enroll [CODE], /remote send [note], /remote get [SESSION_ID], /remote status, /remote hosts, /remote recover, /remote list, /remote devices, /remote revoke <DEVICE_ID>",
 		handler: async (args, ctx) => {
 			const config = await loadConfig(ctx.cwd);
 			const [subcommand, ...rest] = (args?.trim() || "").split(/\s+/).filter(Boolean);
@@ -245,7 +479,32 @@ export default function (pi: ExtensionAPI) {
 				const devices = await listEnrolledDevices(remoteStore);
 				ctx.ui.notify(devices.length === 0
 					? "No enrolled devices yet."
-					: devices.map((device) => `${device.name} (${device.platform})${device.revoked ? " [revoked]" : ""}`).join("\n"), "info");
+					: devices.map((device) => `${device.id} · ${device.name} (${device.platform})${device.revoked ? " [revoked]" : ""}`).join("\n"), "info");
+				return;
+			}
+
+			if (action === "revoke") {
+				const deviceId = rest[0]?.trim();
+				if (!deviceId) {
+					ctx.ui.notify("Usage: /remote revoke <DEVICE_ID>", "error");
+					return;
+				}
+				const device = await revokeEnrolledDevice(remoteStore, deviceId);
+				if (!device) {
+					ctx.ui.notify(`No enrolled device found: ${deviceId}`, "error");
+					return;
+				}
+				ctx.ui.notify(`Revoked device ${device.name} (${device.id})`, "info");
+				return;
+			}
+
+			if (action === "hosts") {
+				ctx.ui.notify(formatRemoteHosts(config), "info");
+				return;
+			}
+
+			if (action === "status") {
+				ctx.ui.notify(await buildRemoteStatusMessage(ctx, config), "info");
 				return;
 			}
 
@@ -312,65 +571,23 @@ export default function (pi: ExtensionAPI) {
 				} catch (error) {
 					ctx.ui.notify(`Local restore succeeded, but remote cleanup failed: ${(error as Error).message}`, "warning");
 				}
+				pi.events.emit("magpie:remote:fetched", { sessionId: remoteSessionId, remoteHost: resolvedRemoteHost.name });
 				ctx.ui.notify(`Fetched ${remoteSessionId} into ${ctx.cwd}\nSession restored at ${restoredPath}${remoteArchived ? "" : "\nRemote copy still exists."}`, "info");
 				return;
 			}
 
 			if (action === "send") {
-				if (!remoteHost) {
-					ctx.ui.notify("Configure remote.defaultHost and remote.hosts.<name>.tailscaleUrl/publicUrl first.", "error");
-					return;
+				try {
+					const { remoteHost: resolvedHost, result } = await dispatchCurrentSession(ctx, config, rest.join(" ").trim() || undefined);
+					pi.events.emit("magpie:remote:dispatched", { sessionId: result.sessionId, remoteHost: resolvedHost.name });
+					ctx.ui.notify(`Dispatched ${result.sessionId} to ${resolvedHost.name} (${resolvedHost.baseUrl})`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
-				if (!remoteHost.deviceToken) {
-					ctx.ui.notify(`No device token configured for ${remoteHost.name}. Run /remote enroll <CODE> first.`, "error");
-					return;
-				}
-				const sessionFile = ctx.sessionManager.getSessionFile();
-				if (!sessionFile) {
-					ctx.ui.notify("Current session file unavailable.", "error");
-					return;
-				}
-				const raw = await readFile(sessionFile);
-				const sessionId = basename(sessionFile, ".jsonl");
-				const now = new Date().toISOString();
-				const modelRef = getCurrentSessionModelRef(ctx);
-				const remoteConfig = getRemoteConfig(config);
-				const workspace = await createWorkspaceArchiveFromDir(ctx.cwd, {
-					excludes: remoteConfig?.tarExclude,
-					maxBytes: remoteConfig?.maxTarSize,
-				});
-				const payload: DispatchPayload = {
-					sessionId,
-					originalCwd: ctx.cwd,
-					dispatchedAt: now,
-					modelRef,
-					note: rest.join(" ").trim() || undefined,
-				};
-				const bundle = serializeSessionBundle({
-					metadata: {
-						sessionId,
-						kind: "coding",
-						origin: "local",
-						location: "remote",
-						runState: "idle",
-						createdAt: now,
-						updatedAt: now,
-						title: basename(ctx.cwd),
-						workspaceMode: "attached",
-						cwd: ctx.cwd,
-						sourceSessionPath: sessionFile,
-						summary: modelRef,
-					},
-					sessionJsonl: raw,
-					workspace: { archive: workspace, format: "tar.gz" },
-				});
-				const result = await dispatchSession(remoteHost.baseUrl, payload, bundle, remoteHost.deviceToken);
-				await archiveDispatchedLocalSession(sessionFile, remoteHost.name, result.sessionId);
-				ctx.ui.notify(`Dispatched ${result.sessionId} to ${remoteHost.name} (${remoteHost.baseUrl})`, "info");
 				return;
 			}
 
-			ctx.ui.notify("Usage: /remote enroll | /remote enroll <CODE> | /remote send [note] | /remote get [SESSION_ID] | /remote recover | /remote list | /remote devices", "info");
+			ctx.ui.notify("Usage: /remote enroll | /remote enroll <CODE> | /remote send [note] | /remote get [SESSION_ID] | /remote status | /remote hosts | /remote recover | /remote list | /remote devices | /remote revoke <DEVICE_ID>", "info");
 		},
 	});
 }

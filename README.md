@@ -161,6 +161,7 @@ Auth config:
 - `personalAssistant.calendar` stores iCloud + ICS feed credentials/config
 - `personalAssistant.mail.gmail` stores the Gmail aggregation inbox credentials
 - `telegram.botToken` stores the Telegram bot token for `apps/telegram/`
+- `schedule.telegram.botToken` can be set in `magpie.json`, but using `telegram.botToken` in `magpie.auth.json` is also supported for schedule notifications
 - auth values live in `magpie.auth.json`, not `magpie.json`
 
 Research commands:
@@ -191,7 +192,10 @@ Research commands:
 - `sessions/` — session indexing, `/sessions`, `get_sessions`, and `session_query` (see `sessions/README.md`)
 - `memory/` — long-term memory commands and tools
 - `research/` — `/papers` and `/digest` research companion (see `research/README.md`)
+- `webui/` — local/remote assistant + coding host HTTP server and browser UI surface
+- `remote/` — `/remote` commands plus remote session dispatch/fetch helpers and tools
+- `schedule/` — `/schedule` command + tool for one-shot/recurring background tasks with notifications
 - `web/` — `web_fetch` and `web_search`
 - `spinner/` — random verb spinner while streaming
 - `pa/` — personal-assistant scaffolding for calendar and mail integrations
-- `apps/telegram/` — separate Telegram app process that reads `magpie.json` / `magpie.auth.json` and will later move onto the shared remote host API
+- `apps/telegram/` — separate Telegram app process that reads `magpie.json` / `magpie.auth.json` and forwards non-local slash commands (e.g. `/schedule`) to Magpie

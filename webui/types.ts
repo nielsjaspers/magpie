@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HostedSessionEvent, HostedSessionSnapshot, HostedSessionStatus, SessionOwner } from "../runtime/session-host-types.js";
 
 export interface WebUiServerConfig {
@@ -5,6 +6,21 @@ export interface WebUiServerConfig {
 	bind?: "tailscale" | "public" | "localhost" | string;
 	publicUrl?: string;
 	tailscaleUrl?: string;
+}
+
+export interface WebUiRequestContext {
+	req: IncomingMessage;
+	res: ServerResponse;
+	requestUrl: URL;
+	runtime: unknown;
+	readBody: (req: IncomingMessage) => Promise<Record<string, unknown>>;
+	sendJson: (res: ServerResponse, status: number, body: unknown) => void;
+	getSessionIdFromRequestPath: (pathname: string) => { sessionId: string; suffix: string } | undefined;
+}
+
+export interface WebUiRouteRegistration {
+	name?: string;
+	handler: (ctx: WebUiRequestContext) => Promise<boolean> | boolean;
 }
 
 export interface WebUiListSessionsResponse {

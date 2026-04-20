@@ -26,6 +26,7 @@
       "sessions/index.ts",
       "memory/index.ts",
       "research/index.ts",
+      "webui/index.ts",
       "remote/index.ts",
       "schedule/index.ts",
       "web/web-fetch.ts",

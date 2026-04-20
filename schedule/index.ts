@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -507,6 +507,9 @@ async function cancelScheduledEntry(entry: ScheduleEntry) {
 	}
 	if (entry.cronId) {
 		try { await removeCronLine(entry.cronId); } catch {}
+	}
+	if (entry.scriptPath?.trim()) {
+		try { await rm(entry.scriptPath, { force: true }); } catch {}
 	}
 }
 

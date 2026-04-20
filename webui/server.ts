@@ -6,14 +6,7 @@ import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
 import { AssistantSessionHost, createAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
-import {
-	acceptDispatch,
-	createRemoteServerRuntime,
-	deleteRemoteSession,
-	getStoredRemoteBundle,
-	listRemoteSessions,
-	prepareFetch,
-} from "../remote/server.js";
+import { createRemoteServerRuntime } from "../remote/server.js";
 import {
 	authenticateRequest,
 	consumeEnrollmentCode,
@@ -21,8 +14,7 @@ import {
 	createRemoteAuthStore,
 	isLoopbackRequest,
 } from "../remote/auth.js";
-import { buildRemoteBundleSnapshot } from "../remote/snapshot.js";
-import { deserializeSessionBundle, serializeSessionBundle } from "../remote/transport.js";
+import { serializeSessionBundle } from "../remote/transport.js";
 import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
@@ -32,7 +24,7 @@ import {
 	parseCreateSessionInput,
 	parseSessionFilter,
 } from "./routes/session.js";
-import type { WebUiServerConfig } from "./types.js";
+import type { WebUiRouteRegistration, WebUiServerConfig } from "./types.js";
 
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
@@ -178,6 +170,21 @@ function sendSseEvent(res: ServerResponse, event: unknown) {
 	res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
+function recordRateLimit(map: Map<string, number[]>, key: string, maxEvents: number, windowMs: number): boolean {
+	const now = Date.now();
+	const cutoff = now - windowMs;
+	const events = (map.get(key) ?? []).filter((value) => value > cutoff);
+	events.push(now);
+	map.set(key, events);
+	return events.length <= maxEvents;
+}
+
+function getRequestIp(req: IncomingMessage): string {
+	const forwarded = req.headers["x-forwarded-for"];
+	if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
+	return req.socket.remoteAddress || "unknown";
+}
+
 function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suffix: string } | undefined {
 	const prefix = "/api/v1/sessions/";
 	if (!pathname.startsWith(prefix)) return undefined;
@@ -191,9 +198,11 @@ function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suf
 	};
 }
 
-export function createWebUiServer(runtime: WebUiServerRuntime): Server {
+export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistrations: WebUiRouteRegistration[] = []): Server {
 	const { host, codingHost, remote, auth, defaultModelRef, hostUrl } = runtime;
 	const clientDir = resolve(import.meta.dirname, "client");
+	const deviceRequestLimiter = new Map<string, number[]>();
+	const enrollmentLimiter = new Map<string, number[]>();
 
 	const listAllSessions = async () => {
 		const [assistantSessions, codingSessions] = await Promise.all([
@@ -244,6 +253,12 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				|| requestUrl.pathname === "/api/v1/enroll"
 				|| requestUrl.pathname === "/api/v1/enroll/code"
 				|| requestUrl.pathname === "/api/v1/enroll/claim";
+			if ((requestUrl.pathname === "/api/v1/enroll" || requestUrl.pathname === "/api/v1/enroll/claim" || requestUrl.pathname === "/api/v1/enroll/code") && req.method === "POST") {
+				const ip = getRequestIp(req);
+				if (!recordRateLimit(enrollmentLimiter, ip, 10, 60 * 60 * 1000)) {
+					return sendJson(res, 429, { error: "Too many enrollment attempts. Try again later." });
+				}
+			}
 			if (!isPublicPath && !isLoopbackRequest(req)) {
 				const device = await authenticateRequest(auth, req);
 				if (!device) {
@@ -254,6 +269,9 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 						return;
 					}
 					return sendJson(res, 401, { error: "Unauthorized" });
+				}
+				if (!recordRateLimit(deviceRequestLimiter, device.id, 100, 60 * 1000)) {
+					return sendJson(res, 429, { error: "Rate limit exceeded. Try again later." });
 				}
 			}
 			if (req.method === "GET" && requestUrl.pathname === "/health") {
@@ -315,23 +333,17 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				});
 				return sendJson(res, 200, { sessions: filter.limit ? sessions.slice(0, filter.limit) : sessions });
 			}
-			if (req.method === "GET" && requestUrl.pathname === "/api/v1/remote/sessions") {
-				return sendJson(res, 200, { sessions: await listRemoteSessions(remote) });
-			}
-			if (req.method === "POST" && requestUrl.pathname === "/api/v1/dispatch") {
-				const body = await readBody(req);
-				return sendJson(res, 201, await acceptDispatch(remote, codingHost, defaultModelRef, {
-					payload: body.payload as any,
-					bundle: body.bundle as any,
-				}));
-			}
-			if (req.method === "POST" && requestUrl.pathname === "/api/v1/remote/import") {
-				const body = await readBody(req);
-				const bundle = deserializeSessionBundle(body.bundle as any);
-				const metadata = bundle.metadata.kind === "coding"
-					? await codingHost.importSession({ bundle })
-					: await host.importSession({ bundle });
-				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
+			for (const registration of routeRegistrations) {
+				const handled = await registration.handler({
+					req,
+					res,
+					requestUrl,
+					runtime,
+					readBody,
+					sendJson,
+					getSessionIdFromRequestPath,
+				});
+				if (handled) return;
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/sessions") {
 				const body = await readBody(req);
@@ -343,14 +355,6 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 					origin: input.origin === "assistant" ? "remote" : input.origin,
 				});
 				return sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
-			}
-
-			const remoteMatch = requestUrl.pathname.match(/^\/api\/v1\/remote\/sessions\/([^/]+)$/);
-			if (req.method === "GET" && remoteMatch?.[1]) {
-				const sessionId = decodeURIComponent(remoteMatch[1]);
-				const loaded = await getStoredRemoteBundle(remote, sessionId);
-				if (!loaded) return sendJson(res, 404, { error: "Remote session not found" });
-				return sendJson(res, 200, buildRemoteBundleSnapshot(loaded.serialized, 80));
 			}
 
 			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
@@ -397,14 +401,6 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 				if (!snapshot) return sendJson(res, 404, { error: "Session not found" });
 				return sendJson(res, 200, snapshot);
 			}
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/fetch") {
-				const body = await readBody(req);
-				return sendJson(res, 200, await prepareFetch(remote, codingHost, {
-					sessionId: sessionPath.sessionId,
-					fetchedAt: new Date().toISOString(),
-					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
-				}));
-			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
 				const body = await readBody(req);
 				const text = String(body.text || "");
@@ -427,14 +423,6 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/reset") {
 				await host.resetSession(sessionPath.sessionId);
 				return sendJson(res, 200, { ok: true });
-			}
-			if (sessionPath && req.method === "DELETE" && sessionPath.suffix === "") {
-				const body = await readBody(req);
-				return sendJson(res, 200, await deleteRemoteSession(remote, codingHost, {
-					sessionId: sessionPath.sessionId,
-					fetchedAt: new Date().toISOString(),
-					targetCwd: typeof body.targetCwd === "string" ? body.targetCwd : undefined,
-				}));
 			}
 
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/status") {
@@ -521,9 +509,9 @@ export function createWebUiServer(runtime: WebUiServerRuntime): Server {
 	});
 }
 
-export async function startWebUiServer(cwd: string, config?: WebUiServerConfig) {
+export async function startWebUiServer(cwd: string, config?: WebUiServerConfig, routeRegistrations: WebUiRouteRegistration[] = []) {
 	const runtime = await loadWebUiServerRuntime(cwd, config);
-	const server = createWebUiServer(runtime);
+	const server = createWebUiServer(runtime, routeRegistrations);
 	const url = new URL(runtime.hostUrl);
 	const bind = runtime.config?.bind;
 	const hostname = bind === "public"
