@@ -1,4 +1,4 @@
-import type { HostedSessionEvent, HostedSessionSnapshot, HostedSessionStatus } from "../runtime/session-host-types.js";
+import type { HostedSessionEvent, HostedSessionSnapshot, HostedSessionStatus, SessionOwner } from "../runtime/session-host-types.js";
 
 export interface WebUiServerConfig {
 	port?: number;
@@ -17,6 +17,7 @@ export interface WebUiListSessionsResponse {
 		createdAt: string;
 		updatedAt: string;
 		cwd?: string;
+		owner?: SessionOwner;
 		assistantChannel?: "telegram" | "web" | "internal";
 		assistantThreadId?: string;
 	}>;

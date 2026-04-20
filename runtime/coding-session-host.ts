@@ -25,6 +25,7 @@ import type {
 	SendMessageInput,
 	SessionFilter,
 	SessionHost,
+	SessionOwner,
 	Unsubscribe,
 } from "./session-host-types.js";
 import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "../remote/workspace.js";
@@ -42,6 +43,7 @@ interface CodingSessionRegistryEntry {
 	workspaceDir?: string;
 	originalCwd?: string;
 	modelRef?: string;
+	owner?: SessionOwner;
 	lastError?: string;
 }
 
@@ -121,6 +123,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd,
 			workspaceDir: cwd,
 			modelRef,
+			owner: deriveOwner(this.hostId, this.hostRole, input.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId, modelRef);
 		if (!metadata) throw new Error(`Failed to create coding session metadata for ${sessionId}`);
@@ -152,6 +155,7 @@ export class CodingSessionHost implements SessionHost {
 			workspaceDir: targetWorkspace,
 			originalCwd: bundle.metadata.cwd,
 			modelRef: bundle.metadata.summary || undefined,
+			owner: deriveOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId);
 		if (!metadata) throw new Error(`Failed to import coding session metadata for ${sessionId}`);
@@ -187,9 +191,18 @@ export class CodingSessionHost implements SessionHost {
 	}
 
 	async sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage> {
-		const modelRef = input.modelRef?.trim() || (await this.readRegistry())[sessionId]?.modelRef;
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		const modelRef = input.modelRef?.trim() || entry?.modelRef;
 		if (!modelRef) throw new Error("modelRef is required to send a message");
+		if (input.source === "telegram") throw new Error("Telegram may not mutate coding sessions");
+		if (entry?.owner?.kind === "local_tui" && this.hostRole === "remote") throw new Error("Remote host may not mutate a local-owned coding session");
 		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
+		runtime.modelRef = modelRef;
+		if (entry) {
+			entry.owner = deriveOwner(this.hostId, this.hostRole, entry.origin, input.source);
+			await this.writeRegistry(registry);
+		}
 		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
 		runtime.queueDepth += 1;
 		const accepted: AcceptedMessage = { sessionId, accepted: true, queued, runState: queued ? "running" : runtime.runState };
@@ -344,6 +357,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd: entry.cwd || this.hostCwd,
 			sourceSessionPath: entry.sessionPath,
 			summary: entry.modelRef,
+			owner: entry.owner,
 		};
 	}
 
@@ -391,6 +405,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd,
 			workspaceDir: cwd,
 			modelRef,
+			owner: deriveOwner(this.hostId, this.hostRole, "remote", "system"),
 		});
 		return session;
 	}
@@ -457,6 +472,7 @@ export class CodingSessionHost implements SessionHost {
 			workspaceDir: patch.workspaceDir ?? current?.workspaceDir ?? patch.cwd ?? current?.cwd ?? this.hostCwd,
 			originalCwd: patch.originalCwd ?? current?.originalCwd,
 			modelRef: patch.modelRef ?? current?.modelRef,
+			owner: patch.owner ?? current?.owner,
 			lastError: patch.lastError ?? current?.lastError,
 		};
 		await this.writeRegistry(registry);
@@ -514,6 +530,7 @@ export class CodingSessionHost implements SessionHost {
 			createdAt: entry.createdAt ?? entry.updatedAt,
 			updatedAt: entry.updatedAt,
 			cwd: entry.cwd ?? this.hostCwd,
+			owner: entry.owner,
 			loaded: this.runtimes.has(sessionId),
 		};
 	}
@@ -522,6 +539,28 @@ export class CodingSessionHost implements SessionHost {
 		const summary = this.toSummary(sessionId, entry);
 		return { ...summary, messageCount, queueDepth: runtime?.queueDepth ?? 0, lastError: runtime?.lastError ?? entry.lastError };
 	}
+}
+
+function deriveOwner(hostId: string, hostRole: "local" | "remote", origin: HostedSessionMetadata["origin"] | undefined, source: SendMessageInput["source"]): SessionOwner {
+	if (hostRole === "local") {
+		return {
+			kind: source === "schedule" ? "schedule" : "local_tui",
+			hostId,
+			displayName: source === "schedule" ? "Scheduled local run" : "Local TUI",
+		};
+	}
+	if (origin === "local" || origin === "imported") {
+		return {
+			kind: "remote_dispatch",
+			hostId,
+			displayName: "Remote dispatched session",
+		};
+	}
+	return {
+		kind: source === "schedule" ? "schedule" : "remote_web",
+		hostId,
+		displayName: source === "schedule" ? "Scheduled remote run" : "Remote web session",
+	};
 }
 
 function sanitizeSessionIdForFilename(sessionId: string): string {

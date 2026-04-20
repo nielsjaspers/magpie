@@ -29,9 +29,10 @@ function renderSessions() {
   for (const session of state.sessions) {
     const el = document.createElement('button');
     el.className = `session ${session.sessionId === state.activeSessionId ? 'active' : ''}`;
+    const owner = session.owner?.displayName || session.owner?.kind || 'unowned';
     el.innerHTML = `
       <div>${session.title || session.sessionId}</div>
-      <div class="meta">${session.kind} · ${session.runState} · ${session.updatedAt}</div>
+      <div class="meta">${session.kind} · ${owner} · ${session.runState} · ${session.updatedAt}</div>
     `;
     el.onclick = () => openSession(session.sessionId);
     sessionListEl.appendChild(el);
@@ -93,7 +94,8 @@ async function openSession(sessionId) {
   }
   const snapshot = await request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/snapshot?limit=50`);
   sessionTitleEl.textContent = snapshot.metadata.title || snapshot.metadata.sessionId;
-  sessionMetaEl.textContent = `${snapshot.metadata.kind} · ${snapshot.status.runState} · ${snapshot.metadata.updatedAt}`;
+  const owner = snapshot.metadata.owner?.displayName || snapshot.metadata.owner?.kind || 'unowned';
+  sessionMetaEl.textContent = `${snapshot.metadata.kind} · ${owner} · ${snapshot.status.runState} · ${snapshot.metadata.updatedAt}`;
   state.activeMessages = snapshot.messages || [];
   renderMessages();
   connectStream(sessionId);
@@ -112,7 +114,8 @@ function connectStream(sessionId) {
       return;
     }
     if (payload.type === 'status') {
-      sessionMetaEl.textContent = `${payload.status.kind} · ${payload.status.runState} · ${payload.status.updatedAt}`;
+      const owner = payload.status.owner?.displayName || payload.status.owner?.kind || 'unowned';
+      sessionMetaEl.textContent = `${payload.status.kind} · ${owner} · ${payload.status.runState} · ${payload.status.updatedAt}`;
       return;
     }
     if (payload.type === 'text_delta') {
