@@ -236,8 +236,9 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 	};
 
 	const interruptAny = async (sessionId: string, modelRef?: string) => {
-		if (await host.getStatus(sessionId, modelRef)) return await host.interrupt(sessionId, modelRef);
-		return await codingHost.interrupt(sessionId, modelRef);
+		const webActor = { kind: "remote_web" as const, hostId: host.hostId, displayName: "Remote web session" };
+		if (await host.getStatus(sessionId, modelRef)) return await host.interrupt(sessionId, webActor, modelRef);
+		return await codingHost.interrupt(sessionId, webActor, modelRef);
 	};
 
 	const promptAny = async (sessionId: string, text: string, modelRef: string) => {

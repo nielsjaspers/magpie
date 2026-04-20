@@ -149,7 +149,7 @@ export interface SessionHost {
 	getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined>;
 	getSnapshot(sessionId: string, modelRef?: string, limit?: number): Promise<HostedSessionSnapshot | undefined>;
 	subscribe(sessionId: string, listener: HostedSessionListener, modelRef?: string): Promise<Unsubscribe>;
-	interrupt(sessionId: string, modelRef?: string): Promise<void>;
+	interrupt(sessionId: string, actor?: SessionOwner, modelRef?: string): Promise<void>;
 	claimOwnership(sessionId: string, owner: SessionOwner): Promise<void>;
 	releaseOwnership(sessionId: string, owner?: SessionOwner): Promise<void>;
 	archiveSession(sessionId: string, reason?: ArchiveReason): Promise<void>;

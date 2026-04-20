@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import {
 	AuthStorage,
 	createAgentSession,
@@ -136,7 +136,10 @@ export class CodingSessionHost implements SessionHost {
 		if (bundle.metadata.kind !== "coding") throw new Error(`Unsupported imported session kind for coding host: ${bundle.metadata.kind}`);
 		await this.ensureDirs();
 		const sessionId = bundle.metadata.sessionId || randomUUID();
-		const sessionPath = resolve(this.sessionsDir, `${sanitizeSessionIdForFilename(sessionId)}.jsonl`);
+		const requestedSessionPath = this.hostRole === "local" ? bundle.metadata.sourceSessionPath?.trim() : undefined;
+		const sessionPath = requestedSessionPath
+			? (isAbsolute(requestedSessionPath) ? requestedSessionPath : resolve(this.hostCwd, requestedSessionPath))
+			: resolve(this.sessionsDir, `${sanitizeSessionIdForFilename(sessionId)}.jsonl`);
 		const targetWorkspace = input.targetCwd?.trim() || await this.ensureWorkspaceDirectory(sessionId);
 		if (bundle.workspace?.archive) {
 			await ensureCleanDirectory(targetWorkspace);
@@ -144,12 +147,13 @@ export class CodingSessionHost implements SessionHost {
 		} else {
 			await mkdir(targetWorkspace, { recursive: true });
 		}
+		await mkdir(dirname(sessionPath), { recursive: true });
 		await writeFile(sessionPath, Buffer.from(bundle.sessionJsonl), "utf8");
 		this.runtimes.delete(sessionId);
 		await this.upsertRegistryEntry(sessionId, {
 			sessionPath,
 			origin: bundle.metadata.origin,
-			location: this.hostRole === "remote" ? "remote" : bundle.metadata.location,
+			location: this.hostRole === "remote" ? "remote" : "local",
 			workspaceMode: bundle.metadata.workspaceMode ?? "attached",
 			title: bundle.metadata.title,
 			cwd: targetWorkspace,
@@ -319,7 +323,12 @@ export class CodingSessionHost implements SessionHost {
 		};
 	}
 
-	async interrupt(sessionId: string, modelRef?: string): Promise<void> {
+	async interrupt(sessionId: string, actor?: SessionOwner, modelRef?: string): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (entry?.owner && actor && !canActorMutateCodingSession(entry.owner, actor)) {
+			throw new Error(`Session ${entry.sessionPath} is owned by ${entry.owner.displayName || entry.owner.kind}; explicit transfer is required before interrupting it.`);
+		}
 		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
 		runtime.runState = "aborting";
 		await this.persistRuntimeState(sessionId, runtime);
@@ -374,7 +383,7 @@ export class CodingSessionHost implements SessionHost {
 		const hasRuntime = this.runtimes.has(sessionId);
 		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
 		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
-		const runtime = entry && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
+		const runtime = hasRuntime && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
 		const runState = runtime?.runState ?? (entry.lastError ? "error" : "idle");
 		return {
 			sessionId,

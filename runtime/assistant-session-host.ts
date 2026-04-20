@@ -354,7 +354,7 @@ export class AssistantSessionHost implements SessionHost {
 		};
 	}
 
-	async interrupt(sessionId: string, modelRef?: string): Promise<void> {
+	async interrupt(sessionId: string, _actor?: SessionOwner, modelRef?: string): Promise<void> {
 		const runtime = modelRef ? await this.getRuntime(sessionId, modelRef) : this.runtimes.get(sessionId);
 		if (!runtime) return;
 		runtime.runState = "aborting";

@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
+import { CodingSessionHost } from "../runtime/coding-session-host.js";
+import type { ExportedSessionBundle } from "../runtime/session-host-types.js";
 import { createEnrollmentCode, createRemoteAuthStore, listEnrolledDevices, revokeEnrolledDevice } from "./auth.js";
 import { claimRemoteEnrollmentCode, deleteFetchedRemoteSession, dispatchSession, fetchRemoteSession, listDispatchedSessions } from "./client.js";
 import { buildRemoteBundleSnapshot } from "./snapshot.js";
@@ -11,7 +13,13 @@ import { acceptDispatch, createRemoteServerRuntime, deleteRemoteSession, getStor
 import { deserializeSessionBundle, serializeSessionBundle } from "./transport.js";
 import type { DispatchPayload } from "./types.js";
 import type { WebUiRouteRegistration } from "../webui/types.js";
-import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "./workspace.js";
+import { createWorkspaceArchiveFromDir } from "./workspace.js";
+
+type CommandContext = Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never;
+
+function getMagpieAgentBaseDir() {
+	return process.env.PI_CODING_AGENT_DIR ?? resolve(process.env.HOME || "", ".pi/agent");
+}
 
 function resolveRemoteHost(config: Awaited<ReturnType<typeof loadConfig>>, hostName?: string) {
 	const remote = getRemoteConfig(config);
@@ -118,28 +126,68 @@ async function resolveCurrentStub(ctx: Parameters<NonNullable<ExtensionAPI["regi
 	}
 }
 
+function createLocalCodingHost(ctx: CommandContext, config: Awaited<ReturnType<typeof loadConfig>>) {
+	const authStorage = AuthStorage.create();
+	const baseDir = getMagpieAgentBaseDir();
+	return new CodingSessionHost({
+		hostCwd: ctx.cwd,
+		storageDir: resolve(baseDir, "magpie-local-hosted"),
+		workspaceRootDir: resolve(baseDir, "magpie-local-workspaces"),
+		authStorage,
+		modelRegistry: ctx.modelRegistry,
+		resolveModel: (ref: string) => {
+			const idx = ref.indexOf("/");
+			if (idx <= 0 || idx === ref.length - 1) return undefined;
+			return ctx.modelRegistry.find(ref.slice(0, idx), ref.slice(idx + 1));
+		},
+		buildSystemPrompt: async () => "You are a helpful coding assistant. Be concise, careful, and effective.",
+		hostId: "magpie-local-coding-host",
+		hostRole: "local",
+		workspaceArchiveExcludes: config.remote?.tarExclude,
+		maxWorkspaceArchiveBytes: config.remote?.maxTarSize,
+	});
+}
+
 async function restoreFetchedLocalSession(
-	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	ctx: CommandContext,
+	config: Awaited<ReturnType<typeof loadConfig>>,
 	remoteSessionId: string,
-	bundle: { metadata: { sourceSessionPath?: string }; sessionJsonl: Uint8Array; workspace?: { archive: Uint8Array } },
+	bundle: ExportedSessionBundle,
 	stub?: DispatchedStubData,
 ) {
-	await ensureCleanDirectory(ctx.cwd);
-	if (bundle.workspace?.archive) await extractWorkspaceArchiveToDir(bundle.workspace.archive, ctx.cwd);
 	const restorePath = stub?.originalSessionPath?.trim()
 		|| ctx.sessionManager.getSessionFile()
 		|| bundle.metadata.sourceSessionPath?.trim();
 	if (!restorePath) throw new Error(`Unable to determine local session path for fetched session ${remoteSessionId}`);
-	await mkdir(dirname(restorePath), { recursive: true });
-	await writeFile(restorePath, Buffer.from(bundle.sessionJsonl), "utf8");
+	const localHost = createLocalCodingHost(ctx, config);
+	const localOwner = { kind: "local_tui" as const, hostId: localHost.hostId, displayName: "Local TUI" };
+	await localHost.importSession({
+		bundle: {
+			...bundle,
+			metadata: {
+				...bundle.metadata,
+				location: "local",
+				cwd: ctx.cwd,
+				sourceSessionPath: restorePath,
+				owner: localOwner,
+			},
+		},
+		targetCwd: ctx.cwd,
+		owner: localOwner,
+	});
 	if (stub?.archivedSessionPath?.trim() && existsSync(stub.archivedSessionPath) && stub.archivedSessionPath !== restorePath) {
 		await rm(stub.archivedSessionPath, { force: true });
 	}
-	return restorePath;
+	return {
+		restoredPath: restorePath,
+		localHost,
+		localOwner,
+		sessionId: bundle.metadata.sessionId,
+	};
 }
 
 async function recoverArchivedStubSession(
-	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	ctx: CommandContext,
 	stub: DispatchedStubData,
 ) {
 	const archivedPath = stub.archivedSessionPath?.trim();
@@ -172,7 +220,7 @@ function formatRemoteHosts(config: Awaited<ReturnType<typeof loadConfig>>) {
 }
 
 async function buildRemoteStatusMessage(
-	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	ctx: CommandContext,
 	config: Awaited<ReturnType<typeof loadConfig>>,
 ) {
 	const lines: string[] = [];
@@ -198,7 +246,7 @@ async function buildRemoteStatusMessage(
 }
 
 async function dispatchCurrentSession(
-	ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never,
+	ctx: CommandContext,
 	config: Awaited<ReturnType<typeof loadConfig>>,
 	note?: string,
 	hostName?: string,
@@ -240,7 +288,7 @@ async function dispatchCurrentSession(
 			summary: modelRef,
 			owner: {
 				kind: "local_tui",
-				hostId: "local",
+				hostId: "magpie-local-coding-host",
 				displayName: "Local TUI",
 			},
 		},
@@ -278,7 +326,14 @@ function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
 				const body = await readBody(req);
 				const bundle = deserializeSessionBundle(body.bundle as any);
 				const metadata = bundle.metadata.kind === "coding"
-					? await webRuntime.codingHost.importSession({ bundle })
+					? await webRuntime.codingHost.importSession({
+						bundle,
+						owner: {
+							kind: "remote_web",
+							hostId: webRuntime.codingHost.hostId,
+							displayName: "Remote web session",
+						},
+					})
 					: await webRuntime.host.importSession({ bundle });
 				sendJson(res, 201, { sessionId: metadata.sessionId, metadata });
 				return true;
@@ -564,7 +619,7 @@ export default function (pi: ExtensionAPI) {
 					throw error;
 				}
 				const bundle = deserializeSessionBundle(fetched.bundle);
-				const restoredPath = await restoreFetchedLocalSession(ctx, remoteSessionId, bundle, stub);
+				const restored = await restoreFetchedLocalSession(ctx, config, remoteSessionId, bundle, stub);
 				let remoteArchived = false;
 				try {
 					await deleteFetchedRemoteSession(resolvedRemoteHost.baseUrl, {
@@ -574,10 +629,15 @@ export default function (pi: ExtensionAPI) {
 					}, resolvedRemoteHost.deviceToken);
 					remoteArchived = true;
 				} catch (error) {
+					try {
+						await restored.localHost.releaseOwnership(restored.sessionId, restored.localOwner);
+					} catch {
+						// best-effort rollback of local ownership metadata only
+					}
 					ctx.ui.notify(`Local restore succeeded, but remote cleanup failed: ${(error as Error).message}`, "warning");
 				}
 				pi.events.emit("magpie:remote:fetched", { sessionId: remoteSessionId, remoteHost: resolvedRemoteHost.name });
-				ctx.ui.notify(`Fetched ${remoteSessionId} into ${ctx.cwd}\nSession restored at ${restoredPath}${remoteArchived ? "" : "\nRemote copy still exists."}`, "info");
+				ctx.ui.notify(`Fetched ${remoteSessionId} into ${ctx.cwd}\nSession restored at ${restored.restoredPath}${remoteArchived ? "" : "\nRemote copy still exists."}`, "info");
 				return;
 			}
 
