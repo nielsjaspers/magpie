@@ -6,13 +6,44 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { loadConfig, resolveSubagentModelRef } from "../config/config.js";
+import {
+	getActiveConfigScope,
+	getConfigBaseDir,
+	getMode,
+	loadAuthConfig,
+	loadConfig,
+	resolvePromptText,
+	resolveSubagentModelRef,
+} from "../config/config.js";
+import { getActiveModeName } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
+import type { MagpieAuthConfig, MagpieConfig, ThinkingLevel } from "../config/types.js";
 import type { ScheduleBackend, ScheduleEntry, ScheduleRunState, ScheduleStore } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const CRON_BEGIN = "# MAGPIE-SCHEDULE-BEGIN";
 const CRON_END = "# MAGPIE-SCHEDULE-END";
+const SCHEDULE_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const SCHEDULE_BACKGROUND_PROMPT = [
+	"You are running as a scheduled background Magpie task.",
+	"Actually perform the requested work in the working directory using tools when needed.",
+	"Do not merely describe what you would do if a file edit, shell command, or write is required.",
+	"Be concise in final output, but make the real changes.",
+].join(" ");
+
+type ScheduleNotifier =
+	| { kind: "none" }
+	| { kind: "macos" }
+	| { kind: "telegram"; botToken: string; chatId: string };
+
+interface ScheduleRuntimeOptions {
+	mode?: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	systemPrompt?: { strategy: "append" | "replace"; text: string };
+	notifier: ScheduleNotifier;
+	sessionDir: string;
+}
 
 function createScheduleStore(baseDir = resolve(homedir(), ".pi/agent/magpie-schedules")): ScheduleStore {
 	return {
@@ -145,7 +176,61 @@ async function writeManagedCrontab(managed: string[]) {
 	});
 }
 
-function createRunnerScript(entry: ScheduleEntry, piCommand: string): string {
+function createPiCommand(entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions): string {
+	const args = [
+		shellEscape(piCommand),
+		"--print",
+		`--session-dir ${shellEscape(runtime.sessionDir)}`,
+		`--tools ${shellEscape(SCHEDULE_BUILTIN_TOOLS.join(","))}`,
+	];
+	if (runtime.model) args.push(`--model ${shellEscape(runtime.model)}`);
+	if (runtime.thinkingLevel) args.push(`--thinking ${shellEscape(runtime.thinkingLevel)}`);
+	if (runtime.systemPrompt?.text) {
+		const flag = runtime.systemPrompt.strategy === "replace" ? "--system-prompt" : "--append-system-prompt";
+		args.push(`${flag} ${shellEscape(runtime.systemPrompt.text)}`);
+	}
+	args.push(shellEscape(entry.task));
+	return args.join(" ");
+}
+
+function createNotificationScript(entry: ScheduleEntry, runtime: ScheduleRuntimeOptions): string {
+	if (!entry.notify || runtime.notifier.kind === "none") return "";
+	if (runtime.notifier.kind === "macos") {
+		return `
+if command -v osascript >/dev/null 2>&1; then
+  SUMMARY="$(head -c 200 "$RESULT_PATH" 2>/dev/null | tr '\n' ' ' | tr '\r' ' ' || true)"
+  MAGPIE_NOTIFY_TITLE=${shellEscape(`Magpie schedule ${entry.id}`)} \
+  MAGPIE_NOTIFY_SUBTITLE="Completed ($EXIT_CODE)" \
+  MAGPIE_NOTIFY_MESSAGE="$SUMMARY" \
+  osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run
+  set ttl to system attribute "MAGPIE_NOTIFY_TITLE"
+  set sub to system attribute "MAGPIE_NOTIFY_SUBTITLE"
+  set msg to system attribute "MAGPIE_NOTIFY_MESSAGE"
+  display notification msg with title ttl subtitle sub
+end run
+APPLESCRIPT
+fi
+`;
+	}
+	return `
+if command -v curl >/dev/null 2>&1; then
+  TELEGRAM_HEADER=${shellEscape(`Magpie schedule ${entry.id} completed ($EXIT_CODE)
+Task: ${entry.task}
+Cwd: ${entry.cwd}
+
+`)}
+  TELEGRAM_BODY="$(head -c 3500 "$RESULT_PATH" 2>/dev/null || true)"
+  TELEGRAM_TEXT="\${TELEGRAM_HEADER}\${TELEGRAM_BODY}"
+  curl -sS -X POST ${shellEscape(`https://api.telegram.org/bot${runtime.notifier.botToken}/sendMessage`)} \
+    --data-urlencode ${shellEscape(`chat_id=${runtime.notifier.chatId}`)} \
+    --data-urlencode "text=$TELEGRAM_TEXT" \
+    >/dev/null 2>&1 || true
+fi
+`;
+}
+
+function createRunnerScript(entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions): string {
 	const runtimeNodeDir = dirname(process.execPath);
 	const inheritedPath = process.env.PATH || "";
 	const runnerPath = [runtimeNodeDir, inheritedPath, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
@@ -161,22 +246,31 @@ if command -v crontab >/dev/null 2>&1; then
 fi
 `
 		: "";
+	const piInvocation = createPiCommand(entry, piCommand, runtime);
+	const notify = createNotificationScript(entry, runtime);
 	return `#!/usr/bin/env bash
 set -euo pipefail
 export PATH=${shellEscape(runnerPath)}
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STATE_PATH=${shellEscape(entry.statePath)}
 RESULT_PATH=${shellEscape(entry.resultPath)}
-mkdir -p "$(dirname "$STATE_PATH")" "$(dirname "$RESULT_PATH")"
-printf 'startedAt=%s\nresultPath=%s\n' "$STARTED_AT" "$RESULT_PATH" > "$STATE_PATH"
+SESSION_DIR=${shellEscape(runtime.sessionDir)}
+mkdir -p "$(dirname "$STATE_PATH")" "$(dirname "$RESULT_PATH")" "$SESSION_DIR"
+printf 'startedAt=%s\nresultPath=%s\nsessionDir=%s\n' "$STARTED_AT" "$RESULT_PATH" "$SESSION_DIR" > "$STATE_PATH"
 ${cleanup}
-cd ${shellEscape(entry.cwd)}
-set +e
-${shellEscape(piCommand)} --print${entry.model ? ` --model ${shellEscape(entry.model)}` : ""} ${shellEscape(entry.task)} > "$RESULT_PATH" 2>&1
-EXIT_CODE=$?
-set -e
+EXIT_CODE=0
+if ! cd ${shellEscape(entry.cwd)}; then
+  printf 'Scheduled task failed: cwd does not exist: %s\n' ${shellEscape(entry.cwd)} > "$RESULT_PATH"
+  EXIT_CODE=1
+else
+  set +e
+  ${piInvocation} > "$RESULT_PATH" 2>&1
+  EXIT_CODE=$?
+  set -e
+fi
 ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf 'startedAt=%s\nendedAt=%s\nexitCode=%s\nresultPath=%s\n' "$STARTED_AT" "$ENDED_AT" "$EXIT_CODE" "$RESULT_PATH" > "$STATE_PATH"
+printf 'startedAt=%s\nendedAt=%s\nexitCode=%s\nresultPath=%s\nsessionDir=%s\n' "$STARTED_AT" "$ENDED_AT" "$EXIT_CODE" "$RESULT_PATH" "$SESSION_DIR" > "$STATE_PATH"
+${notify}
 exit "$EXIT_CODE"
 `;
 }
@@ -231,6 +325,7 @@ async function readRunState(path: string): Promise<ScheduleRunState | undefined>
 			endedAt: values.endedAt,
 			exitCode: values.exitCode ? Number(values.exitCode) : undefined,
 			resultPath: values.resultPath || path.replace(/\.state$/, ".result.md"),
+			sessionDir: values.sessionDir,
 		};
 	} catch {
 		return undefined;
@@ -246,7 +341,49 @@ function describeEntryStatus(entry: ScheduleEntry, state?: ScheduleRunState) {
 }
 
 function formatEntry(entry: ScheduleEntry, state?: ScheduleRunState) {
-	return `${entry.id} · ${describeEntryStatus(entry, state)}\n- task: ${entry.task}\n- backend: ${entry.backend}\n- cwd: ${entry.cwd}`;
+	return [
+		`${entry.id} · ${describeEntryStatus(entry, state)}`,
+		`- task: ${entry.task}`,
+		`- backend: ${entry.backend}`,
+		`- cwd: ${entry.cwd}`,
+		entry.sessionDir ? `- sessionDir: ${entry.sessionDir}` : undefined,
+	].filter(Boolean).join("\n");
+}
+
+function resolveScheduleNotifier(config: MagpieConfig, auth: MagpieAuthConfig, shouldNotify: boolean): ScheduleNotifier {
+	if (!shouldNotify) return { kind: "none" };
+	const kind = config.schedule?.notifier ?? "none";
+	if (kind === "none") return { kind: "none" };
+	if (kind === "macos") return { kind: "macos" };
+	const botToken = config.schedule?.telegram?.botToken?.trim() || auth.telegram?.botToken?.trim();
+	const chatId = config.schedule?.telegram?.chatId?.trim();
+	if (!botToken || !chatId) throw new Error("schedule notifier is set to telegram, but schedule.telegram.chatId and a Telegram bot token are not fully configured.");
+	return { kind: "telegram", botToken, chatId };
+}
+
+async function resolveScheduleRuntimeOptions(
+	ctx: ExtensionContext,
+	store: ScheduleStore,
+	id: string,
+	input: { model?: string; notify?: boolean },
+) {
+	const [config, auth] = await Promise.all([loadConfig(ctx.cwd), loadAuthConfig(ctx.cwd)]);
+	const activeMode = getActiveModeName(ctx, config);
+	const mode = getMode(config, activeMode) ?? getMode(config, "smart");
+	const baseDir = getConfigBaseDir(getActiveConfigScope(ctx.cwd), ctx.cwd);
+	const modePromptText = mode?.prompt ? await resolvePromptText(baseDir, mode.prompt) : undefined;
+	const promptParts = [modePromptText?.trim(), SCHEDULE_BACKGROUND_PROMPT].filter(Boolean) as string[];
+	return {
+		mode: mode?.name ?? activeMode,
+		model: input.model ?? mode?.model,
+		thinkingLevel: mode?.thinkingLevel,
+		systemPrompt: promptParts.length === 0 ? undefined : {
+			strategy: mode?.prompt?.strategy ?? "append",
+			text: promptParts.join("\n\n"),
+		},
+		notifier: resolveScheduleNotifier(config, auth, input.notify !== false),
+		sessionDir: resolve(store.baseDir, "sessions", id),
+	} satisfies ScheduleRuntimeOptions;
 }
 
 async function scheduleTask(ctx: ExtensionContext, input: { when: string; task: string; model?: string; notify?: boolean }) {
@@ -256,10 +393,10 @@ async function scheduleTask(ctx: ExtensionContext, input: { when: string; task: 
 	if (runAt.getTime() <= Date.now()) throw new Error("Scheduled time must be in the future.");
 	const piCommand = await resolveCommandPath("pi");
 	if (!piCommand) throw new Error("Could not find 'pi' on PATH for scheduled execution.");
-	const config = await loadConfig(ctx.cwd);
 	const entries = await readIndex(store);
 	const id = createId();
 	await ensureStore(store);
+	const runtime = await resolveScheduleRuntimeOptions(ctx, store, id, input);
 	const scriptPath = resolve(store.scriptsDir, `${id}.sh`);
 	const resultPath = resolve(store.resultsDir, `${id}.result.md`);
 	const statePath = resolve(store.resultsDir, `${id}.state`);
@@ -268,19 +405,20 @@ async function scheduleTask(ctx: ExtensionContext, input: { when: string; task: 
 		type: "one-shot",
 		cwd: ctx.cwd,
 		task: input.task,
-		model: input.model,
-		mode: config.startupMode,
+		model: runtime.model,
+		mode: runtime.mode,
 		when: input.when,
 		runAt: runAt.toISOString(),
 		backend: "at",
 		scriptPath,
 		resultPath,
 		statePath,
+		sessionDir: runtime.sessionDir,
 		createdAt: new Date().toISOString(),
-		notify: input.notify === true,
+		notify: input.notify !== false,
 	};
 	entry = { ...entry, backend: await chooseBackend() };
-	await writeFile(scriptPath, createRunnerScript(entry, piCommand), "utf8");
+	await writeFile(scriptPath, createRunnerScript(entry, piCommand, runtime), "utf8");
 	await chmod(scriptPath, 0o755);
 	entry = await scheduleOneShot(entry);
 	entries.push(entry);
@@ -319,7 +457,7 @@ export default function (pi: ExtensionAPI) {
 			when: Type.String({ description: "When to run, e.g. 'in 10 minutes' or an ISO datetime." }),
 			task: Type.String({ description: "Task prompt to run later." }),
 			model: Type.Optional(Type.String({ description: "Optional provider/model override." })),
-			notify: Type.Optional(Type.Boolean({ description: "Whether to notify on completion. Not yet implemented; currently stored only." })),
+			notify: Type.Optional(Type.Boolean({ description: "Whether to notify on completion. Defaults to true." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {

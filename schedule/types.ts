@@ -6,6 +6,7 @@ export interface ScheduleRunState {
 	endedAt?: string;
 	exitCode?: number;
 	resultPath: string;
+	sessionDir?: string;
 }
 
 export interface ScheduleEntry {
@@ -21,6 +22,7 @@ export interface ScheduleEntry {
 	scriptPath: string;
 	resultPath: string;
 	statePath: string;
+	sessionDir?: string;
 	createdAt: string;
 	notify: boolean;
 	atJobId?: string;

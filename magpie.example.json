@@ -127,5 +127,11 @@
       "userFile": "telegram/USER.md",
       "customFiles": []
     }
+  },
+  "schedule": {
+    "notifier": "macos",
+    "telegram": {
+      "chatId": "123456789"
+    }
   }
 }
