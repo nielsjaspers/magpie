@@ -374,7 +374,17 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				res.end(await readFile(resolve(clientDir, "app.js"), "utf8"));
 				return;
 			}
+			if (req.method === "GET" && requestUrl.pathname === "/assets/css/style.css") {
+				res.statusCode = 200;
+				res.setHeader("content-type", "text/css; charset=utf-8");
+				res.end(await readFile(resolve(clientDir, "css/style.css"), "utf8"));
+				return;
+			}
 
+			if (req.method === "GET" && requestUrl.pathname === "/api/v1/models") {
+				const models = modelRegistry.list();
+				return sendJson(res, 200, { models, defaultModel: defaultModelRef });
+			}
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/sessions") {
 				const filter = parseSessionFilter(requestUrl.searchParams);
 				const sessions = (await listAllSessions()).filter((session) => {

@@ -2,50 +2,187 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Magpie Enroll</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Magpie Enrollment</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..800;1,9..144,300..800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="/assets/css/style.css">
   <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b1020; color: #e7ecff; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-    .card { width: min(92vw, 420px); background: #0f1630; border: 1px solid #223056; border-radius: 16px; padding: 20px; display: grid; gap: 12px; }
-    input, button { font: inherit; border-radius: 10px; padding: 10px 12px; border: 1px solid #243157; background: #0a1227; color: #e7ecff; }
-    button { background: #4f7cff; border: 0; cursor: pointer; }
-    .hint { color: #9aa8d6; font-size: 13px; }
-    .error { color: #ff9a9a; }
+    body {
+      background: var(--bg-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: var(--spacing-lg);
+    }
+    
+    .enrollment-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-xl);
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.03);
+    }
+    
+    .enrollment-header {
+      text-align: center;
+      margin-bottom: var(--spacing-xl);
+    }
+    
+    .enrollment-header h1 {
+      font-size: 32px;
+      font-style: italic;
+      color: var(--text-primary);
+      margin-bottom: var(--spacing-xs);
+    }
+    
+    .enrollment-header p {
+      color: var(--text-secondary);
+      font-size: 15px;
+      margin: 0;
+    }
+    
+    .form-group {
+      margin-bottom: var(--spacing-lg);
+    }
+    
+    .form-group label {
+      display: block;
+      margin-bottom: var(--spacing-xs);
+      font-weight: 500;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    
+    .enroll-input {
+      width: 100%;
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      font-family: var(--font-body);
+      font-size: 16px;
+      color: var(--text-primary);
+      transition: all 0.2s ease;
+    }
+    
+    .enroll-input:focus {
+      outline: none;
+      border-color: var(--text-secondary);
+    }
+    
+    .enroll-input::placeholder {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+    
+    .error-msg {
+      color: var(--danger-color);
+      font-size: 14px;
+      margin-top: var(--spacing-sm);
+      text-align: center;
+      min-height: 20px;
+    }
   </style>
 </head>
 <body>
-  <form class="card" id="form">
-    <h1 style="margin:0;font-size:20px;">Enroll device</h1>
-    <div class="hint">Enter the enrollment code generated from <code>/remote enroll</code>.</div>
-    <input id="code" placeholder="Enrollment code" required />
-    <input id="deviceName" placeholder="Device name" required />
-    <button type="submit">Enroll</button>
-    <div id="message" class="hint"></div>
-  </form>
+
+  <div class="enrollment-card">
+    <div class="enrollment-header">
+      <h1>Magpie</h1>
+      <p>Device Enrollment</p>
+    </div>
+    
+    <form id="enrollForm">
+      <div class="form-group">
+        <label for="codeInput">Enrollment Code</label>
+        <input type="text" id="codeInput" class="enroll-input" placeholder="e.g. A1B2C3D4" required autocomplete="off" />
+      </div>
+      
+      <div class="form-group">
+        <label for="nameInput">Device Name</label>
+        <input type="text" id="nameInput" class="enroll-input" placeholder="e.g. My iPhone" required autocomplete="off" />
+      </div>
+      
+      <button type="submit" id="submitBtn" class="btn btn-primary btn-full" style="padding: 12px;">
+        <span class="btn-text">Connect Device</span>
+        <svg class="spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display: none;"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>
+      </button>
+      
+      <div id="errorMsg" class="error-msg"></div>
+    </form>
+  </div>
+
   <script>
-    const params = new URLSearchParams(location.search);
-    const codeEl = document.getElementById('code');
-    const nameEl = document.getElementById('deviceName');
-    const messageEl = document.getElementById('message');
-    codeEl.value = params.get('code') || '';
-    nameEl.value = /iPhone|Android|Mobile/i.test(navigator.userAgent) ? 'phone' : 'device';
-    document.getElementById('form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      messageEl.textContent = 'Enrolling…';
-      messageEl.className = 'hint';
+    const urlParams = new URLSearchParams(window.location.search);
+    const codeParam = urlParams.get('code');
+    if (codeParam) {
+      document.getElementById('codeInput').value = codeParam;
+    }
+    
+    // Guess default device name
+    let defaultName = "Web Browser";
+    if (navigator.userAgent.includes("iPhone")) defaultName = "iPhone";
+    if (navigator.userAgent.includes("iPad")) defaultName = "iPad";
+    if (navigator.userAgent.includes("Android")) defaultName = "Android Device";
+    if (navigator.userAgent.includes("Mac OS X")) defaultName = "Mac";
+    if (navigator.userAgent.includes("Windows")) defaultName = "Windows PC";
+    document.getElementById('nameInput').value = defaultName;
+
+    document.getElementById('enrollForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const btn = document.getElementById('submitBtn');
+      const spinner = btn.querySelector('.spinner');
+      const text = btn.querySelector('.btn-text');
+      const err = document.getElementById('errorMsg');
+      
+      text.style.display = 'none';
+      spinner.style.display = 'block';
+      spinner.style.animation = 'spin 1s linear infinite';
+      btn.disabled = true;
+      err.textContent = '';
+      
+      // Ensure keyframes exist for spinner
+      if(!document.getElementById('spinnerKeyframes')) {
+        const style = document.createElement('style');
+        style.id = 'spinnerKeyframes';
+        style.innerHTML = `@keyframes spin { 100% { transform: rotate(360deg); } }`;
+        document.head.appendChild(style);
+      }
+      
       try {
         const response = await fetch('/api/v1/enroll', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code: codeEl.value, deviceName: nameEl.value, platform: navigator.userAgent }),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code: document.getElementById('codeInput').value.trim(),
+            deviceName: document.getElementById('nameInput').value.trim(),
+            platform: navigator.userAgent
+          })
         });
-        const json = await response.json();
-        if (!response.ok) throw new Error(json?.error || `Request failed: ${response.status}`);
-        location.href = '/';
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.error || 'Enrollment failed');
+        }
+        
+        // Success! Redirect to main app
+        window.location.href = '/';
+        
       } catch (error) {
-        messageEl.textContent = error.message || String(error);
-        messageEl.className = 'error';
+        err.textContent = error.message;
+        text.style.display = 'block';
+        spinner.style.display = 'none';
+        btn.disabled = false;
       }
     });
   </script>
