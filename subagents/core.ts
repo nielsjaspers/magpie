@@ -184,7 +184,7 @@ export async function runSubagent(
 			cwd: ctx.cwd,
 			model: modelForSession,
 			thinkingLevel: (spec.thinkingLevel as any) ?? resolved?.thinkingLevel ?? getCurrentThinkingLevel(ctx) ?? "medium",
-			tools: getToolList(ctx.cwd, spec.tools),
+			tools: getToolList(ctx.cwd, spec.tools) as any,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(),
 			modelRegistry: ctx.modelRegistry,

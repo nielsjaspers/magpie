@@ -1,8 +1,9 @@
 import { Bot, GrammyError, HttpError } from "grammy";
+import type { Context } from "grammy";
 import { isTelegramLocalCommand, registerCommands } from "./commands.js";
 import { resolveAssistantThread, sendAssistantMessage } from "./host-client.js";
 import { getActiveModel } from "./session.js";
-import { splitMessage } from "./utils.js";
+import { convertMarkdownToTelegramHtml, escapeHtml, splitMessage } from "./utils.js";
 import type { TelegramAppConfig } from "./config.js";
 
 export function senderId(from: { id: number; username?: string | undefined }): string {
@@ -18,6 +19,19 @@ export function isAllowed(sender: string, allowList: Set<string>): boolean {
 		return allowList.has(id) || allowList.has(username);
 	}
 	return false;
+}
+
+async function sendHtml(ctx: Context, text: string) {
+	if (!ctx.chat) return;
+	try {
+		await ctx.api.sendMessage(ctx.chat.id, convertMarkdownToTelegramHtml(text), { parse_mode: "HTML" });
+	} catch (error: unknown) {
+		if (error instanceof GrammyError) {
+			await ctx.api.sendMessage(ctx.chat.id, text);
+		} else {
+			throw error;
+		}
+	}
 }
 
 export function createBot(config: TelegramAppConfig): Bot {
@@ -52,24 +66,22 @@ export function createBot(config: TelegramAppConfig): Bot {
 				for (const event of response.toolEvents) {
 					if (event.type === "start") {
 						const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
-						await ctx.api.sendMessage(
-							ctx.chat.id,
-							`[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`,
-						);
+						const toolText = `[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`;
+						await sendHtml(ctx, toolText);
 					} else {
 						const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
 						let resultPreview = event.result || "";
 						if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
-						await ctx.api.sendMessage(ctx.chat.id, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
+						await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
 					}
 				}
 			}
 			for (const chunk of splitMessage(response.text || "(empty response)")) {
-				await ctx.api.sendMessage(ctx.chat.id, chunk);
+				await sendHtml(ctx, chunk);
 			}
 		} catch (error: unknown) {
 			console.error("Failed to process Telegram message", error);
-			await ctx.api.sendMessage(ctx.chat.id, "Sorry — I hit an error.");
+			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error."), { parse_mode: "HTML" });
 		}
 	});
 

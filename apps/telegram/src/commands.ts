@@ -1,7 +1,8 @@
-import type { Bot } from "grammy";
+import type { Bot, Context } from "grammy";
 import type { TelegramAppConfig } from "./config.js";
 import { getAssistantThreadSnapshot, getAssistantThreadStatus, resetAssistantThread } from "./host-client.js";
 import { getActiveModel, setActiveModel } from "./session.js";
+import { escapeHtml } from "./utils.js";
 
 export const TELEGRAM_LOCAL_COMMANDS = [
 	"help",
@@ -26,6 +27,10 @@ export function isTelegramLocalCommand(text: string): boolean {
 	return commandName ? TELEGRAM_LOCAL_COMMAND_SET.has(commandName) : false;
 }
 
+async function replyHtml(ctx: Context, text: string) {
+	await ctx.reply(escapeHtml(text), { parse_mode: "HTML" });
+}
+
 const HELP_TEXT = `Available commands:
 
 /model           Show current model
@@ -42,11 +47,11 @@ Just type anything else to chat.`;
 
 export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 	bot.command("help", async (ctx) => {
-		await ctx.reply(HELP_TEXT);
+		await replyHtml(ctx, HELP_TEXT);
 	});
 
 	bot.command("start", async (ctx) => {
-		await ctx.reply(HELP_TEXT);
+		await replyHtml(ctx, HELP_TEXT);
 	});
 
 	bot.command("model", async (ctx) => {
@@ -59,26 +64,26 @@ export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 				const marker = a === alias ? " [active]" : "";
 				lines.push(`  ${a} = ${r}${marker}`);
 			}
-			await ctx.reply(lines.join("\n"));
+			await replyHtml(ctx, lines.join("\n"));
 			return;
 		}
 
 		const ref = config.models[arg];
 		if (!ref) {
 			const available = Object.keys(config.models).join(", ") || "(none configured)";
-			await ctx.reply(`Unknown model "${arg}". Available: ${available}`);
+			await replyHtml(ctx, `Unknown model "${arg}". Available: ${available}`);
 			return;
 		}
 
 		setActiveModel(arg, ref);
-		await ctx.reply(`Switched to ${arg} (${ref}).`);
+		await replyHtml(ctx, `Switched to ${arg} (${ref}).`);
 	});
 
 	bot.command("session", async (ctx) => {
 		const chatId = String(ctx.chat.id);
 		const { ref } = getActiveModel();
 		const status = await getAssistantThreadStatus(config, chatId, ref);
-		await ctx.reply([
+		await replyHtml(ctx, [
 			`Thread: ${status.threadKey}`,
 			`Exists: ${status.exists ? "yes" : "no"}`,
 			`Loaded: ${status.loaded ? "yes" : "no"}`,
@@ -94,7 +99,7 @@ export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 		const { ref } = getActiveModel();
 		const snapshot = await getAssistantThreadSnapshot(config, chatId, ref, 8);
 		if (!snapshot.exists || !snapshot.messages || snapshot.messages.length === 0) {
-			await ctx.reply("No stored messages for this chat yet.");
+			await replyHtml(ctx, "No stored messages for this chat yet.");
 			return;
 		}
 		const lines = snapshot.messages.map((message, index) => {
@@ -102,27 +107,27 @@ export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 			const preview = text.length > 180 ? `${text.slice(0, 180)}…` : text;
 			return `${index + 1}. ${message.role}: ${preview || "(no text)"}`;
 		});
-		await ctx.reply(lines.join("\n\n"));
+		await replyHtml(ctx, lines.join("\n\n"));
 	});
 
 	bot.command("restart", async (ctx) => {
 		const chatId = String(ctx.chat.id);
 		const { ref } = getActiveModel();
 		await resetAssistantThread(config, chatId, ref);
-		await ctx.reply("Session cleared. Starting fresh on your next message.");
+		await replyHtml(ctx, "Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("new", async (ctx) => {
 		const chatId = String(ctx.chat.id);
 		const { ref } = getActiveModel();
 		await resetAssistantThread(config, chatId, ref);
-		await ctx.reply("Session cleared. Starting fresh on your next message.");
+		await replyHtml(ctx, "Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("clear", async (ctx) => {
 		const chatId = String(ctx.chat.id);
 		const { ref } = getActiveModel();
 		await resetAssistantThread(config, chatId, ref);
-		await ctx.reply("Session cleared.");
+		await replyHtml(ctx, "Session cleared.");
 	});
 }

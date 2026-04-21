@@ -375,6 +375,7 @@ if command -v curl >/dev/null 2>&1; then
   curl -sS -X POST ${shellEscape(`https://api.telegram.org/bot${runtime.notifier.botToken}/sendMessage`)} \\
     --data-urlencode ${shellEscape(`chat_id=${runtime.notifier.chatId}`)} \\
     --data-urlencode "text=$TELEGRAM_TEXT" \\
+    --data-urlencode "parse_mode=HTML" \\
     >/dev/null 2>&1 || true
 fi
 `;
