@@ -24,7 +24,9 @@ async function ensureServerStarted(ctx: ExtensionContext, pi: ExtensionAPI) {
 	if (serverState.server) return;
 	if (!serverState.starting) {
 		serverState.starting = (async () => {
-			const started = await startWebUiServer(ctx.cwd, undefined, routeRegistrations);
+			const started = await startWebUiServer(ctx.cwd, {
+				tools: pi.getAllTools().map((tool) => tool.name),
+			}, routeRegistrations);
 			serverState = {
 				...(serverState ?? { activeSessions: 0 }),
 				server: started.server,

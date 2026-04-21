@@ -116,7 +116,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		modelRegistry,
 		resolveModel,
 		buildSystemPrompt,
-		tools: [],
+		tools: config?.tools,
 		hostId: "magpie-remote-host",
 		hostRole: "remote",
 		agentDir: globalBaseDir,
@@ -372,6 +372,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 			let authenticatedDevice: DeviceRecord | undefined;
 			const isPublicPath = requestUrl.pathname === "/health"
 				|| requestUrl.pathname === "/enroll"
+				|| requestUrl.pathname === "/assets/css/style.css"
 				|| requestUrl.pathname === "/api/v1/enroll"
 				|| requestUrl.pathname === "/api/v1/enroll/code"
 				|| requestUrl.pathname === "/api/v1/enroll/claim";
@@ -416,7 +417,16 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					deviceName: String(body.deviceName || "device"),
 					platform: String(body.platform || req.headers["user-agent"] || "web"),
 				});
-				res.setHeader("set-cookie", `magpie_token=${encodeURIComponent(result.token)}; Path=/; HttpOnly; SameSite=Lax`);
+				const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+				const isSecure = requestUrl.protocol === "https:" || forwardedProto === "https";
+				res.setHeader("set-cookie", [
+					`magpie_token=${encodeURIComponent(result.token)}`,
+					"Path=/",
+					"HttpOnly",
+					"SameSite=Lax",
+					"Max-Age=31536000",
+					...(isSecure ? ["Secure"] : []),
+				].join("; "));
 				return sendJson(res, 200, { ok: true, device: result.device });
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/claim") {

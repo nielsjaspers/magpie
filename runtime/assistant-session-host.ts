@@ -614,12 +614,11 @@ export class AssistantSessionHost implements SessionHost {
 	private async instantiateAgentSession(sessionManager: SessionManager, modelRef: string): Promise<AgentSession> {
 		const model = this.resolveModelRef(modelRef);
 		if (!model) throw new Error(`Model not found: ${modelRef}`);
-		const systemPrompt = await this.buildSystemPromptText();
+		const systemPrompt = (await this.buildSystemPromptText()).trim();
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: this.hostCwd,
 			agentDir: this.agentDir,
-			systemPromptOverride: () => systemPrompt,
-			appendSystemPromptOverride: () => [],
+			appendSystemPromptOverride: (base) => systemPrompt ? [...base, systemPrompt] : base,
 		});
 		await resourceLoader.reload();
 		const { session } = await createAgentSession({
