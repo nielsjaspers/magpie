@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
+	expandHomePath,
 	getGlobalAuthPath,
 	getGlobalConfigPath,
 	getProjectAuthPath,
@@ -119,10 +120,14 @@ export async function buildSystemPrompt(config: TelegramAppConfig): Promise<stri
 	const globalBaseDir = dirname(config.globalConfigPath);
 	const parts: string[] = [];
 
-	const readScoped = async (relativePath: string | undefined) => {
-		if (!relativePath?.trim()) return undefined;
-		return (await tryReadText(resolve(projectBaseDir, relativePath))) ??
-			(await tryReadText(resolve(globalBaseDir, relativePath)));
+	const readScoped = async (filePath: string | undefined) => {
+		if (!filePath?.trim()) return undefined;
+		const expanded = expandHomePath(filePath.trim());
+		if (expanded.startsWith("/")) {
+			return await tryReadText(expanded);
+		}
+		return (await tryReadText(resolve(projectBaseDir, expanded))) ??
+			(await tryReadText(resolve(globalBaseDir, expanded)));
 	};
 
 	const systemContent = await readScoped(config.prompt.systemFile);

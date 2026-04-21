@@ -630,6 +630,7 @@ export class AssistantSessionHost implements SessionHost {
 			sessionManager,
 			tools: this.tools as any,
 		});
+		await session.bindExtensions({});
 		return session;
 	}
 

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
-import { getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
+import { expandHomePath, getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
 import { AssistantSessionHost, createAssistantThreadKey, parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
 import { createRemoteServerRuntime } from "../remote/server.js";
@@ -89,10 +89,14 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 
 	const buildSystemPrompt = async () => {
 		const parts: string[] = [];
-		const readScoped = async (relativePath: string | undefined) => {
-			if (!relativePath?.trim()) return undefined;
-			return (await tryReadText(resolve(projectBaseDir, relativePath))) ??
-				(await tryReadText(resolve(globalBaseDir, relativePath)));
+		const readScoped = async (filePath: string | undefined) => {
+			if (!filePath?.trim()) return undefined;
+			const expanded = expandHomePath(filePath.trim());
+			if (expanded.startsWith("/")) {
+				return await tryReadText(expanded);
+			}
+			return (await tryReadText(resolve(projectBaseDir, expanded))) ??
+				(await tryReadText(resolve(globalBaseDir, expanded)));
 		};
 		const systemContent = await readScoped(prompt?.systemFile);
 		if (systemContent?.trim()) parts.push(systemContent.trim());
