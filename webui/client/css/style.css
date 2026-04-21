@@ -63,6 +63,7 @@ h1, h2, h3, h4, h5, h6 {
 .app-layout {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   position: relative;
   overflow: hidden;
@@ -72,6 +73,7 @@ h1, h2, h3, h4, h5, h6 {
 .sidebar {
   width: var(--sidebar-width);
   height: 100vh;
+  height: 100dvh;
   background: var(--bg-panel);
   border-right: 1px solid var(--border-color);
   display: flex;
@@ -208,6 +210,7 @@ h1, h2, h3, h4, h5, h6 {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   min-width: 0;
   position: relative;
 }
@@ -718,8 +721,8 @@ h1, h2, h3, h4, h5, h6 {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 56px;
-    padding: 0 var(--spacing-md);
+    height: calc(56px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) var(--spacing-md) 0;
     background: var(--bg-panel);
     border-bottom: 1px solid var(--border-color);
     position: absolute;
@@ -734,7 +737,7 @@ h1, h2, h3, h4, h5, h6 {
 
   /* Adjust main content */
   .main-content {
-    padding-top: 56px; /* Space for mobile header */
+    padding-top: calc(56px + env(safe-area-inset-top)); /* Space for mobile header + notch */
   }
 
   .topbar {
@@ -748,6 +751,7 @@ h1, h2, h3, h4, h5, h6 {
 
   .composer-container {
     padding: var(--spacing-sm);
+    padding-bottom: calc(var(--spacing-sm) + env(safe-area-inset-bottom));
   }
 
   .message.user .message-content {
