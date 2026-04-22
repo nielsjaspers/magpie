@@ -208,6 +208,7 @@ async function summarizeSession(
 	const result = await core.runSubagent(ctx, config, {
 		role: "memory",
 		label: "session-index",
+		systemPrompt: "You are a session indexing summarizer. Your only job is to summarize one coding session as structured JSON for the session index. Focus on what happened in the session itself: the main work, topics, and files modified. Do not apply the broader Magpie memory-worker behavior here. Return only the requested JSON.",
 		task: [
 			"Summarize this session as JSON.",
 			"Return exactly one JSON object with fields: summary (string), topics (string[]), filesModified (string[]).",

@@ -24,8 +24,13 @@ const FALLBACK_TOOLS = [
 	"oracle_subagent",
 	"librarian_subagent",
 	"handoff",
-	"save_memory",
-	"recall_memories",
+	"save_preference",
+	"recall_preferences",
+	"remember",
+	"read_memory",
+	"write_memory",
+	"recall_memory",
+	"dream",
 ];
 
 function defaultConfigText() {

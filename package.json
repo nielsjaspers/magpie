@@ -24,6 +24,7 @@
       "commit/index.ts",
       "handoff/index.ts",
       "sessions/index.ts",
+      "preferences/index.ts",
       "memory/index.ts",
       "research/index.ts",
       "webui/index.ts",

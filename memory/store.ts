@@ -1,90 +1,177 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
-import type { MemoryEntry } from "./types.js";
+import { dirname, relative, resolve, sep } from "node:path";
+import type { MemoryConfig } from "./types.js";
+import { expandHomePath } from "../config/config.js";
 
 function getBaseDir(): string {
 	return process.env.PI_CODING_AGENT_DIR ?? resolve(homedir(), ".pi/agent");
 }
 
-export function getDefaultMemoryStorePath(): string {
-	return resolve(getBaseDir(), "magpie-memories.jsonl");
+function slugify(input: string): string {
+	const slug = input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+	return slug || "memory";
 }
 
-async function ensureParent(path: string) {
-	await mkdir(dirname(path), { recursive: true });
+function filenameTimestamp(date: Date): string {
+	return date.toISOString().replace(/[:.]/g, "-");
 }
 
-export async function loadMemories(path = getDefaultMemoryStorePath()): Promise<MemoryEntry[]> {
-	if (!existsSync(path)) return [];
-	const raw = await readFile(path, "utf8");
-	return raw
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean)
-		.flatMap((line) => {
-			try {
-				return [JSON.parse(line) as MemoryEntry];
-			} catch {
-				return [];
-			}
-		});
+function ensureWithinRoot(rootDir: string, targetPath: string): string {
+	if (targetPath === rootDir || targetPath.startsWith(`${rootDir}${sep}`)) return targetPath;
+	throw new Error(`Path escapes memory root: ${targetPath}`);
 }
 
-export async function saveMemories(memories: MemoryEntry[], path = getDefaultMemoryStorePath()) {
-	await ensureParent(path);
-	await writeFile(path, `${memories.map((memory) => JSON.stringify(memory)).join("\n")}${memories.length ? "\n" : ""}`, "utf8");
+export function getDefaultMemoryRootDir(): string {
+	return resolve(getBaseDir(), "magpie-memory");
 }
 
-export async function addMemory(
-	content: string,
-	category?: string,
-	source: "user" | "auto" = "user",
-	path = getDefaultMemoryStorePath(),
-): Promise<MemoryEntry> {
-	const memories = await loadMemories(path);
-	const entry: MemoryEntry = {
-		id: randomUUID(),
-		content,
-		createdAt: new Date().toISOString(),
-		source,
-		category,
-		active: true,
+export function getMemoryRootDir(config?: MemoryConfig): string {
+	return expandHomePath(config?.rootDir?.trim() || getDefaultMemoryRootDir());
+}
+
+export function getMemoryPaths(rootDir: string) {
+	const inboxDir = resolve(rootDir, "inbox");
+	const graphDir = resolve(rootDir, "graph");
+	const archiveDir = resolve(rootDir, "archive");
+	const digestDir = resolve(rootDir, "digest");
+	const dailyDigestDir = resolve(digestDir, "daily");
+	const reviewDir = resolve(rootDir, "review");
+	return {
+		rootDir,
+		inboxDir,
+		graphDir,
+		archiveDir,
+		digestDir,
+		dailyDigestDir,
+		reviewDir,
 	};
-	memories.push(entry);
-	await saveMemories(memories, path);
-	return entry;
 }
 
-export async function forgetMemory(idOrText: string, path = getDefaultMemoryStorePath()): Promise<MemoryEntry | undefined> {
-	const memories = await loadMemories(path);
-	const normalized = idOrText.toLowerCase();
-	const target = memories.find((memory) => memory.active && (memory.id === idOrText || memory.content.toLowerCase().includes(normalized)));
-	if (!target) return undefined;
-	target.active = false;
-	await saveMemories(memories, path);
-	return target;
+export async function ensureMemoryDirs(rootDir: string) {
+	const paths = getMemoryPaths(rootDir);
+	await Promise.all([
+		mkdir(paths.rootDir, { recursive: true }),
+		mkdir(paths.inboxDir, { recursive: true }),
+		mkdir(paths.graphDir, { recursive: true }),
+		mkdir(paths.archiveDir, { recursive: true }),
+		mkdir(paths.digestDir, { recursive: true }),
+		mkdir(paths.dailyDigestDir, { recursive: true }),
+		mkdir(paths.reviewDir, { recursive: true }),
+	]);
+	return paths;
 }
 
-export function searchMemories(memories: MemoryEntry[], query: string): MemoryEntry[] {
-	const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
-	return memories
-		.filter((memory) => memory.active)
-		.map((memory) => ({
-			memory,
-			score: tokens.reduce((score, token) => {
-				if (memory.content.toLowerCase().includes(token)) score += 2;
-				if (memory.category?.toLowerCase().includes(token)) score += 1;
-				return score;
-			}, 0),
-		}))
-		.filter((item) => item.score > 0 || memoryString(item.memory).includes(query.toLowerCase()))
-		.sort((a, b) => b.score - a.score)
-		.map((item) => item.memory);
+export function resolveMemoryPath(rootDir: string, path = "."): string {
+	return ensureWithinRoot(rootDir, resolve(rootDir, path));
 }
 
-function memoryString(memory: MemoryEntry): string {
-	return `${memory.category ?? ""} ${memory.content}`.toLowerCase();
+export interface CreatedInboxItem {
+	absolutePath: string;
+	relativePath: string;
+	createdAt: string;
+}
+
+export async function createInboxMemoryItem(
+	rootDir: string,
+	input: { content: string; title?: string; tags?: string[]; source?: string },
+): Promise<CreatedInboxItem> {
+	const paths = await ensureMemoryDirs(rootDir);
+	const createdAt = new Date().toISOString();
+	const title = input.title?.trim() || input.content.trim().split(/\r?\n/, 1)[0] || "Memory Capture";
+	const fileName = `${filenameTimestamp(new Date(createdAt))}-${slugify(title)}.md`;
+	const absolutePath = resolve(paths.inboxDir, fileName);
+	const relativePath = relative(rootDir, absolutePath) || fileName;
+	const sections = [
+		`# ${title}`,
+		"",
+		`- createdAt: ${createdAt}`,
+		`- source: ${input.source?.trim() || "remember"}`,
+		input.tags?.length ? `- tags: ${input.tags.join(", ")}` : undefined,
+		"",
+		input.content.trim(),
+	].filter((value): value is string => value !== undefined);
+	await writeFile(absolutePath, `${sections.join("\n").trimEnd()}\n`, "utf8");
+	return { absolutePath, relativePath, createdAt };
+}
+
+export async function writeMemoryFile(
+	rootDir: string,
+	relativePath: string,
+	content: string,
+	options?: { append?: boolean },
+): Promise<{ absolutePath: string; relativePath: string }> {
+	const absolutePath = resolveMemoryPath(rootDir, relativePath);
+	await mkdir(dirname(absolutePath), { recursive: true });
+	if (options?.append && existsSync(absolutePath)) {
+		const current = await readFile(absolutePath, "utf8");
+		await writeFile(absolutePath, `${current}${content}`, "utf8");
+	} else {
+		await writeFile(absolutePath, content, "utf8");
+	}
+	return { absolutePath, relativePath: relative(rootDir, absolutePath) };
+}
+
+export async function inspectMemoryPath(rootDir: string, path = ".") {
+	const absolutePath = resolveMemoryPath(rootDir, path);
+	const stats = await stat(absolutePath);
+	if (stats.isDirectory()) {
+		const entries = await readdir(absolutePath, { withFileTypes: true });
+		return {
+			kind: "directory" as const,
+			absolutePath,
+			relativePath: relative(rootDir, absolutePath) || ".",
+			entries: entries
+				.map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
+				.sort((a, b) => a.localeCompare(b)),
+		};
+	}
+	return {
+		kind: "file" as const,
+		absolutePath,
+		relativePath: relative(rootDir, absolutePath),
+		content: await readFile(absolutePath, "utf8"),
+	};
+}
+
+export interface MemoryFileMatch {
+	relativePath: string;
+	absolutePath: string;
+	score: number;
+	content: string;
+}
+
+export async function searchMemoryFiles(rootDir: string, query: string, limit = 8): Promise<MemoryFileMatch[]> {
+	const lowered = query.toLowerCase();
+	const tokens = lowered.split(/\s+/).filter(Boolean);
+	const matches: MemoryFileMatch[] = [];
+
+	const walk = async (dir: string) => {
+		const entries = await readdir(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			const absolutePath = resolve(dir, entry.name);
+			if (entry.isDirectory()) {
+				await walk(absolutePath);
+				continue;
+			}
+			if (!entry.isFile()) continue;
+			let content = "";
+			try {
+				content = await readFile(absolutePath, "utf8");
+			} catch {
+				continue;
+			}
+			const relativePath = relative(rootDir, absolutePath);
+			const haystack = `${relativePath}\n${content}`.toLowerCase();
+			const score = tokens.reduce((total, token) => total + (haystack.includes(token) ? 2 : 0), 0)
+				+ (haystack.includes(lowered) ? 3 : 0);
+			if (score <= 0) continue;
+			matches.push({ relativePath, absolutePath, score, content });
+		}
+	};
+
+	await ensureMemoryDirs(rootDir);
+	await walk(rootDir);
+	return matches.sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath)).slice(0, limit);
 }

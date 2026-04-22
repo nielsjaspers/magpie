@@ -41,6 +41,30 @@ function deepMerge<T>(base: T, override: unknown): T {
 	return result as T;
 }
 
+function normalizeLegacyMemoryConfig(config: unknown): unknown {
+	if (!isObject(config)) return config;
+	const next: Record<string, unknown> = { ...config };
+	const memory = isObject(next.memory) ? { ...next.memory } : undefined;
+	if (!memory) return next;
+
+	const legacyPreferenceKeys = ["enabled", "maxRetrieved", "storePath", "autoExtract"] as const;
+	const legacyPreferences: Record<string, unknown> = {};
+	for (const key of legacyPreferenceKeys) {
+		if (key in memory) {
+			legacyPreferences[key] = memory[key];
+			delete memory[key];
+		}
+	}
+
+	if (Object.keys(legacyPreferences).length > 0) {
+		next.preferences = deepMerge((isObject(next.preferences) ? next.preferences : {}) as Record<string, unknown>, legacyPreferences);
+	}
+
+	if (Object.keys(memory).length > 0) next.memory = memory;
+	else delete next.memory;
+	return next;
+}
+
 export function getGlobalConfigPath(): string {
 	const baseDir = process.env.PI_CODING_AGENT_DIR ?? resolve(homedir(), ".pi/agent");
 	return resolve(baseDir, "magpie.json");
@@ -128,8 +152,8 @@ async function loadLegacyConfig(cwd: string): Promise<Partial<MagpieConfig>> {
 export async function loadConfig(cwd: string): Promise<MagpieConfig> {
 	const globalPath = getGlobalConfigPath();
 	const projectPath = getProjectConfigPath(cwd);
-	const globalConfig = existsSync(globalPath) ? await readJson(globalPath) : undefined;
-	const projectConfig = existsSync(projectPath) ? await readJson(projectPath) : undefined;
+	const globalConfig = normalizeLegacyMemoryConfig(existsSync(globalPath) ? await readJson(globalPath) : undefined);
+	const projectConfig = normalizeLegacyMemoryConfig(existsSync(projectPath) ? await readJson(projectPath) : undefined);
 
 	if (!globalConfig && !projectConfig) {
 		const legacy = await loadLegacyConfig(cwd);

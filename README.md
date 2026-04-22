@@ -1,6 +1,6 @@
 # magpie
 
-Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, memory, web utilities, a research companion, a personal-assistant area, and a spinner.
+Magpie is a [pi](https://pi.dev) package that adds shared subagents, modes, plan mode, handoff, session intelligence, preferences + memory systems, web utilities, a research companion, a personal-assistant area, and a spinner.
 
 <img
   src="./magpie.webp"
@@ -108,10 +108,17 @@ Project auth overrides global auth.
     "autoIndex": true,
     "maxIndexEntries": 500
   },
-  "memory": {
+  "preferences": {
     "enabled": true,
     "maxRetrieved": 20,
     "autoExtract": false
+  },
+  "memory": {
+    "rootDir": "~/.pi/agent/magpie-memory",
+    "autodream": {
+      "enabled": true,
+      "schedule": "0 4 * * *"
+    }
   },
   "web": {
     "searchModel": "opencode-go/minimax-m2.7",
@@ -142,6 +149,17 @@ Subagent tools available to the main agent:
 - `oracle_subagent`
 - `librarian_subagent`
 
+Preference tools:
+- `save_preference`
+- `recall_preferences`
+
+Memory tools:
+- `remember`
+- `read_memory`
+- `write_memory`
+- `recall_memory`
+- `dream`
+
 Research config:
 - `research.papersDir` controls where papers and digest files are stored
 - `research.papersDir` supports `~` expansion at runtime
@@ -150,6 +168,14 @@ Research config:
 Mode config:
 - `startupMode` sets the mode Magpie should start in
 - `modes.<name>.disableTools` removes specific tools from that mode without replacing the whole tool set
+
+Preferences config:
+- `preferences.storePath` controls the JSONL preferences store path and supports `~` expansion via the config loader fallback path handling
+- existing `~/.pi/agent/magpie-memories.jsonl` data is read automatically and migrated forward on the next write to `magpie-preferences.jsonl`
+
+Memory config:
+- `memory.rootDir` controls the root directory for the new inbox/graph/archive/digest/review memory system
+- `memory.autodream.enabled` and `memory.autodream.schedule` configure nightly dream scheduling metadata
 
 Personal assistant config:
 - `personalAssistant.storageDir` controls local PA persistence and supports `~` expansion
@@ -190,7 +216,8 @@ Research commands:
 - `commit/` — background git commit command (see `commit/README.md`)
 - `handoff/` — command + tool for starting a new session with transferred context
 - `sessions/` — session indexing, `/sessions`, `get_sessions`, and `session_query` (see `sessions/README.md`)
-- `memory/` — long-term memory commands and tools
+- `preferences/` — small durable preferences/conventions stored in JSONL via `save_preference` and `recall_preferences`
+- `memory/` — inbox/graph/archive/digest/review memory system scaffolding plus `remember`, `read_memory`, `write_memory`, `recall_memory`, and `dream`
 - `research/` — `/papers` and `/digest` research companion (see `research/README.md`)
 - `webui/` — local/remote assistant + coding host HTTP server and browser UI surface
 - `remote/` — `/remote` commands plus remote session dispatch/fetch helpers and tools

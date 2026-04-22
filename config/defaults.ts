@@ -74,10 +74,17 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 		autoIndex: true,
 		maxIndexEntries: 500,
 	},
-	memory: {
+	preferences: {
 		enabled: true,
 		maxRetrieved: 20,
 		autoExtract: false,
+	},
+	memory: {
+		rootDir: "~/.pi/agent/magpie-memory",
+		autodream: {
+			enabled: true,
+			schedule: "0 4 * * *",
+		},
 	},
 	web: {
 		searchModel: "opencode-go/minimax-m2.7",

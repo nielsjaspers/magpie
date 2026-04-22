@@ -94,6 +94,21 @@ export interface ScheduleConfig {
 	};
 }
 
+export interface PreferencesConfig {
+	enabled?: boolean;
+	maxRetrieved?: number;
+	storePath?: string;
+	autoExtract?: boolean;
+}
+
+export interface MemoryConfig {
+	rootDir?: string;
+	autodream?: {
+		enabled?: boolean;
+		schedule?: string;
+	};
+}
+
 export interface ProviderAuthConfig {
 	apiKey?: string;
 }
@@ -158,12 +173,8 @@ export interface MagpieConfig {
 		autoIndex?: boolean;
 		maxIndexEntries?: number;
 	};
-	memory?: {
-		enabled?: boolean;
-		maxRetrieved?: number;
-		storePath?: string;
-		autoExtract?: boolean;
-	};
+	preferences?: PreferencesConfig;
+	memory?: MemoryConfig;
 	web?: {
 		searchModel?: string;
 		searchTimeout?: number;
