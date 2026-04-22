@@ -43,6 +43,9 @@ export function parseCreateSessionInput(body: Record<string, unknown>, defaultMo
 		assistantChannel: normalizeAssistantChannel(typeof body.assistantChannel === "string" ? body.assistantChannel : undefined) ?? "internal",
 		assistantThreadId: typeof body.assistantThreadId === "string" ? body.assistantThreadId : undefined,
 		modelRef: typeof body.modelRef === "string" && body.modelRef.trim() ? body.modelRef : defaultModelRef,
+		toolNames: Array.isArray(body.toolNames)
+			? body.toolNames.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+			: undefined,
 	};
 }
 

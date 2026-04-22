@@ -108,6 +108,7 @@ export interface CreateSessionInput {
 	assistantChannel?: AssistantChannel;
 	assistantThreadId?: string;
 	modelRef?: string;
+	toolNames?: string[];
 }
 
 export interface ExportedSessionBundle {

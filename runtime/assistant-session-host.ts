@@ -79,6 +79,7 @@ interface AssistantSessionRegistryEntry {
 	assistantThreadId?: string;
 	title?: string;
 	modelRef?: string;
+	toolNames?: string[];
 	owner?: SessionOwner;
 	lastError?: string;
 }
@@ -294,6 +295,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantThreadId: input.assistantThreadId,
 			title: input.title,
 			modelRef: input.modelRef,
+			toolNames: input.toolNames,
 			owner: input.owner ?? deriveAssistantOwner(this.hostId, input.assistantChannel, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId, input.modelRef);
@@ -590,14 +592,15 @@ export class AssistantSessionHost implements SessionHost {
 	private async loadOrCreateSession(threadKey: string, modelRef: string): Promise<AgentSession> {
 		await this.ensureDirs();
 		const registry = await this.readRegistry();
-		const existingPath = registry[threadKey]?.sessionPath;
+		const existing = registry[threadKey];
+		const existingPath = existing?.sessionPath;
 		if (existingPath && existsSync(existingPath)) {
-			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef);
-			await this.upsertRegistryEntry(threadKey, { sessionPath: existingPath, modelRef });
+			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef, existing?.toolNames);
+			await this.upsertRegistryEntry(threadKey, { sessionPath: existingPath, modelRef, toolNames: existing?.toolNames });
 			return session;
 		}
 
-		const session = await this.instantiateAgentSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef);
+		const session = await this.instantiateAgentSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef, existing?.toolNames);
 		if (!session.sessionFile) throw new Error("Persistent assistant session did not produce a session file");
 		await this.upsertRegistryEntry(threadKey, {
 			sessionPath: session.sessionFile,
@@ -608,12 +611,13 @@ export class AssistantSessionHost implements SessionHost {
 			assistantChannel: parseAssistantThreadKey(threadKey)?.channel,
 			assistantThreadId: parseAssistantThreadKey(threadKey)?.threadId,
 			modelRef,
+			toolNames: existing?.toolNames,
 			owner: deriveAssistantOwner(this.hostId, parseAssistantThreadKey(threadKey)?.channel, "system"),
 		});
 		return session;
 	}
 
-	private async instantiateAgentSession(sessionManager: SessionManager, modelRef: string): Promise<AgentSession> {
+	private async instantiateAgentSession(sessionManager: SessionManager, modelRef: string, toolNames?: string[]): Promise<AgentSession> {
 		const model = this.resolveModelRef(modelRef);
 		if (!model) throw new Error(`Model not found: ${modelRef}`);
 		const systemPrompt = (await this.buildSystemPromptText()).trim();
@@ -630,7 +634,7 @@ export class AssistantSessionHost implements SessionHost {
 			model: model as any,
 			resourceLoader,
 			sessionManager,
-			tools: this.tools as any,
+			tools: (toolNames?.length ? toolNames : this.tools) as any,
 		});
 		await session.bindExtensions({});
 		return session;
@@ -676,6 +680,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantThreadId: patch.assistantThreadId ?? current?.assistantThreadId,
 			title: patch.title ?? current?.title,
 			modelRef: patch.modelRef ?? current?.modelRef,
+			toolNames: patch.toolNames ?? current?.toolNames,
 			owner: patch.owner ?? current?.owner,
 			lastError: patch.lastError ?? current?.lastError,
 		};
