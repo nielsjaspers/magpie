@@ -1,0 +1,683 @@
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname, isAbsolute, resolve } from "node:path";
+import {
+	AuthStorage,
+	createAgentSession,
+	DefaultResourceLoader,
+	ModelRegistry,
+	SessionManager,
+	type AgentSession,
+} from "@mariozechner/pi-coding-agent";
+import type {
+	AcceptedMessage,
+	ArchiveReason,
+	CreateSessionInput,
+	ExportedSessionBundle,
+	HostedSessionEvent,
+	HostedSessionHandle,
+	HostedSessionListener,
+	HostedSessionMetadata,
+	HostedSessionRunState,
+	HostedSessionSnapshot,
+	HostedSessionStatus,
+	HostedSessionSummary,
+	ImportSessionInput,
+	SendMessageInput,
+	SessionFilter,
+	SessionHost,
+	SessionOwner,
+	SessionWatcher,
+	Unsubscribe,
+} from "./session-host-types.js";
+import { createWorkspaceArchiveFromDir, ensureCleanDirectory, extractWorkspaceArchiveToDir } from "../remote/workspace.js";
+import {
+	canActorMutateCodingSession,
+	canClaimCodingOwnership,
+	codingOwnershipErrorMessage,
+	deriveCodingOwner,
+	isSameOwner,
+	resolveCodingMessageOwner,
+} from "./session-ownership.js";
+import {
+	addSessionSubscriber,
+	clearSessionWatchers,
+	getSessionWatchers,
+	removeSessionSubscriber,
+} from "./session-watchers.js";
+import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
+
+interface CodingSessionRegistryEntry {
+	sessionPath: string;
+	createdAt?: string;
+	updatedAt: string;
+	kind?: "coding";
+	origin?: HostedSessionMetadata["origin"];
+	location?: HostedSessionMetadata["location"];
+	workspaceMode?: HostedSessionMetadata["workspaceMode"];
+	title?: string;
+	cwd?: string;
+	workspaceDir?: string;
+	originalCwd?: string;
+	modelRef?: string;
+	owner?: SessionOwner;
+	lastError?: string;
+}
+
+type CodingSessionRegistry = Record<string, CodingSessionRegistryEntry>;
+
+interface CodingSessionRuntime {
+	sessionPromise: Promise<AgentSession>;
+	queue: Promise<void>;
+	runState: HostedSessionRunState;
+	activeTurnId?: string;
+	queueDepth: number;
+	lastError?: string;
+	cwd: string;
+	modelRef: string;
+}
+
+export interface CodingSessionHostConfig {
+	hostCwd: string;
+	storageDir: string;
+	workspaceRootDir: string;
+	authStorage: AuthStorage;
+	modelRegistry: ModelRegistry;
+	resolveModel: (ref: string) => unknown;
+	buildSystemPrompt?: () => Promise<string>;
+	hostId?: string;
+	hostRole?: "local" | "remote";
+	workspaceArchiveExcludes?: string[];
+	maxWorkspaceArchiveBytes?: number;
+	agentDir?: string;
+}
+
+export class CodingSessionHost implements SessionHost {
+	readonly hostId: string;
+	readonly hostRole: "local" | "remote";
+
+	private readonly hostCwd: string;
+	private readonly agentDir: string;
+	private readonly sessionsDir: string;
+	private readonly registryPath: string;
+	private readonly workspaceRootDir: string;
+	private readonly authStorage: AuthStorage;
+	private readonly modelRegistry: ModelRegistry;
+	private readonly resolveModelRef: (ref: string) => unknown;
+	private readonly buildSystemPromptText?: () => Promise<string>;
+	private readonly workspaceArchiveExcludes: string[];
+	private readonly maxWorkspaceArchiveBytes?: number;
+	private readonly runtimes = new Map<string, CodingSessionRuntime>();
+	private readonly listeners = new Map<string, Set<HostedSessionListener>>();
+	private readonly watchers = new Map<string, Map<HostedSessionListener, SessionWatcher>>();
+
+	constructor(config: CodingSessionHostConfig) {
+		this.hostId = config.hostId ?? "magpie-coding-host";
+		this.hostRole = config.hostRole ?? "remote";
+		this.hostCwd = config.hostCwd;
+		this.agentDir = config.agentDir ?? resolve(process.env.HOME || "", ".pi/agent");
+		this.sessionsDir = resolve(config.storageDir, "sessions");
+		this.registryPath = resolve(config.storageDir, "coding-sessions.json");
+		this.workspaceRootDir = config.workspaceRootDir;
+		this.authStorage = config.authStorage;
+		this.modelRegistry = config.modelRegistry;
+		this.resolveModelRef = config.resolveModel;
+		this.buildSystemPromptText = config.buildSystemPrompt;
+		this.workspaceArchiveExcludes = config.workspaceArchiveExcludes ?? [];
+		this.maxWorkspaceArchiveBytes = config.maxWorkspaceArchiveBytes;
+	}
+
+	async getSession(sessionId: string, modelRef?: string): Promise<HostedSessionHandle | undefined> {
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) return undefined;
+		return this.createHandle(sessionId, metadata);
+	}
+
+	async createSession(input: CreateSessionInput): Promise<HostedSessionHandle> {
+		if (input.kind !== "coding") throw new Error(`Unsupported session kind for coding host: ${input.kind}`);
+		const sessionId = randomUUID();
+		const modelRef = input.modelRef?.trim();
+		if (!modelRef) throw new Error("modelRef is required to create a coding session");
+		const cwd = input.cwd?.trim() || await this.ensureWorkspaceDirectory(sessionId);
+		const runtime = await this.getRuntime(sessionId, cwd, modelRef);
+		const session = await runtime.sessionPromise;
+		if (!session.sessionFile) throw new Error("Persistent coding session did not produce a session file");
+		await this.upsertRegistryEntry(sessionId, {
+			sessionPath: session.sessionFile,
+			origin: input.origin,
+			location: this.hostRole === "remote" ? "remote" : "local",
+			workspaceMode: input.workspaceMode ?? "attached",
+			title: input.title,
+			cwd,
+			workspaceDir: cwd,
+			modelRef,
+			owner: input.owner ?? deriveCodingOwner(this.hostId, this.hostRole, input.origin, "system"),
+		});
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) throw new Error(`Failed to create coding session metadata for ${sessionId}`);
+		return this.createHandle(sessionId, metadata);
+	}
+
+	async importSession(input: ImportSessionInput): Promise<HostedSessionHandle> {
+		const { bundle } = input;
+		if (bundle.metadata.kind !== "coding") throw new Error(`Unsupported imported session kind for coding host: ${bundle.metadata.kind}`);
+		await this.ensureDirs();
+		const sessionId = bundle.metadata.sessionId || randomUUID();
+		const requestedSessionPath = this.hostRole === "local" ? bundle.metadata.sourceSessionPath?.trim() : undefined;
+		const sessionPath = requestedSessionPath
+			? (isAbsolute(requestedSessionPath) ? requestedSessionPath : resolve(this.hostCwd, requestedSessionPath))
+			: resolve(this.sessionsDir, `${sanitizeSessionIdForFilename(sessionId)}.jsonl`);
+		const targetWorkspace = input.targetCwd?.trim() || await this.ensureWorkspaceDirectory(sessionId);
+		if (bundle.workspace?.archive) {
+			await ensureCleanDirectory(targetWorkspace);
+			await extractWorkspaceArchiveToDir(bundle.workspace.archive, targetWorkspace);
+		} else {
+			await mkdir(targetWorkspace, { recursive: true });
+		}
+		await mkdir(dirname(sessionPath), { recursive: true });
+		await writeFile(sessionPath, Buffer.from(bundle.sessionJsonl), "utf8");
+		this.runtimes.delete(sessionId);
+		await this.upsertRegistryEntry(sessionId, {
+			sessionPath,
+			origin: bundle.metadata.origin,
+			location: this.hostRole === "remote" ? "remote" : "local",
+			workspaceMode: bundle.metadata.workspaceMode ?? "attached",
+			title: bundle.metadata.title,
+			cwd: targetWorkspace,
+			workspaceDir: targetWorkspace,
+			originalCwd: bundle.metadata.cwd,
+			modelRef: bundle.metadata.summary || undefined,
+			owner: input.owner ?? bundle.metadata.owner ?? deriveCodingOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
+		});
+		const metadata = await this.getMetadata(sessionId);
+		if (!metadata) throw new Error(`Failed to import coding session metadata for ${sessionId}`);
+		return this.createHandle(sessionId, metadata);
+	}
+
+	async exportSession(sessionId: string, modelRef?: string): Promise<ExportedSessionBundle> {
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) throw new Error(`Session not found: ${sessionId}`);
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry?.sessionPath || !existsSync(entry.sessionPath)) throw new Error(`Session file not found for export: ${sessionId}`);
+		const sessionJsonl = await readFile(entry.sessionPath);
+		const workspaceCwd = entry.workspaceDir || entry.cwd;
+		const workspace = workspaceCwd && existsSync(workspaceCwd)
+			? {
+				archive: await createWorkspaceArchiveFromDir(workspaceCwd, {
+					excludes: this.workspaceArchiveExcludes,
+					maxBytes: this.maxWorkspaceArchiveBytes,
+				}),
+				format: "tar.gz" as const,
+			}
+			: undefined;
+		return {
+			metadata: {
+				...metadata,
+				cwd: entry.originalCwd || metadata.cwd,
+				summary: entry.modelRef || metadata.summary,
+			},
+			sessionJsonl,
+			workspace,
+		};
+	}
+
+	async sendUserMessage(sessionId: string, input: SendMessageInput): Promise<AcceptedMessage> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		const modelRef = input.modelRef?.trim() || entry?.modelRef;
+		if (!modelRef) throw new Error("modelRef is required to send a message");
+		if (input.source === "telegram") throw new Error("Telegram may not mutate coding sessions");
+		if (entry?.owner?.kind === "local_tui" && this.hostRole === "remote") throw new Error("Remote host may not mutate a local-owned coding session");
+		const nextOwner = entry ? resolveCodingMessageOwner(this.hostId, this.hostRole, entry, input) : undefined;
+		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
+		runtime.modelRef = modelRef;
+		if (entry) {
+			const ownerChanged = !isSameOwner(entry.owner, nextOwner);
+			entry.owner = nextOwner;
+			entry.updatedAt = new Date().toISOString();
+			await this.writeRegistry(registry);
+			if (ownerChanged) await this.emit(sessionId, { type: "ownership_changed", owner: nextOwner });
+		}
+		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
+		runtime.queueDepth += 1;
+		const accepted: AcceptedMessage = { sessionId, accepted: true, queued, runState: queued ? "running" : runtime.runState };
+		const pending = runtime.queue.then(async () => {
+			runtime.runState = "running";
+			runtime.activeTurnId = randomUUID();
+			await this.persistRuntimeState(sessionId, runtime);
+			await this.emitStatus(sessionId, modelRef);
+			try {
+				const session = await runtime.sessionPromise;
+				const unsubscribe = session.subscribe((event) => {
+					if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+						void this.emit(sessionId, { type: "text_delta", delta: event.assistantMessageEvent.delta });
+					}
+					if (event.type === "tool_execution_start") {
+						void this.emit(sessionId, { type: "tool_start", toolName: event.toolName, args: event.args });
+					}
+					if (event.type === "tool_execution_end") {
+						void this.emit(sessionId, { type: "tool_end", toolName: event.toolName, result: event.result, isError: event.isError });
+					}
+				});
+				try {
+					await session.prompt(input.text);
+				} finally {
+					unsubscribe();
+				}
+				runtime.runState = "idle";
+				runtime.activeTurnId = undefined;
+				runtime.lastError = undefined;
+				await this.persistRuntimeState(sessionId, runtime);
+				await this.emit(sessionId, { type: "message_complete" });
+				await this.emitStatus(sessionId, modelRef);
+			} catch (error) {
+				runtime.runState = "error";
+				runtime.activeTurnId = undefined;
+				runtime.lastError = error instanceof Error ? error.message : String(error);
+				await this.persistRuntimeState(sessionId, runtime);
+				await this.emit(sessionId, { type: "error", error: runtime.lastError });
+				await this.emitStatus(sessionId, modelRef);
+				throw error;
+			} finally {
+				runtime.queueDepth = Math.max(0, runtime.queueDepth - 1);
+			}
+		});
+		runtime.queue = pending.then(() => undefined, () => undefined);
+		await pending;
+		return accepted;
+	}
+
+	async listSessions(filter?: SessionFilter): Promise<HostedSessionSummary[]> {
+		const registry = await this.readRegistry();
+		const summaries = Object.entries(registry)
+			.map(([sessionId, entry]) => this.toSummary(sessionId, entry))
+			.filter((summary) => this.matchesFilter(summary, filter))
+			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+		const limit = filter?.limit && filter.limit > 0 ? filter.limit : undefined;
+		return limit ? summaries.slice(0, limit) : summaries;
+	}
+
+	async getStatus(sessionId: string, modelRef?: string): Promise<HostedSessionStatus | undefined> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		const hasRuntime = this.runtimes.has(sessionId);
+		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
+		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
+		const runtime = hasRuntime && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
+		let messageCount: number | undefined;
+		if (runtime) {
+			const session = await runtime.sessionPromise;
+			messageCount = session.messages.length;
+		}
+		return this.toStatus(sessionId, entry, runtime, messageCount);
+	}
+
+	async getSnapshot(sessionId: string, modelRef?: string, limit = 20): Promise<HostedSessionSnapshot | undefined> {
+		const metadata = await this.getMetadata(sessionId, modelRef);
+		if (!metadata) return undefined;
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		const resolvedModelRef = modelRef?.trim() || entry?.modelRef;
+		const runtime = this.runtimes.has(sessionId) && entry && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
+		let messages: HostedSessionSnapshot["messages"] = [];
+		if (runtime) {
+			const session = await runtime.sessionPromise;
+			messages = (session.messages as any[])
+				.slice(-Math.max(1, limit))
+				.map((message) => ({
+					role: String(message?.role ?? message?.type ?? "unknown"),
+					text: extractTextFromSessionMessage(message),
+				}));
+		}
+		const status = await this.getStatus(sessionId, resolvedModelRef);
+		if (!status) return undefined;
+		return { metadata, status, messages };
+	}
+
+	async subscribe(sessionId: string, listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string): Promise<Unsubscribe> {
+		if (!(await this.hasStoredSession(sessionId))) throw new Error(`Session not found: ${sessionId}`);
+		const { watcherChanged } = addSessionSubscriber(this.listeners, this.watchers, sessionId, listener, watcher);
+		const snapshot = await this.getSnapshot(sessionId, modelRef);
+		if (snapshot) {
+			await listener({ type: "snapshot", session: snapshot });
+			await listener({ type: "status", status: snapshot.status });
+		}
+		if (watcherChanged) await this.emitStatus(sessionId, modelRef);
+		return () => {
+			const { watcherRemoved } = removeSessionSubscriber(this.listeners, this.watchers, sessionId, listener);
+			if (watcherRemoved) void this.emitStatus(sessionId, modelRef);
+		};
+	}
+
+	async interrupt(sessionId: string, actor?: SessionOwner, modelRef?: string): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (entry?.owner && actor && !canActorMutateCodingSession(entry.owner, actor)) {
+			throw new Error(codingOwnershipErrorMessage(entry.sessionPath, entry.owner, "interrupting"));
+		}
+		const runtime = await this.getRuntimeForExistingSession(sessionId, modelRef);
+		runtime.runState = "aborting";
+		runtime.activeTurnId ??= randomUUID();
+		await this.persistRuntimeState(sessionId, runtime);
+		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
+		const session = await runtime.sessionPromise;
+		await session.abort();
+		runtime.runState = "idle";
+		runtime.activeTurnId = undefined;
+		await this.persistRuntimeState(sessionId, runtime);
+		await this.emitStatus(sessionId, modelRef || runtime.modelRef);
+	}
+
+	async claimOwnership(sessionId: string, owner: SessionOwner): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		if (!canClaimCodingOwnership(entry.owner, owner)) {
+			throw new Error(codingOwnershipErrorMessage(entry.sessionPath, entry.owner, "changing ownership"));
+		}
+		const changed = !isSameOwner(entry.owner, owner);
+		entry.owner = owner;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		if (changed) await this.emit(sessionId, { type: "ownership_changed", owner });
+	}
+
+	async releaseOwnership(sessionId: string, owner?: SessionOwner): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		const changed = Boolean(entry.owner) && (!owner || isSameOwner(entry.owner, owner));
+		if (changed) entry.owner = undefined;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		if (changed) await this.emit(sessionId, { type: "ownership_changed", owner: entry.owner });
+	}
+
+	async archiveSession(sessionId: string, _reason: ArchiveReason = "manual"): Promise<void> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) return;
+		entry.location = "archived";
+		entry.owner = undefined;
+		entry.updatedAt = new Date().toISOString();
+		await this.writeRegistry(registry);
+		await this.emit(sessionId, { type: "ownership_changed", owner: undefined });
+		this.runtimes.delete(sessionId);
+		clearSessionWatchers(this.watchers, sessionId);
+	}
+
+	private async getMetadata(sessionId: string, modelRef?: string): Promise<HostedSessionMetadata | undefined> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		const hasRuntime = this.runtimes.has(sessionId);
+		if (!entry?.sessionPath || (!existsSync(entry.sessionPath) && !hasRuntime)) return undefined;
+		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
+		const runtime = hasRuntime && resolvedModelRef ? await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef) : this.runtimes.get(sessionId);
+		const runState = runtime?.runState ?? (entry.lastError ? "error" : "idle");
+		return {
+			sessionId,
+			kind: "coding",
+			origin: entry.origin ?? "remote",
+			location: entry.location ?? (this.hostRole === "remote" ? "remote" : "local"),
+			runState,
+			createdAt: entry.createdAt ?? entry.updatedAt,
+			updatedAt: entry.updatedAt,
+			title: entry.title,
+			workspaceMode: entry.workspaceMode ?? "attached",
+			cwd: entry.cwd || this.hostCwd,
+			sourceSessionPath: entry.sessionPath,
+			summary: entry.modelRef,
+			owner: entry.owner,
+		};
+	}
+
+	private async getRuntimeForExistingSession(sessionId: string, modelRef?: string) {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		const resolvedModelRef = modelRef?.trim() || entry.modelRef;
+		if (!resolvedModelRef) throw new Error("modelRef is required for coding session runtime access");
+		return await this.getRuntime(sessionId, entry.cwd || this.hostCwd, resolvedModelRef);
+	}
+
+	private async getRuntime(sessionId: string, cwd: string, modelRef: string): Promise<CodingSessionRuntime> {
+		let runtime = this.runtimes.get(sessionId);
+		if (!runtime) {
+			runtime = {
+				sessionPromise: this.loadOrCreateSession(sessionId, cwd, modelRef),
+				queue: Promise.resolve(),
+				runState: "idle",
+				queueDepth: 0,
+				activeTurnId: undefined,
+				cwd,
+				modelRef,
+			};
+			this.runtimes.set(sessionId, runtime);
+		}
+		return runtime;
+	}
+
+	private async loadOrCreateSession(sessionId: string, cwd: string, modelRef: string): Promise<AgentSession> {
+		await this.ensureDirs();
+		const registry = await this.readRegistry();
+		const existingPath = registry[sessionId]?.sessionPath;
+		if (existingPath && existsSync(existingPath)) {
+			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, cwd), modelRef, cwd);
+			await this.upsertRegistryEntry(sessionId, { sessionPath: existingPath, cwd, workspaceDir: cwd, modelRef });
+			return session;
+		}
+		const session = await this.instantiateAgentSession(SessionManager.create(cwd, this.sessionsDir), modelRef, cwd);
+		if (!session.sessionFile) throw new Error("Persistent coding session did not produce a session file");
+		await this.upsertRegistryEntry(sessionId, {
+			sessionPath: session.sessionFile,
+			origin: "remote",
+			location: this.hostRole === "remote" ? "remote" : "local",
+			workspaceMode: "attached",
+			cwd,
+			workspaceDir: cwd,
+			modelRef,
+			owner: deriveCodingOwner(this.hostId, this.hostRole, "remote", "system"),
+		});
+		return session;
+	}
+
+	private async instantiateAgentSession(sessionManager: SessionManager, modelRef: string, cwd: string): Promise<AgentSession> {
+		const model = this.resolveModelRef(modelRef);
+		if (!model) throw new Error(`Model not found: ${modelRef}`);
+		const systemPrompt = this.buildSystemPromptText ? await this.buildSystemPromptText() : "You are a helpful coding assistant. Be concise and effective.";
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir: this.agentDir,
+			systemPromptOverride: () => systemPrompt,
+			appendSystemPromptOverride: () => [],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			authStorage: this.authStorage,
+			modelRegistry: this.modelRegistry,
+			model: model as any,
+			resourceLoader,
+			sessionManager,
+		});
+		return session;
+	}
+
+	private async ensureWorkspaceDirectory(sessionId: string): Promise<string> {
+		const dir = resolve(this.workspaceRootDir, sanitizeSessionIdForFilename(sessionId));
+		await mkdir(dir, { recursive: true });
+		return dir;
+	}
+
+	private async ensureDirs() {
+		await mkdir(this.sessionsDir, { recursive: true });
+		await mkdir(dirname(this.registryPath), { recursive: true });
+		await mkdir(this.workspaceRootDir, { recursive: true });
+	}
+
+	private async readRegistry(): Promise<CodingSessionRegistry> {
+		if (!existsSync(this.registryPath)) return {};
+		try {
+			return JSON.parse(await readFile(this.registryPath, "utf8")) as CodingSessionRegistry;
+		} catch {
+			return {};
+		}
+	}
+
+	private async writeRegistry(registry: CodingSessionRegistry) {
+		await writeFile(this.registryPath, JSON.stringify(registry, null, 2), "utf8");
+	}
+
+	private async upsertRegistryEntry(sessionId: string, patch: Partial<CodingSessionRegistryEntry> & { sessionPath: string }) {
+		const registry = await this.readRegistry();
+		const now = new Date().toISOString();
+		const current = registry[sessionId];
+		registry[sessionId] = {
+			sessionPath: patch.sessionPath,
+			createdAt: current?.createdAt ?? patch.createdAt ?? now,
+			updatedAt: patch.updatedAt ?? now,
+			kind: "coding",
+			origin: patch.origin ?? current?.origin ?? "remote",
+			location: patch.location ?? current?.location ?? (this.hostRole === "remote" ? "remote" : "local"),
+			workspaceMode: patch.workspaceMode ?? current?.workspaceMode ?? "attached",
+			title: patch.title ?? current?.title,
+			cwd: patch.cwd ?? current?.cwd ?? this.hostCwd,
+			workspaceDir: patch.workspaceDir ?? current?.workspaceDir ?? patch.cwd ?? current?.cwd ?? this.hostCwd,
+			originalCwd: patch.originalCwd ?? current?.originalCwd,
+			modelRef: patch.modelRef ?? current?.modelRef,
+			owner: patch.owner ?? current?.owner,
+			lastError: patch.lastError ?? current?.lastError,
+		};
+		await this.writeRegistry(registry);
+	}
+
+	private async hasStoredSession(sessionId: string): Promise<boolean> {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		return Boolean(entry?.sessionPath && (existsSync(entry.sessionPath) || this.runtimes.has(sessionId)));
+	}
+
+	private async persistRuntimeState(sessionId: string, runtime: CodingSessionRuntime) {
+		const registry = await this.readRegistry();
+		const entry = registry[sessionId];
+		if (!entry) return;
+		entry.updatedAt = new Date().toISOString();
+		entry.lastError = runtime.lastError;
+		entry.modelRef = runtime.modelRef;
+		entry.cwd = runtime.cwd;
+		entry.workspaceDir = runtime.cwd;
+		await this.writeRegistry(registry);
+	}
+
+	private async emit(sessionId: string, event: HostedSessionEvent) {
+		const listeners = this.listeners.get(sessionId);
+		if (!listeners || listeners.size === 0) return;
+		for (const listener of [...listeners]) await listener(event);
+	}
+
+	private async emitStatus(sessionId: string, modelRef?: string) {
+		const status = await this.getStatus(sessionId, modelRef);
+		if (!status) return;
+		await this.emit(sessionId, { type: "status", status });
+	}
+
+	private getWatchers(sessionId: string): SessionWatcher[] {
+		return getSessionWatchers(this.watchers, sessionId);
+	}
+
+	private matchesFilter(summary: HostedSessionSummary, filter?: SessionFilter): boolean {
+		if (!filter) return true;
+		if (filter.kind && summary.kind !== filter.kind) return false;
+		if (filter.location && summary.location !== filter.location) return false;
+		if (filter.runState && summary.runState !== filter.runState) return false;
+		if (!filter.includeArchived && summary.location === "archived") return false;
+		if (filter.ownerKind && summary.owner?.kind !== filter.ownerKind) return false;
+		if (!filter.query?.trim()) return true;
+		const query = filter.query.trim().toLowerCase();
+		return [summary.sessionId, summary.title, summary.cwd].some((value) => value?.toLowerCase().includes(query));
+	}
+
+	private createHandle(sessionId: string, metadata: HostedSessionMetadata): HostedSessionHandle {
+		return {
+			metadata,
+			getPiSession: async (modelRef?: string) => (await this.getRuntimeForExistingSession(sessionId, modelRef)).sessionPromise,
+			getStatus: async (modelRef?: string) => await this.getStatus(sessionId, modelRef),
+			getSnapshot: async (modelRef?: string, limit?: number) => await this.getSnapshot(sessionId, modelRef, limit),
+			subscribe: async (listener: HostedSessionListener, watcher?: SessionWatcher, modelRef?: string) => await this.subscribe(sessionId, listener, watcher, modelRef),
+			sendUserMessage: async (input: SendMessageInput) => await this.sendUserMessage(sessionId, input),
+			interrupt: async (actor?: SessionOwner, modelRef?: string) => await this.interrupt(sessionId, actor, modelRef),
+			claimOwnership: async (owner: SessionOwner) => await this.claimOwnership(sessionId, owner),
+			releaseOwnership: async (owner?: SessionOwner) => await this.releaseOwnership(sessionId, owner),
+			archive: async (reason?: ArchiveReason) => await this.archiveSession(sessionId, reason),
+			export: async (modelRef?: string) => await this.exportSession(sessionId, modelRef),
+		};
+	}
+
+	private toSummary(sessionId: string, entry: CodingSessionRegistryEntry): HostedSessionSummary {
+		const runtime = this.runtimes.get(sessionId);
+		return buildHostedSessionSummary({
+			sessionId,
+			title: entry.title,
+			kind: "coding",
+			location: entry.location ?? (this.hostRole === "remote" ? "remote" : "local"),
+			runState: runtime?.runState ?? (entry.lastError ? "error" : "idle"),
+			createdAt: entry.createdAt ?? entry.updatedAt,
+			updatedAt: entry.updatedAt,
+			cwd: entry.cwd ?? this.hostCwd,
+			owner: entry.owner,
+			watcherCount: this.getWatchers(sessionId).length,
+			sessionPath: entry.sessionPath,
+			loaded: this.runtimes.has(sessionId),
+		});
+	}
+
+	private toStatus(sessionId: string, entry: CodingSessionRegistryEntry, runtime: CodingSessionRuntime | undefined, messageCount?: number): HostedSessionStatus {
+		const summary = this.toSummary(sessionId, entry);
+		return buildHostedSessionStatus({
+			summary,
+			activeTurnId: runtime?.activeTurnId,
+			messageCount,
+			queueDepth: runtime?.queueDepth ?? 0,
+			lastError: runtime?.lastError ?? entry.lastError,
+			watchers: this.getWatchers(sessionId),
+		});
+	}
+}
+
+function sanitizeSessionIdForFilename(sessionId: string): string {
+	return sessionId.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+function extractTextFromUnknownContent(content: unknown): string | undefined {
+	if (typeof content === "string") return content.trim() || undefined;
+	if (Array.isArray(content)) {
+		const parts = content.map((part) => {
+			if (typeof part === "string") return part;
+			if (part && typeof part === "object") {
+				const record = part as Record<string, unknown>;
+				if (typeof record.text === "string") return record.text;
+				if (typeof record.content === "string") return record.content;
+			}
+			return "";
+		}).filter(Boolean).join("\n").trim();
+		return parts || undefined;
+	}
+	if (content && typeof content === "object") {
+		const record = content as Record<string, unknown>;
+		if (typeof record.text === "string") return record.text.trim() || undefined;
+		if (typeof record.content === "string") return record.content.trim() || undefined;
+		if (Array.isArray(record.content)) return extractTextFromUnknownContent(record.content);
+		if (record.message && typeof record.message === "object") return extractTextFromUnknownContent((record.message as Record<string, unknown>).content);
+	}
+	return undefined;
+}
+
+function extractTextFromSessionMessage(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const record = message as Record<string, unknown>;
+	return extractTextFromUnknownContent(record.content)
+		?? extractTextFromUnknownContent(record.message)
+		?? extractTextFromUnknownContent(record.parts);
+}
