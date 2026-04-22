@@ -3,7 +3,7 @@ import { extname, resolve } from "node:path";
 import { Bot, GrammyError, HttpError } from "grammy";
 import type { Context } from "grammy";
 import { isTelegramLocalCommand, registerCommands } from "./commands.js";
-import { sendAssistantMessageStreaming } from "./host-client.js";
+import { sendAssistantMessageWithEvents } from "./host-client.js";
 import { getActiveModel } from "./session.js";
 import { convertMarkdownToTelegramHtml, escapeHtml, splitMessage } from "./utils.js";
 import type { TelegramAppConfig } from "./config.js";
@@ -82,83 +82,26 @@ export function createBot(config: TelegramAppConfig): Bot {
 
 		const chatId = String(ctx.chat!.id);
 		const { ref } = getActiveModel();
-		let streamedText = "";
-		let streamedMessageId: number | undefined;
-		let lastEditAt = 0;
-		let lastRenderedLength = 0;
-		let sawStreamedText = false;
-		let streamingSuppressed = false;
-		let needsFinalFallbackMessage = false;
-		const MIN_STREAM_EDIT_INTERVAL_MS = 3000;
-		const MIN_STREAM_EDIT_CHARS = 400;
-
-		const flushStreamedText = async (force = false) => {
-			if (!streamedText.trim() || (streamingSuppressed && !force)) return;
-			const now = Date.now();
-			if (!force) {
-				if (now - lastEditAt < MIN_STREAM_EDIT_INTERVAL_MS) return;
-				if (streamedMessageId && streamedText.length - lastRenderedLength < MIN_STREAM_EDIT_CHARS) return;
-			}
-			const chunks = splitMessage(streamedText);
-			const firstChunk = chunks[0] || streamedText;
-			const html = convertMarkdownToTelegramHtml(firstChunk);
-			try {
-				if (!streamedMessageId) {
-					const sent = await ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" });
-					streamedMessageId = sent.message_id;
-				} else {
-					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, html, { parse_mode: "HTML" });
-				}
-				lastEditAt = now;
-				lastRenderedLength = firstChunk.length;
-			} catch (error) {
-				if (!streamedMessageId) {
-					try {
-						const sent = await ctx.api.sendMessage(ctx.chat!.id, firstChunk);
-						streamedMessageId = sent.message_id;
-						lastEditAt = now;
-						lastRenderedLength = firstChunk.length;
-						return;
-					} catch {
-						streamingSuppressed = true;
-						needsFinalFallbackMessage = true;
-						return;
-					}
-				}
-				streamingSuppressed = true;
-				needsFinalFallbackMessage = true;
-			}
-		};
 
 		await ctx.api.sendChatAction(ctx.chat!.id, "typing");
-		const response = await sendAssistantMessageStreaming(config, chatId, trimmed, ref, async (event) => {
-			if (event.type === "text_delta" && event.delta) {
-				sawStreamedText = true;
-				streamedText += event.delta;
-				await flushStreamedText(false);
-				return;
-			}
-			if (event.type === "message_complete") {
-				await flushStreamedText(true);
+		await sendAssistantMessageWithEvents(config, chatId, trimmed, ref, async (event) => {
+			if (event.type === "assistant_message" && event.text) {
+				await sendHtml(ctx, event.text);
 				return;
 			}
 			if (!config.showToolCalls) return;
 			if (event.type === "tool_start") {
-				const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
-				const toolText = `[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`;
-				await sendHtml(ctx, toolText);
+				await sendHtml(ctx, `[Tool: ${event.toolName ?? "tool"}] working…`);
 				return;
 			}
 			if (event.type === "tool_end") {
-				const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
+				const toolName = event.toolName ?? "tool";
+				const prefix = event.isError ? `[Tool: ${toolName}] error` : `[Tool: ${toolName}] done`;
 				let resultPreview = event.result || "";
-				if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
+				if (resultPreview.length > 1000) resultPreview = `${resultPreview.slice(0, 1000)}\n… (truncated)`;
 				await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
 			}
 		});
-		if (!sawStreamedText || !streamedText.trim() || needsFinalFallbackMessage) {
-			await sendHtml(ctx, response.text || streamedText || "(empty response)");
-		}
 	};
 
 	bot.on("message:text", async (ctx) => {

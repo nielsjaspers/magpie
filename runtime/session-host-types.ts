@@ -89,7 +89,7 @@ export type HostedSessionEvent =
 	| { type: "snapshot"; session: HostedSessionSnapshot }
 	| { type: "status"; status: HostedSessionStatus }
 	| { type: "text_delta"; delta: string }
-	| { type: "message_complete"; messageId?: string }
+	| { type: "message_complete"; message?: unknown }
 	| { type: "tool_start"; toolName: string; args?: unknown }
 	| { type: "tool_end"; toolName: string; result?: unknown; isError?: boolean }
 	| { type: "ownership_changed"; owner?: SessionOwner }

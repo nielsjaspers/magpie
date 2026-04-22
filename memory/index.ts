@@ -14,8 +14,8 @@ import {
 	getLocalDateParts,
 	getMemoryRootDir,
 	inspectMemoryPath,
-	listMemoryFiles,
 	moveInboxItemsToArchive,
+	resolveMemoryPath,
 	searchMemoryFiles,
 	writeDailyDigest,
 	writeDreamArchive,
@@ -59,14 +59,6 @@ function snapshotConversationText(snapshot: HostedSessionSnapshot | undefined): 
 	return snapshot.messages
 		.map((message) => `## ${message.role}\n\n${message.text?.trim() || "(no text)"}`)
 		.join("\n\n");
-}
-
-function formatPromptFiles(
-	files: Array<{ relativePath: string; content: string }>,
-	heading: string,
-): string {
-	if (files.length === 0) return `${heading}: none`;
-	return [heading, ...files.map((file) => `## ${file.relativePath}\n\n${file.content.trim()}`)].join("\n\n");
 }
 
 function formatEmailSummaries(emails: PaEmailSummary[]): string {
@@ -357,7 +349,7 @@ async function runDreamPhase<T>(
 		role: "memory",
 		label: phaseLabel,
 		task,
-		tools: [],
+		tools: "full",
 		timeout: 1800000,
 	});
 	if (result.exitCode !== 0 || !result.output.trim()) throw new Error(result.errorMessage || `${phaseLabel} failed.`);
@@ -375,7 +367,7 @@ async function runDreamPhase<T>(
 				"Malformed output:",
 				result.output,
 			].join("\n\n"),
-			tools: [],
+			tools: "full",
 			timeout: 600000,
 		});
 		if (repaired.exitCode !== 0 || !repaired.output.trim()) throw new Error(repaired.errorMessage || `${phaseLabel} JSON repair failed.`);
@@ -429,28 +421,6 @@ async function getAssistantSnapshot(hostUrl: string, threadId: string, limit = 2
 		threadId,
 		limit,
 	});
-}
-
-async function getOpenSessionContext(hostUrl: string, excludeThreadId: string): Promise<string> {
-	const listed = await getJson<{ sessions: HostedSessionSummary[] }>(hostUrl, "/api/v1/sessions", {
-		includeArchived: 0,
-		limit: 50,
-	});
-	const candidates = listed.sessions
-		.filter((session) => session.sessionId && !(session.assistantChannel === "telegram" && session.assistantThreadId === excludeThreadId))
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-	if (candidates.length === 0) return "Other open sessions: none";
-	const sections: string[] = ["Other open sessions context"];
-	for (const session of candidates) {
-		try {
-			const encoded = encodeURIComponent(session.sessionId);
-			const snapshot = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encoded}/snapshot`, { limit: 200 });
-			sections.push(`## ${session.sessionId}\n\n${snapshotConversationText(snapshot).trim() || "(no text)"}`);
-		} catch {
-			sections.push(`## ${session.sessionId}\n\n(unavailable)`);
-		}
-	}
-	return sections.join("\n\n");
 }
 
 const NIGHTLY_AUTODREAM_TASK = "[magpie:autodream] Run nightly autodream now. Use the dream tool to process the active Telegram thread, include other open sessions as context, write digest/review/graph artifacts, and reset the Telegram thread when done.";
@@ -617,7 +587,6 @@ export default function (pi: ExtensionAPI) {
 			await ensureMemoryDirs(rootDir);
 			const hostUrl = config.telegram?.hostUrl?.trim() || "http://127.0.0.1:8787";
 			const resetThread = params.resetThread !== false;
-			const includeOpenSessions = params.includeOpenSessions !== false;
 			const currentSessionId = (ctx.sessionManager as any).getSessionId?.();
 
 			let target;
@@ -644,9 +613,21 @@ export default function (pi: ExtensionAPI) {
 			const now = new Date();
 			const { dayStamp, timestampStamp } = getLocalDateParts(now, timezone);
 			const transcript = snapshotConversationText(telegramSnapshot) || sessionConversationText(ctx);
-			const inboxFiles = await listMemoryFiles(rootDir, "inbox", { recursive: true, extensions: [".md", ".json", ".txt"] });
-			const recentReviewFiles = await listMemoryFiles(rootDir, "review", { recursive: false, extensions: [".md"] });
-			const openSessionContext = includeOpenSessions ? await getOpenSessionContext(hostUrl, target.threadId) : "Other open sessions: omitted";
+			const telegramArchive = await writeTelegramArchive(rootDir, timestampStamp, [
+				`# Telegram Transcript Archive`,
+				"",
+				`- dreamedAt: ${now.toISOString()}`,
+				`- threadId: ${target.threadId}`,
+				`- source: ${target.source}`,
+				"",
+				transcript || "(empty transcript)",
+			].join("\n"));
+			const phase1ArtifactPath = `archive/dreams/${timestampStamp}/phase1.json`;
+			const phase2ArtifactPath = `archive/dreams/${timestampStamp}/phase2.json`;
+			const phase3ArtifactPath = `archive/dreams/${timestampStamp}/phase3.json`;
+			const phase1ArtifactAbsolutePath = resolveMemoryPath(rootDir, phase1ArtifactPath);
+			const phase2ArtifactAbsolutePath = resolveMemoryPath(rootDir, phase2ArtifactPath);
+			const phase3ArtifactAbsolutePath = resolveMemoryPath(rootDir, phase3ArtifactPath);
 			let recentEmails: PaEmailSummary[] = [];
 			let emailError: string | undefined;
 			try {
@@ -660,6 +641,7 @@ export default function (pi: ExtensionAPI) {
 				phase1 = await runDreamPhase<DreamPhase1Plan>(ctx, config, subagentCore, "dream-phase-1", [
 					"Run dream phase 1: intake and consolidation.",
 					"Goal: read the new inbox/transcript/email inputs, normalize them, decide what is important, decide which inbox items are processed vs retained, and propose concrete candidate graph queries and candidate calendar events.",
+					"For this phase, use only the inbox files, the Telegram transcript archive, and the email summaries below. Do not read graph/, digest/, review/, or unrelated archive files in phase 1.",
 					"Return exactly one JSON object with these fields:",
 					"- archiveSummaryMarkdown: string",
 					"- consolidatedFindingsMarkdown: string",
@@ -669,35 +651,34 @@ export default function (pi: ExtensionAPI) {
 					"- candidateCalendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
 					"Prefer concrete, inspectable findings. Calendar candidates should only be included when the event is specific enough to create.",
 					"For calendar candidates, prefer ISO 8601 timestamps. Date-only values are allowed for all-day events.",
-					"Do not include Markdown fences.",
+					"Use find/read/grep/ls to inspect the inbox and transcript as needed instead of assuming content you have not read.",
+					`Write the final JSON object to ${phase1ArtifactAbsolutePath} using the write tool, then return exactly the same JSON object and nothing else.`,
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
+					`Memory root: ${rootDir}`,
+					`Inbox directory: ${resolveMemoryPath(rootDir, "inbox")}`,
+					`Telegram transcript archive: ${telegramArchive.absolutePath}`,
 					`Local timezone: ${timezone}`,
 					`Current local day: ${dayStamp}`,
 					`Target Telegram thread: ${target.threadId}`,
 					`Dream target source: ${target.source}`,
-					formatPromptFiles(inboxFiles, "Inbox items"),
-					formatPromptFiles(recentReviewFiles, "Recent review files"),
 					formatEmailSummaries(recentEmails),
 					emailError ? `Recent email intake error: ${emailError}` : undefined,
-					openSessionContext,
-					"Current Telegram transcript:",
-					transcript || "(empty transcript)",
 				].filter(Boolean).join("\n\n"), validatePhase1Plan);
+				await writeMemoryFile(rootDir, phase1ArtifactPath, `${JSON.stringify(phase1, null, 2)}\n`);
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream phase 1 failed: ${error instanceof Error ? error.message : String(error)}` }],
-					details: { threadId: target.threadId },
+					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath },
 					isError: true,
 				};
 			}
 
-			const graphQuery = [params.note?.trim(), ...phase1.candidateGraphQueries].filter(Boolean).join(" ").trim();
-			const graphContextFiles = graphQuery ? await searchMemoryFiles(rootDir, graphQuery, 1000) : [];
 			let phase2: DreamPhase2Plan;
 			try {
 				phase2 = await runDreamPhase<DreamPhase2Plan>(ctx, config, subagentCore, "dream-phase-2", [
 					"Run dream phase 2: graph linking and memory integration.",
-					"Goal: use the phase 1 findings plus relevant existing graph/archive context to produce coherent graph writes and refine event candidates if needed.",
+					"Goal: use the structured phase 1 findings plus any graph/archive files you decide to inspect to produce coherent graph writes and refine event candidates if needed.",
+					"Read the phase 1 artifact first, then decide which graph/archive files to inspect with tools. Do not expect graph or archive contents to be preloaded for you.",
 					"Return exactly one JSON object with these fields:",
 					"- archiveSummaryMarkdown: string",
 					"- memoryLinkingMarkdown: string",
@@ -705,18 +686,18 @@ export default function (pi: ExtensionAPI) {
 					"- candidateCalendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
 					"Prefer updating existing graph files over creating many new ones.",
 					"For calendar candidates, prefer ISO 8601 timestamps. Date-only values are allowed for all-day events.",
-					"Do not include Markdown fences.",
-					`Phase 1 archive summary:\n\n${phase1.archiveSummaryMarkdown}`,
-					`Phase 1 consolidated findings:\n\n${phase1.consolidatedFindingsMarkdown}`,
-					phase1.candidateCalendarEvents?.length ? `Phase 1 calendar candidates:\n\n${JSON.stringify(phase1.candidateCalendarEvents, null, 2)}` : "Phase 1 calendar candidates: none",
-					graphContextFiles.length
-						? formatPromptFiles(graphContextFiles, "Relevant graph/archive context")
-						: "Relevant graph/archive context: none",
-				].join("\n\n"), validatePhase2Plan);
+					`Write the final JSON object to ${phase2ArtifactAbsolutePath} using the write tool, then return exactly the same JSON object and nothing else.`,
+					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
+					`Memory root: ${rootDir}`,
+					`Phase 1 artifact: ${phase1ArtifactAbsolutePath}`,
+					`Graph directory: ${resolveMemoryPath(rootDir, "graph")}`,
+					`Archive directory: ${resolveMemoryPath(rootDir, "archive")}`,
+				].filter(Boolean).join("\n\n"), validatePhase2Plan);
+				await writeMemoryFile(rootDir, phase2ArtifactPath, `${JSON.stringify(phase2, null, 2)}\n`);
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream phase 2 failed: ${error instanceof Error ? error.message : String(error)}` }],
-					details: { threadId: target.threadId, phase1 },
+					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath, phase1 },
 					isError: true,
 				};
 			}
@@ -726,6 +707,7 @@ export default function (pi: ExtensionAPI) {
 				phase3 = await runDreamPhase<DreamPhase3Plan>(ctx, config, subagentCore, "dream-phase-3", [
 					"Run dream phase 3: digest, review, and concrete event execution planning.",
 					"Goal: produce the user-facing digest, any needed review note, and concrete calendar events that should actually be created now.",
+					"Read the structured phase 1 and phase 2 artifacts first. This phase should rely on those structured artifacts instead of raw prompt-injected context.",
 					"Return exactly one JSON object with these fields:",
 					"- digestMarkdown: string",
 					"- archiveSummaryMarkdown: string",
@@ -733,24 +715,24 @@ export default function (pi: ExtensionAPI) {
 					"- calendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
 					"Only include calendarEvents when they are concrete enough to create immediately.",
 					"Prefer ISO 8601 timestamps. Date-only values are allowed for all-day events. If end is unknown for a timed event, omit it and a default duration will be inferred.",
-					"Do not include Markdown fences.",
-					`Phase 1 archive summary:\n\n${phase1.archiveSummaryMarkdown}`,
-					`Phase 1 consolidated findings:\n\n${phase1.consolidatedFindingsMarkdown}`,
-					`Phase 2 archive summary:\n\n${phase2.archiveSummaryMarkdown}`,
-					`Phase 2 memory linking:\n\n${phase2.memoryLinkingMarkdown}`,
-					phase2.candidateCalendarEvents?.length ? `Phase 2 calendar candidates:\n\n${JSON.stringify(phase2.candidateCalendarEvents, null, 2)}` : "Phase 2 calendar candidates: none",
-				].join("\n\n"), validatePhase3Plan);
+					`Write the final JSON object to ${phase3ArtifactAbsolutePath} using the write tool, then return exactly the same JSON object and nothing else.`,
+					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
+					`Memory root: ${rootDir}`,
+					`Phase 1 artifact: ${phase1ArtifactAbsolutePath}`,
+					`Phase 2 artifact: ${phase2ArtifactAbsolutePath}`,
+				].filter(Boolean).join("\n\n"), validatePhase3Plan);
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream phase 3 failed: ${error instanceof Error ? error.message : String(error)}` }],
-					details: { threadId: target.threadId, phase1, phase2 },
+					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath, phase2ArtifactPath, phase1, phase2 },
 					isError: true,
 				};
 			}
 
 			const graphWrites = [] as Array<{ path: string; absolutePath: string; relativePath: string }>;
 			for (const write of phase2.graphWrites) {
-				graphWrites.push(await writeMemoryFile(rootDir, write.path, write.content));
+				const stored = await writeMemoryFile(rootDir, write.path, write.content);
+				graphWrites.push({ path: write.path, ...stored });
 			}
 
 			const createdEvents: Array<{ event: PaCalendarEvent; targetCalendar: { id: string; name: string }; rationale?: string }> = [];
@@ -789,18 +771,9 @@ export default function (pi: ExtensionAPI) {
 
 			const digestFile = await writeDailyDigest(rootDir, dayStamp, digestBody);
 			const reviewFile = reviewBody.trim() ? await writeReviewFile(rootDir, dayStamp, reviewBody.trim()) : undefined;
-			const telegramArchive = await writeTelegramArchive(rootDir, timestampStamp, [
-				`# Telegram Transcript Archive`,
-				"",
-				`- dreamedAt: ${now.toISOString()}`,
-				`- threadId: ${target.threadId}`,
-				`- source: ${target.source}`,
-				"",
-				transcript || "(empty transcript)",
-			].join("\n"));
-			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase1.json`, `${JSON.stringify(phase1, null, 2)}\n`);
-			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase2.json`, `${JSON.stringify(phase2, null, 2)}\n`);
-			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase3.json`, `${JSON.stringify({ ...phase3, normalizedCalendarEvents }, null, 2)}\n`);
+			await writeMemoryFile(rootDir, phase1ArtifactPath, `${JSON.stringify(phase1, null, 2)}\n`);
+			await writeMemoryFile(rootDir, phase2ArtifactPath, `${JSON.stringify(phase2, null, 2)}\n`);
+			await writeMemoryFile(rootDir, phase3ArtifactPath, `${JSON.stringify({ ...phase3, normalizedCalendarEvents }, null, 2)}\n`);
 			const dreamArchive = await writeDreamArchive(rootDir, timestampStamp, [
 				`# Dream Run`,
 				"",
@@ -853,9 +826,9 @@ export default function (pi: ExtensionAPI) {
 				reviewFile ? `- review: ${reviewFile.relativePath}` : undefined,
 				`- telegram archive: ${telegramArchive.relativePath}`,
 				`- dream archive: ${dreamArchive.relativePath}`,
-				`- phase 1 artifact: archive/dreams/${timestampStamp}/phase1.json`,
-				`- phase 2 artifact: archive/dreams/${timestampStamp}/phase2.json`,
-				`- phase 3 artifact: archive/dreams/${timestampStamp}/phase3.json`,
+				`- phase 1 artifact: ${phase1ArtifactPath}`,
+				`- phase 2 artifact: ${phase2ArtifactPath}`,
+				`- phase 3 artifact: ${phase3ArtifactPath}`,
 				...graphWrites.map((file) => `- graph: ${file.relativePath}`),
 				...archivedInbox.map((file) => `- archived inbox: ${file.to}`),
 				resetThread ? "Telegram thread reset has been queued." : "Telegram thread reset skipped.",

@@ -466,12 +466,14 @@ export class AssistantSessionHost implements SessionHost {
 							await this.emit(sessionId, { type: "tool_end", toolName: event.toolName, result: event.result, isError: event.isError });
 						}
 					},
+					onAssistantMessageComplete: async (message) => {
+						await this.emit(sessionId, { type: "message_complete", message });
+					},
 				});
 				runtime.runState = "idle";
 				runtime.activeTurnId = undefined;
 				runtime.lastError = undefined;
 				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
-				await this.emit(sessionId, { type: "message_complete" });
 				await this.emitStatus(sessionId, input.modelRef);
 				return result;
 			} catch (error) {
@@ -830,20 +832,35 @@ export async function promptAssistantSession(
 	callbacks?: {
 		onTextDelta?: (delta: string) => void | Promise<void>;
 		onToolEvent?: (event: AssistantToolEvent) => void | Promise<void>;
+		onAssistantMessageComplete?: (message: unknown) => void | Promise<void>;
 	},
 ): Promise<PromptAssistantSessionResult> {
-	let text = "";
+	let currentText = "";
+	let lastAssistantText = "";
+	let lastAssistantMessage: unknown;
 
 	const unsubscribe = session.subscribe((event) => {
 		if (
 			event.type === "message_update" &&
 			event.assistantMessageEvent.type === "text_delta"
 		) {
-			text += event.assistantMessageEvent.delta;
+			currentText += event.assistantMessageEvent.delta;
 			void callbacks?.onTextDelta?.(event.assistantMessageEvent.delta);
+			return;
+		}
+		if (event.type === "message_end") {
+			const message = event.message as unknown as Record<string, unknown> | undefined;
+			if (message?.role === "assistant" || message?.type === "assistant") {
+				lastAssistantMessage = event.message;
+				lastAssistantText = extractTextFromSessionMessage(event.message) || currentText.trim();
+				currentText = "";
+				void callbacks?.onAssistantMessageComplete?.(event.message);
+			}
+			return;
 		}
 		if (callbacks?.onToolEvent && event.type === "tool_execution_start") {
 			void callbacks.onToolEvent({ type: "start", toolName: event.toolName, args: event.args });
+			return;
 		}
 		if (callbacks?.onToolEvent && event.type === "tool_execution_end") {
 			const resultStr =
@@ -865,16 +882,17 @@ export async function promptAssistantSession(
 		unsubscribe();
 	}
 
-	const streamed = text.trim();
-	const lastAssistant = [...(session.messages as unknown[])].reverse().find((message) => {
+	const fallbackAssistant = lastAssistantMessage ?? [...(session.messages as unknown[])].reverse().find((message) => {
 		if (!message || typeof message !== "object") return false;
 		const record = message as Record<string, unknown>;
 		return record.role === "assistant" || record.type === "assistant";
 	});
+	const streamed = currentText.trim();
+	const text = lastAssistantText || extractTextFromSessionMessage(fallbackAssistant) || streamed;
 	return {
-		text: streamed || extractTextFromSessionMessage(lastAssistant) || "",
-		streamedText: streamed,
-		lastAssistant,
+		text,
+		streamedText: text,
+		lastAssistant: fallbackAssistant,
 	};
 }
 
