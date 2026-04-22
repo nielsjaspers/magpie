@@ -53,18 +53,6 @@ function sessionConversationText(ctx: any): string {
 		.join("\n\n");
 }
 
-const DREAM_TRANSCRIPT_CHAR_LIMIT = 12000;
-const DREAM_FILE_CHAR_LIMIT = 4000;
-const DREAM_OPEN_SESSION_CHAR_LIMIT = 6000;
-const DREAM_MAX_INBOX_FILES = 8;
-const DREAM_MAX_GRAPH_FILES = 6;
-const DREAM_MAX_REVIEW_FILES = 2;
-
-function truncateForPrompt(text: string, maxChars: number): string {
-	const trimmed = text.trim();
-	if (trimmed.length <= maxChars) return trimmed;
-	return `${trimmed.slice(0, maxChars)}\n\n… (truncated ${trimmed.length - maxChars} chars)`;
-}
 
 function snapshotConversationText(snapshot: HostedSessionSnapshot | undefined): string {
 	if (!snapshot?.messages?.length) return "";
@@ -76,12 +64,9 @@ function snapshotConversationText(snapshot: HostedSessionSnapshot | undefined): 
 function formatPromptFiles(
 	files: Array<{ relativePath: string; content: string }>,
 	heading: string,
-	maxCharsPerFile: number,
-	maxFiles?: number,
 ): string {
-	const limited = typeof maxFiles === "number" ? files.slice(0, maxFiles) : files;
-	if (limited.length === 0) return `${heading}: none`;
-	return [heading, ...limited.map((file) => `## ${file.relativePath}\n\n${truncateForPrompt(file.content, maxCharsPerFile)}`)].join("\n\n");
+	if (files.length === 0) return `${heading}: none`;
+	return [heading, ...files.map((file) => `## ${file.relativePath}\n\n${file.content.trim()}`)].join("\n\n");
 }
 
 function formatEmailSummaries(emails: PaEmailSummary[]): string {
@@ -159,7 +144,7 @@ interface DreamPlan {
 interface DreamCalendarEventCandidate {
 	summary: string;
 	start: string;
-	end: string;
+	end?: string;
 	location?: string;
 	description?: string;
 	allDay?: boolean;
@@ -197,14 +182,14 @@ function normalizeCalendarEventCandidates(items: unknown): DreamCalendarEventCan
 		.map((item) => ({
 			summary: typeof item.summary === "string" ? item.summary.trim() : "",
 			start: typeof item.start === "string" ? item.start.trim() : "",
-			end: typeof item.end === "string" ? item.end.trim() : "",
+			end: typeof item.end === "string" ? item.end.trim() : undefined,
 			location: typeof item.location === "string" ? item.location.trim() : undefined,
 			description: typeof item.description === "string" ? item.description.trim() : undefined,
 			allDay: typeof item.allDay === "boolean" ? item.allDay : undefined,
 			calendarId: typeof item.calendarId === "string" ? item.calendarId.trim() : undefined,
 			rationale: typeof item.rationale === "string" ? item.rationale.trim() : undefined,
 		}))
-		.filter((item) => item.summary && item.start && item.end);
+		.filter((item) => item.summary && item.start);
 }
 
 function validateDreamPlan(parsed: DreamPlan): DreamPlan {
@@ -222,7 +207,7 @@ function validatePhase1Plan(parsed: DreamPhase1Plan): DreamPhase1Plan {
 	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream phase 1 output missing archiveSummaryMarkdown.");
 	if (!parsed.consolidatedFindingsMarkdown?.trim()) throw new Error("Dream phase 1 output missing consolidatedFindingsMarkdown.");
 	parsed.candidateGraphQueries = Array.isArray(parsed.candidateGraphQueries)
-		? parsed.candidateGraphQueries.filter((value): value is string => typeof value === "string" && value.trim().length > 0).slice(0, 12)
+		? parsed.candidateGraphQueries.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
 		: [];
 	parsed.processedInboxPaths = Array.isArray(parsed.processedInboxPaths)
 		? parsed.processedInboxPaths.filter((value): value is string => typeof value === "string" && value.startsWith("inbox/"))
@@ -282,6 +267,63 @@ function parseDreamPlan(text: string): DreamPlan {
 		if (sectionParsed) return sectionParsed;
 		throw jsonError;
 	}
+}
+
+function isDateOnlyValue(value: string | undefined): boolean {
+	return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+function parseFlexibleDateTime(value: string | undefined): Date | undefined {
+	if (!value?.trim()) return undefined;
+	const trimmed = value.trim();
+	const direct = new Date(trimmed);
+	if (!Number.isNaN(direct.getTime())) return direct;
+	const localDateTime = trimmed.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+	if (localDateTime) {
+		const [, date, hour, minute, second] = localDateTime;
+		const parsed = new Date(`${date}T${hour}:${minute}:${second ?? "00"}`);
+		if (!Number.isNaN(parsed.getTime())) return parsed;
+	}
+	const dutchStyle = trimmed.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+	if (dutchStyle) {
+		const [, day, month, year, hour = "00", minute = "00", second = "00"] = dutchStyle;
+		const parsed = new Date(`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}T${hour}:${minute}:${second}`);
+		if (!Number.isNaN(parsed.getTime())) return parsed;
+	}
+	return undefined;
+}
+
+function normalizeCalendarCandidateForCreation(
+	candidate: DreamCalendarEventCandidate,
+): { event: DreamCalendarEventCandidate & { start: string; end: string; allDay: boolean } } | { error: string } {
+	const startRaw = candidate.start?.trim();
+	const endRaw = candidate.end?.trim();
+	if (!startRaw) return { error: "missing start timestamp" };
+	const dateOnly = candidate.allDay === true || isDateOnlyValue(startRaw) || isDateOnlyValue(endRaw);
+	if (dateOnly) {
+		const day = startRaw.match(/^(\d{4}-\d{2}-\d{2})$/)?.[1] ?? endRaw?.match(/^(\d{4}-\d{2}-\d{2})$/)?.[1];
+		if (!day) return { error: `could not normalize all-day date from start=${JSON.stringify(startRaw)} end=${JSON.stringify(endRaw)}` };
+		const start = `${day}T00:00:00.000`;
+		const startDate = new Date(start);
+		const endDate = new Date(startDate);
+		if (endRaw && /^\d{4}-\d{2}-\d{2}$/.test(endRaw)) {
+			const parsedEnd = new Date(`${endRaw}T00:00:00.000`);
+			if (!Number.isNaN(parsedEnd.getTime()) && parsedEnd > startDate) {
+				return { event: { ...candidate, start: startDate.toISOString(), end: parsedEnd.toISOString(), allDay: true } };
+			}
+		}
+		endDate.setDate(endDate.getDate() + 1);
+		return { event: { ...candidate, start: startDate.toISOString(), end: endDate.toISOString(), allDay: true } };
+	}
+	const startDate = parseFlexibleDateTime(startRaw);
+	if (!startDate) return { error: `invalid start timestamp: ${JSON.stringify(startRaw)}` };
+	const endDate = endRaw ? parseFlexibleDateTime(endRaw) : undefined;
+	if (endRaw && !endDate) return { error: `invalid end timestamp: ${JSON.stringify(endRaw)}` };
+	const normalizedEnd = endDate ?? new Date(startDate.getTime() + 60 * 60 * 1000);
+	if (normalizedEnd <= startDate) {
+		return { event: { ...candidate, start: startDate.toISOString(), end: new Date(startDate.getTime() + 60 * 60 * 1000).toISOString(), allDay: false } };
+	}
+	return { event: { ...candidate, start: startDate.toISOString(), end: normalizedEnd.toISOString(), allDay: false } };
 }
 
 function parseStructuredJson<T>(text: string, validator: (parsed: T) => T): T {
@@ -373,22 +415,21 @@ async function getAssistantSnapshot(hostUrl: string, threadId: string, limit = 2
 	});
 }
 
-async function getOpenSessionContext(hostUrl: string, excludeThreadId: string, limit = 3): Promise<string> {
+async function getOpenSessionContext(hostUrl: string, excludeThreadId: string): Promise<string> {
 	const listed = await getJson<{ sessions: HostedSessionSummary[] }>(hostUrl, "/api/v1/sessions", {
 		includeArchived: 0,
-		limit: 12,
+		limit: 50,
 	});
 	const candidates = listed.sessions
 		.filter((session) => session.sessionId && !(session.assistantChannel === "telegram" && session.assistantThreadId === excludeThreadId))
-		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-		.slice(0, limit);
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 	if (candidates.length === 0) return "Other open sessions: none";
 	const sections: string[] = ["Other open sessions context"];
 	for (const session of candidates) {
 		try {
 			const encoded = encodeURIComponent(session.sessionId);
-			const snapshot = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encoded}/snapshot`, { limit: 8 });
-			sections.push(`## ${session.sessionId}\n\n${truncateForPrompt(snapshotConversationText(snapshot).trim() || "(no text)", DREAM_OPEN_SESSION_CHAR_LIMIT)}`);
+			const snapshot = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encoded}/snapshot`, { limit: 200 });
+			sections.push(`## ${session.sessionId}\n\n${snapshotConversationText(snapshot).trim() || "(no text)"}`);
 		} catch {
 			sections.push(`## ${session.sessionId}\n\n(unavailable)`);
 		}
@@ -586,14 +627,14 @@ export default function (pi: ExtensionAPI) {
 			const timezone = config.personalAssistant?.timezone?.trim() || "Europe/Amsterdam";
 			const now = new Date();
 			const { dayStamp, timestampStamp } = getLocalDateParts(now, timezone);
-			const transcript = truncateForPrompt(snapshotConversationText(telegramSnapshot) || sessionConversationText(ctx), DREAM_TRANSCRIPT_CHAR_LIMIT);
+			const transcript = snapshotConversationText(telegramSnapshot) || sessionConversationText(ctx);
 			const inboxFiles = await listMemoryFiles(rootDir, "inbox", { recursive: true, extensions: [".md", ".json", ".txt"] });
-			const recentReviewFiles = (await listMemoryFiles(rootDir, "review", { recursive: false, extensions: [".md"] })).slice(-DREAM_MAX_REVIEW_FILES);
-			const openSessionContext = includeOpenSessions ? await getOpenSessionContext(hostUrl, target.threadId, 2) : "Other open sessions: omitted";
+			const recentReviewFiles = await listMemoryFiles(rootDir, "review", { recursive: false, extensions: [".md"] });
+			const openSessionContext = includeOpenSessions ? await getOpenSessionContext(hostUrl, target.threadId) : "Other open sessions: omitted";
 			let recentEmails: PaEmailSummary[] = [];
 			let emailError: string | undefined;
 			try {
-				recentEmails = await searchEmailSummariesForContext(ctx, { sinceDays: 2, limit: 20 });
+				recentEmails = await searchEmailSummariesForContext(ctx, { sinceDays: 2, limit: 50 });
 			} catch (error) {
 				emailError = error instanceof Error ? error.message : String(error);
 			}
@@ -611,14 +652,15 @@ export default function (pi: ExtensionAPI) {
 					"- retainedInboxPaths?: string[]",
 					"- candidateCalendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
 					"Prefer concrete, inspectable findings. Calendar candidates should only be included when the event is specific enough to create.",
+					"For calendar candidates, prefer ISO 8601 timestamps. Date-only values are allowed for all-day events.",
 					"Do not include Markdown fences.",
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 					`Local timezone: ${timezone}`,
 					`Current local day: ${dayStamp}`,
 					`Target Telegram thread: ${target.threadId}`,
 					`Dream target source: ${target.source}`,
-					formatPromptFiles(inboxFiles, "Inbox items", DREAM_FILE_CHAR_LIMIT),
-					formatPromptFiles(recentReviewFiles, "Recent review files", DREAM_FILE_CHAR_LIMIT, DREAM_MAX_REVIEW_FILES),
+					formatPromptFiles(inboxFiles, "Inbox items"),
+					formatPromptFiles(recentReviewFiles, "Recent review files"),
 					formatEmailSummaries(recentEmails),
 					emailError ? `Recent email intake error: ${emailError}` : undefined,
 					openSessionContext,
@@ -634,7 +676,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const graphQuery = [params.note?.trim(), ...phase1.candidateGraphQueries].filter(Boolean).join(" ").trim();
-			const graphContextFiles = graphQuery ? await searchMemoryFiles(rootDir, graphQuery, 12) : [];
+			const graphContextFiles = graphQuery ? await searchMemoryFiles(rootDir, graphQuery, 1000) : [];
 			let phase2: DreamPhase2Plan;
 			try {
 				phase2 = await runDreamPhase<DreamPhase2Plan>(ctx, config, subagentCore, "dream-phase-2", [
@@ -646,12 +688,13 @@ export default function (pi: ExtensionAPI) {
 					"- graphWrites: Array<{ path: string, content: string }> where every path stays under graph/",
 					"- candidateCalendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
 					"Prefer updating existing graph files over creating many new ones.",
+					"For calendar candidates, prefer ISO 8601 timestamps. Date-only values are allowed for all-day events.",
 					"Do not include Markdown fences.",
 					`Phase 1 archive summary:\n\n${phase1.archiveSummaryMarkdown}`,
 					`Phase 1 consolidated findings:\n\n${phase1.consolidatedFindingsMarkdown}`,
 					phase1.candidateCalendarEvents?.length ? `Phase 1 calendar candidates:\n\n${JSON.stringify(phase1.candidateCalendarEvents, null, 2)}` : "Phase 1 calendar candidates: none",
 					graphContextFiles.length
-						? formatPromptFiles(graphContextFiles, "Relevant graph/archive context", DREAM_FILE_CHAR_LIMIT, 12)
+						? formatPromptFiles(graphContextFiles, "Relevant graph/archive context")
 						: "Relevant graph/archive context: none",
 				].join("\n\n"), validatePhase2Plan);
 			} catch (error) {
@@ -673,6 +716,7 @@ export default function (pi: ExtensionAPI) {
 					"- reviewMarkdown?: string",
 					"- calendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
 					"Only include calendarEvents when they are concrete enough to create immediately.",
+					"Prefer ISO 8601 timestamps. Date-only values are allowed for all-day events. If end is unknown for a timed event, omit it and a default duration will be inferred.",
 					"Do not include Markdown fences.",
 					`Phase 1 archive summary:\n\n${phase1.archiveSummaryMarkdown}`,
 					`Phase 1 consolidated findings:\n\n${phase1.consolidatedFindingsMarkdown}`,
@@ -694,10 +738,17 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const createdEvents: Array<{ event: PaCalendarEvent; targetCalendar: { id: string; name: string }; rationale?: string }> = [];
+			const normalizedCalendarEvents: Array<DreamCalendarEventCandidate & { start: string; end: string; allDay: boolean }> = [];
 			const calendarErrors: string[] = [];
 			for (const candidate of phase3.calendarEvents ?? []) {
+				const normalized = normalizeCalendarCandidateForCreation(candidate);
+				if ("error" in normalized) {
+					calendarErrors.push(`${candidate.summary}: ${normalized.error}`);
+					continue;
+				}
+				normalizedCalendarEvents.push(normalized.event);
 				try {
-					const created = await createCalendarEventForContext(ctx, candidate);
+					const created = await createCalendarEventForContext(ctx, normalized.event);
 					createdEvents.push({ ...created, rationale: candidate.rationale });
 				} catch (error) {
 					calendarErrors.push(`${candidate.summary}: ${error instanceof Error ? error.message : String(error)}`);
@@ -733,7 +784,7 @@ export default function (pi: ExtensionAPI) {
 			].join("\n"));
 			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase1.json`, `${JSON.stringify(phase1, null, 2)}\n`);
 			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase2.json`, `${JSON.stringify(phase2, null, 2)}\n`);
-			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase3.json`, `${JSON.stringify(phase3, null, 2)}\n`);
+			await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}/phase3.json`, `${JSON.stringify({ ...phase3, normalizedCalendarEvents }, null, 2)}\n`);
 			const dreamArchive = await writeDreamArchive(rootDir, timestampStamp, [
 				`# Dream Run`,
 				"",
@@ -811,6 +862,7 @@ export default function (pi: ExtensionAPI) {
 					graphWrites,
 					archivedInbox,
 					createdEvents,
+					normalizedCalendarEvents,
 					calendarErrors,
 					recentEmails,
 					emailError,
