@@ -106,8 +106,8 @@ export function createBot(config: TelegramAppConfig): Bot {
 				if (!streamedMessageId) {
 					const sent = await ctx.api.sendMessage(ctx.chat!.id, firstChunk);
 					streamedMessageId = sent.message_id;
-				} else if (force) {
-					await sendHtml(ctx, firstChunk);
+				} else {
+					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, firstChunk).catch(() => {});
 				}
 			}
 		};

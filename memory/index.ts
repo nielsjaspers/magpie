@@ -203,9 +203,18 @@ function validateDreamPlan(parsed: DreamPlan): DreamPlan {
 	return parsed;
 }
 
+function summarizeMarkdown(text: string, maxLines = 8): string {
+	return text
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.slice(0, maxLines)
+		.join("\n");
+}
+
 function validatePhase1Plan(parsed: DreamPhase1Plan): DreamPhase1Plan {
-	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream phase 1 output missing archiveSummaryMarkdown.");
 	if (!parsed.consolidatedFindingsMarkdown?.trim()) throw new Error("Dream phase 1 output missing consolidatedFindingsMarkdown.");
+	if (!parsed.archiveSummaryMarkdown?.trim()) parsed.archiveSummaryMarkdown = summarizeMarkdown(parsed.consolidatedFindingsMarkdown);
 	parsed.candidateGraphQueries = Array.isArray(parsed.candidateGraphQueries)
 		? parsed.candidateGraphQueries.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
 		: [];
@@ -220,8 +229,8 @@ function validatePhase1Plan(parsed: DreamPhase1Plan): DreamPhase1Plan {
 }
 
 function validatePhase2Plan(parsed: DreamPhase2Plan): DreamPhase2Plan {
-	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream phase 2 output missing archiveSummaryMarkdown.");
 	if (!parsed.memoryLinkingMarkdown?.trim()) throw new Error("Dream phase 2 output missing memoryLinkingMarkdown.");
+	if (!parsed.archiveSummaryMarkdown?.trim()) parsed.archiveSummaryMarkdown = summarizeMarkdown(parsed.memoryLinkingMarkdown);
 	if (!Array.isArray(parsed.graphWrites)) parsed.graphWrites = [];
 	for (const item of parsed.graphWrites) {
 		if (!item?.path?.trim() || !item.content?.trim()) throw new Error("Dream phase 2 output contains an invalid graph write.");
@@ -233,7 +242,7 @@ function validatePhase2Plan(parsed: DreamPhase2Plan): DreamPhase2Plan {
 
 function validatePhase3Plan(parsed: DreamPhase3Plan): DreamPhase3Plan {
 	if (!parsed.digestMarkdown?.trim()) throw new Error("Dream phase 3 output missing digestMarkdown.");
-	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream phase 3 output missing archiveSummaryMarkdown.");
+	if (!parsed.archiveSummaryMarkdown?.trim()) parsed.archiveSummaryMarkdown = summarizeMarkdown(parsed.digestMarkdown);
 	parsed.calendarEvents = normalizeCalendarEventCandidates(parsed.calendarEvents);
 	return parsed;
 }
@@ -355,6 +364,7 @@ async function runDreamPhase<T>(
 			task: [
 				`Repair this malformed ${phaseLabel} output into valid JSON.`,
 				"Return exactly one valid JSON object and nothing else.",
+				"If archiveSummaryMarkdown is missing but a richer markdown field exists, derive a concise archiveSummaryMarkdown from that field instead of omitting it.",
 				`Original parse error: ${error instanceof Error ? error.message : String(error)}`,
 				"Malformed output:",
 				result.output,

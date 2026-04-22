@@ -24,7 +24,7 @@ export function convertMarkdownToTelegramHtml(text: string): string {
 	// 1. Extract fenced code blocks (must come before inline code)
 	const fencedBlocks: FencedBlock[] = [];
 	result = result.replace(/^```([^\n]*)\n([\s\S]*?)```$/gm, (_match, lang, code) => {
-		const placeholder = `__FENCED_${fencedBlocks.length}__`;
+		const placeholder = `\uE000FENCED_${fencedBlocks.length}\uE001`;
 		fencedBlocks.push({ placeholder, lang: lang.trim(), content: code });
 		return placeholder;
 	});
@@ -32,7 +32,7 @@ export function convertMarkdownToTelegramHtml(text: string): string {
 	// 2. Extract inline code
 	const inlineCodes: InlineCode[] = [];
 	result = result.replace(/`([^`\n]+)`/g, (_match, code) => {
-		const placeholder = `__INLINE_${inlineCodes.length}__`;
+		const placeholder = `\uE002INLINE_${inlineCodes.length}\uE003`;
 		inlineCodes.push({ placeholder, content: code });
 		return placeholder;
 	});
