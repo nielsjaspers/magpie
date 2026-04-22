@@ -158,7 +158,7 @@ Memory tools:
 - `read_memory`
 - `write_memory`
 - `recall_memory`
-- `dream`
+- `dream` (manual Telegram dream: archive current thread, consolidate memory, write digest/review/graph artifacts, then queue a clean thread reset)
 
 Research config:
 - `research.papersDir` controls where papers and digest files are stored

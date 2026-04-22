@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, relative, resolve, sep } from "node:path";
 import type { MemoryConfig } from "./types.js";
 import { expandHomePath } from "../config/config.js";
 
@@ -38,6 +38,9 @@ export function getMemoryPaths(rootDir: string) {
 	const digestDir = resolve(rootDir, "digest");
 	const dailyDigestDir = resolve(digestDir, "daily");
 	const reviewDir = resolve(rootDir, "review");
+	const dreamsDir = resolve(archiveDir, "dreams");
+	const telegramArchiveDir = resolve(archiveDir, "telegram");
+	const sessionArchiveDir = resolve(archiveDir, "sessions");
 	return {
 		rootDir,
 		inboxDir,
@@ -46,6 +49,9 @@ export function getMemoryPaths(rootDir: string) {
 		digestDir,
 		dailyDigestDir,
 		reviewDir,
+		dreamsDir,
+		telegramArchiveDir,
+		sessionArchiveDir,
 	};
 }
 
@@ -59,6 +65,9 @@ export async function ensureMemoryDirs(rootDir: string) {
 		mkdir(paths.digestDir, { recursive: true }),
 		mkdir(paths.dailyDigestDir, { recursive: true }),
 		mkdir(paths.reviewDir, { recursive: true }),
+		mkdir(paths.dreamsDir, { recursive: true }),
+		mkdir(paths.telegramArchiveDir, { recursive: true }),
+		mkdir(paths.sessionArchiveDir, { recursive: true }),
 	]);
 	return paths;
 }
@@ -174,4 +183,106 @@ export async function searchMemoryFiles(rootDir: string, query: string, limit = 
 	await ensureMemoryDirs(rootDir);
 	await walk(rootDir);
 	return matches.sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath)).slice(0, limit);
+}
+
+export interface StoredMemoryFile {
+	relativePath: string;
+	absolutePath: string;
+	content: string;
+}
+
+export async function listMemoryFiles(rootDir: string, relativeDir: string, options?: { recursive?: boolean; extensions?: string[] }): Promise<StoredMemoryFile[]> {
+	const startDir = resolveMemoryPath(rootDir, relativeDir);
+	const files: StoredMemoryFile[] = [];
+	const allowedExtensions = options?.extensions?.map((value) => value.toLowerCase());
+
+	const walk = async (dir: string) => {
+		const entries = await readdir(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			const absolutePath = resolve(dir, entry.name);
+			if (entry.isDirectory()) {
+				if (options?.recursive !== false) await walk(absolutePath);
+				continue;
+			}
+			if (!entry.isFile()) continue;
+			if (allowedExtensions?.length && !allowedExtensions.includes(extname(entry.name).toLowerCase())) continue;
+			let content = "";
+			try {
+				content = await readFile(absolutePath, "utf8");
+			} catch {
+				continue;
+			}
+			files.push({ relativePath: relative(rootDir, absolutePath), absolutePath, content });
+		}
+	};
+
+	if (!existsSync(startDir)) return [];
+	await walk(startDir);
+	return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+export function getLocalDateParts(date: Date, timeZone: string): { dayStamp: string; timestampStamp: string } {
+	const dayFormatter = new Intl.DateTimeFormat("sv-SE", {
+		timeZone,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+	});
+	const parts = dayFormatter.formatToParts(date);
+	const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+	const month = parts.find((part) => part.type === "month")?.value ?? "00";
+	const day = parts.find((part) => part.type === "day")?.value ?? "00";
+	const timeFormatter = new Intl.DateTimeFormat("sv-SE", {
+		timeZone,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+		hour12: false,
+	});
+	const ts = timeFormatter.format(date).replace(" ", "T").replace(/:/g, "-");
+	return { dayStamp: `${year}-${month}-${day}`, timestampStamp: ts };
+}
+
+export async function writeDailyDigest(rootDir: string, dayStamp: string, content: string) {
+	return await writeMemoryFile(rootDir, `digest/daily/${dayStamp}.md`, content);
+}
+
+export async function writeReviewFile(rootDir: string, dayStamp: string, content: string) {
+	return await writeMemoryFile(rootDir, `review/${dayStamp}.md`, content);
+}
+
+export async function writeDreamArchive(rootDir: string, timestampStamp: string, content: string) {
+	return await writeMemoryFile(rootDir, `archive/dreams/${timestampStamp}.md`, content);
+}
+
+export async function writeTelegramArchive(rootDir: string, timestampStamp: string, content: string) {
+	return await writeMemoryFile(rootDir, `archive/telegram/${timestampStamp}.md`, content);
+}
+
+export async function moveInboxItemsToArchive(rootDir: string, relativePaths: string[], timestampStamp: string) {
+	const moved: Array<{ from: string; to: string }> = [];
+	for (const relativePath of relativePaths) {
+		const source = resolveMemoryPath(rootDir, relativePath);
+		if (!existsSync(source)) continue;
+		const destination = resolveMemoryPath(rootDir, `archive/dreams/${timestampStamp}/inbox/${basename(relativePath)}`);
+		await mkdir(dirname(destination), { recursive: true });
+		await rename(source, destination);
+		moved.push({ from: relativePath, to: relative(rootDir, destination) });
+	}
+	return moved;
+}
+
+export async function removeMemoryFiles(rootDir: string, relativePaths: string[]) {
+	for (const relativePath of relativePaths) {
+		const absolutePath = resolveMemoryPath(rootDir, relativePath);
+		if (existsSync(absolutePath)) await unlink(absolutePath);
+	}
+}
+
+export function formatStoredFiles(files: StoredMemoryFile[], heading: string) {
+	if (files.length === 0) return `${heading}: none`;
+	return [heading, ...files.map((file) => `## ${file.relativePath}\n\n${file.content.trim()}`)].join("\n\n");
 }
