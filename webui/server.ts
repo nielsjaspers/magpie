@@ -387,7 +387,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 		};
 	};
 
-	return createServer(async (req, res) => {
+	const server = createServer(async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url || "/", hostUrl);
 			let authenticatedDevice: DeviceRecord | undefined;
@@ -723,6 +723,11 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 			return sendJson(res, 500, { error: (error as Error).message });
 		}
 	});
+	server.requestTimeout = 0;
+	server.headersTimeout = 0;
+	server.timeout = 0;
+	server.keepAliveTimeout = 0;
+	return server;
 }
 
 export async function startWebUiServer(cwd: string, config?: WebUiServerConfig, routeRegistrations: WebUiRouteRegistration[] = []) {

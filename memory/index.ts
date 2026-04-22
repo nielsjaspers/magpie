@@ -301,7 +301,7 @@ async function runDreamPhase<T>(
 		label: phaseLabel,
 		task,
 		tools: [],
-		timeout: 240000,
+		timeout: 1800000,
 	});
 	if (result.exitCode !== 0 || !result.output.trim()) throw new Error(result.errorMessage || `${phaseLabel} failed.`);
 	try {
@@ -318,7 +318,7 @@ async function runDreamPhase<T>(
 				result.output,
 			].join("\n\n"),
 			tools: [],
-			timeout: 120000,
+			timeout: 600000,
 		});
 		if (repaired.exitCode !== 0 || !repaired.output.trim()) throw new Error(repaired.errorMessage || `${phaseLabel} JSON repair failed.`);
 		return parseStructuredJson(repaired.output, validator);
