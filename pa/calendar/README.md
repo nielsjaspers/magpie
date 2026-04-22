@@ -158,7 +158,7 @@ Expected behavior:
 
 Ask:
 
-- "schedule lunch with Matt friday at 12:30 for one hour"
+- "schedule lunch with X friday at 12:30 for one hour"
 
 Expected behavior:
 

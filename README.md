@@ -219,7 +219,7 @@ Research commands:
 - `handoff/` — command + tool for starting a new session with transferred context
 - `sessions/` — session indexing, `/sessions`, `get_sessions`, and `session_query` (see `sessions/README.md`)
 - `preferences/` — small durable preferences/conventions stored in JSONL via `save_preference` and `recall_preferences`
-- `memory/` — inbox/graph/archive/digest/review memory system scaffolding plus `remember`, `read_memory`, `write_memory`, `recall_memory`, and `dream`
+- `memory/` — inbox/graph/archive/digest/review memory system scaffolding plus `remember`, `read_memory`, `write_memory`, `recall_memory`, and `dream` (see `memory/README.md`)
 - `research/` — `/papers` and `/digest` research companion (see `research/README.md`)
 - `webui/` — local/remote assistant + coding host HTTP server and browser UI surface
 - `remote/` — `/remote` commands plus remote session dispatch/fetch helpers and tools
