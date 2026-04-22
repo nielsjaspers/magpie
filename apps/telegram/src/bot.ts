@@ -85,13 +85,20 @@ export function createBot(config: TelegramAppConfig): Bot {
 		let streamedText = "";
 		let streamedMessageId: number | undefined;
 		let lastEditAt = 0;
+		let lastRenderedLength = 0;
 		let sawStreamedText = false;
+		let streamingSuppressed = false;
+		let needsFinalFallbackMessage = false;
+		const MIN_STREAM_EDIT_INTERVAL_MS = 3000;
+		const MIN_STREAM_EDIT_CHARS = 400;
 
 		const flushStreamedText = async (force = false) => {
-			if (!streamedText.trim()) return;
+			if (!streamedText.trim() || (streamingSuppressed && !force)) return;
 			const now = Date.now();
-			if (!force && now - lastEditAt < 700 && streamedText.length < 120) return;
-			lastEditAt = now;
+			if (!force) {
+				if (now - lastEditAt < MIN_STREAM_EDIT_INTERVAL_MS) return;
+				if (streamedMessageId && streamedText.length - lastRenderedLength < MIN_STREAM_EDIT_CHARS) return;
+			}
 			const chunks = splitMessage(streamedText);
 			const firstChunk = chunks[0] || streamedText;
 			const html = convertMarkdownToTelegramHtml(firstChunk);
@@ -102,13 +109,24 @@ export function createBot(config: TelegramAppConfig): Bot {
 				} else {
 					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, html, { parse_mode: "HTML" });
 				}
+				lastEditAt = now;
+				lastRenderedLength = firstChunk.length;
 			} catch (error) {
 				if (!streamedMessageId) {
-					const sent = await ctx.api.sendMessage(ctx.chat!.id, firstChunk);
-					streamedMessageId = sent.message_id;
-				} else {
-					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, firstChunk).catch(() => {});
+					try {
+						const sent = await ctx.api.sendMessage(ctx.chat!.id, firstChunk);
+						streamedMessageId = sent.message_id;
+						lastEditAt = now;
+						lastRenderedLength = firstChunk.length;
+						return;
+					} catch {
+						streamingSuppressed = true;
+						needsFinalFallbackMessage = true;
+						return;
+					}
 				}
+				streamingSuppressed = true;
+				needsFinalFallbackMessage = true;
 			}
 		};
 
@@ -138,8 +156,8 @@ export function createBot(config: TelegramAppConfig): Bot {
 				await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
 			}
 		});
-		if (!sawStreamedText || !streamedText.trim()) {
-			await sendHtml(ctx, response.text || "(empty response)");
+		if (!sawStreamedText || !streamedText.trim() || needsFinalFallbackMessage) {
+			await sendHtml(ctx, response.text || streamedText || "(empty response)");
 		}
 	};
 

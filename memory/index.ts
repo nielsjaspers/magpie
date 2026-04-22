@@ -213,8 +213,14 @@ function summarizeMarkdown(text: string, maxLines = 8): string {
 }
 
 function validatePhase1Plan(parsed: DreamPhase1Plan): DreamPhase1Plan {
+	if (!parsed.consolidatedFindingsMarkdown?.trim() && parsed.archiveSummaryMarkdown?.trim()) {
+		parsed.consolidatedFindingsMarkdown = parsed.archiveSummaryMarkdown.trim();
+	}
+	if (!parsed.archiveSummaryMarkdown?.trim() && parsed.consolidatedFindingsMarkdown?.trim()) {
+		parsed.archiveSummaryMarkdown = summarizeMarkdown(parsed.consolidatedFindingsMarkdown);
+	}
 	if (!parsed.consolidatedFindingsMarkdown?.trim()) throw new Error("Dream phase 1 output missing consolidatedFindingsMarkdown.");
-	if (!parsed.archiveSummaryMarkdown?.trim()) parsed.archiveSummaryMarkdown = summarizeMarkdown(parsed.consolidatedFindingsMarkdown);
+	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream phase 1 output missing archiveSummaryMarkdown.");
 	parsed.candidateGraphQueries = Array.isArray(parsed.candidateGraphQueries)
 		? parsed.candidateGraphQueries.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
 		: [];
@@ -364,7 +370,7 @@ async function runDreamPhase<T>(
 			task: [
 				`Repair this malformed ${phaseLabel} output into valid JSON.`,
 				"Return exactly one valid JSON object and nothing else.",
-				"If archiveSummaryMarkdown is missing but a richer markdown field exists, derive a concise archiveSummaryMarkdown from that field instead of omitting it.",
+				"If archiveSummaryMarkdown or consolidatedFindingsMarkdown is missing but the other exists, derive the missing field from the existing one instead of omitting it.",
 				`Original parse error: ${error instanceof Error ? error.message : String(error)}`,
 				"Malformed output:",
 				result.output,
