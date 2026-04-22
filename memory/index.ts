@@ -1,3 +1,5 @@
+import { mkdir, readFile, writeFile as writeFsFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../config/config.js";
@@ -124,15 +126,6 @@ function extractJsonObject(text: string): string {
 	return trimmed;
 }
 
-interface DreamPlan {
-	digestMarkdown: string;
-	archiveSummaryMarkdown: string;
-	graphWrites: Array<{ path: string; content: string }>;
-	reviewMarkdown?: string;
-	processedInboxPaths?: string[];
-	retainedInboxPaths?: string[];
-}
-
 interface DreamCalendarEventCandidate {
 	summary: string;
 	start: string;
@@ -156,7 +149,7 @@ interface DreamPhase1Plan {
 interface DreamPhase2Plan {
 	archiveSummaryMarkdown: string;
 	memoryLinkingMarkdown: string;
-	graphWrites: Array<{ path: string; content: string }>;
+	graphPaths: string[];
 	candidateCalendarEvents?: DreamCalendarEventCandidate[];
 }
 
@@ -182,17 +175,6 @@ function normalizeCalendarEventCandidates(items: unknown): DreamCalendarEventCan
 			rationale: typeof item.rationale === "string" ? item.rationale.trim() : undefined,
 		}))
 		.filter((item) => item.summary && item.start);
-}
-
-function validateDreamPlan(parsed: DreamPlan): DreamPlan {
-	if (!parsed.digestMarkdown?.trim()) throw new Error("Dream output missing digestMarkdown.");
-	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream output missing archiveSummaryMarkdown.");
-	if (!Array.isArray(parsed.graphWrites)) parsed.graphWrites = [];
-	for (const item of parsed.graphWrites) {
-		if (!item?.path?.trim() || !item.content?.trim()) throw new Error("Dream output contains an invalid graph write.");
-		if (!item.path.startsWith("graph/")) throw new Error(`Dream graph write must stay under graph/: ${item.path}`);
-	}
-	return parsed;
 }
 
 function summarizeMarkdown(text: string, maxLines = 8): string {
@@ -229,11 +211,9 @@ function validatePhase1Plan(parsed: DreamPhase1Plan): DreamPhase1Plan {
 function validatePhase2Plan(parsed: DreamPhase2Plan): DreamPhase2Plan {
 	if (!parsed.memoryLinkingMarkdown?.trim()) throw new Error("Dream phase 2 output missing memoryLinkingMarkdown.");
 	if (!parsed.archiveSummaryMarkdown?.trim()) parsed.archiveSummaryMarkdown = summarizeMarkdown(parsed.memoryLinkingMarkdown);
-	if (!Array.isArray(parsed.graphWrites)) parsed.graphWrites = [];
-	for (const item of parsed.graphWrites) {
-		if (!item?.path?.trim() || !item.content?.trim()) throw new Error("Dream phase 2 output contains an invalid graph write.");
-		if (!item.path.startsWith("graph/")) throw new Error(`Dream phase 2 graph write must stay under graph/: ${item.path}`);
-	}
+	parsed.graphPaths = Array.isArray(parsed.graphPaths)
+		? parsed.graphPaths.filter((value): value is string => typeof value === "string" && value.startsWith("graph/"))
+		: [];
 	parsed.candidateCalendarEvents = normalizeCalendarEventCandidates(parsed.candidateCalendarEvents);
 	return parsed;
 }
@@ -245,34 +225,116 @@ function validatePhase3Plan(parsed: DreamPhase3Plan): DreamPhase3Plan {
 	return parsed;
 }
 
-function parseDreamPlanFromSections(text: string): DreamPlan | undefined {
-	const trimmed = text.trim();
-	const digestMatch = trimmed.match(/(?:^|\n)##\s*digestMarkdown\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
-	const archiveMatch = trimmed.match(/(?:^|\n)##\s*archiveSummaryMarkdown\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
-	const graphMatch = trimmed.match(/(?:^|\n)##\s*graphWrites\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
-	const reviewMatch = trimmed.match(/(?:^|\n)##\s*reviewMarkdown\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
-	if (!digestMatch?.[1] || !archiveMatch?.[1]) return undefined;
-	let graphWrites: DreamPlan["graphWrites"] = [];
-	const graphText = graphMatch?.[1]?.trim();
-	if (graphText) {
-		const parsedGraph = JSON.parse(extractJsonObject(graphText));
-		graphWrites = Array.isArray(parsedGraph) ? parsedGraph : [];
-	}
-	return validateDreamPlan({
-		digestMarkdown: digestMatch[1].trim(),
-		archiveSummaryMarkdown: archiveMatch[1].trim(),
-		graphWrites,
-		reviewMarkdown: reviewMatch?.[1]?.trim() || undefined,
-	});
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function parseDreamPlan(text: string): DreamPlan {
+function extractMarkdownSection(text: string, titles: string[]): string | undefined {
+	const pattern = titles.map(escapeRegExp).join("|");
+	const match = text.match(new RegExp(`(?:^|\\n)#{1,6}\\s*(?:${pattern})\\s*\\n([\\s\\S]*?)(?=\\n#{1,6}\\s+|$)`, "i"));
+	const section = match?.[1]?.trim();
+	return section || undefined;
+}
+
+function parseBulletListSection(text: string | undefined): string[] {
+	if (!text?.trim()) return [];
+	if (/^none\b/i.test(text.trim())) return [];
+	return text
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.map((line) => line.match(/^[-*]\s+(.+)$/)?.[1]?.trim() ?? line.match(/^\d+[.)]\s+(.+)$/)?.[1]?.trim() ?? "")
+		.filter(Boolean);
+}
+
+function parseBooleanLike(value: string | undefined): boolean | undefined {
+	if (!value) return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (["true", "yes", "y", "1"].includes(normalized)) return true;
+	if (["false", "no", "n", "0"].includes(normalized)) return false;
+	return undefined;
+}
+
+function parseCalendarEventSection(text: string | undefined): DreamCalendarEventCandidate[] {
+	if (!text?.trim()) return [];
+	if (/^none\b/i.test(text.trim())) return [];
+	const events: DreamCalendarEventCandidate[] = [];
+	let current: Record<string, unknown> | null = null;
+	const pushCurrent = () => {
+		if (!current) return;
+		events.push(current as unknown as DreamCalendarEventCandidate);
+		current = null;
+	};
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		const summaryMatch = line.match(/^[-*]\s+summary\s*:\s*(.+)$/i) ?? line.match(/^summary\s*:\s*(.+)$/i);
+		if (summaryMatch) {
+			pushCurrent();
+			current = { summary: summaryMatch[1].trim() };
+			continue;
+		}
+		const fieldMatch = line.match(/^(?:[-*]\s+)?([A-Za-z][A-Za-z ]*?)\s*:\s*(.+)$/);
+		if (!fieldMatch || !current) continue;
+		const key = fieldMatch[1].trim().toLowerCase();
+		const value = fieldMatch[2].trim();
+		if (key === "start") current.start = value;
+		else if (key === "end") current.end = value;
+		else if (key === "location") current.location = value;
+		else if (key === "description") current.description = value;
+		else if (key === "all day" || key === "allday") current.allDay = parseBooleanLike(value);
+		else if (key === "calendar" || key === "calendar id" || key === "calendarid") current.calendarId = value;
+		else if (key === "rationale") current.rationale = value;
+	}
+	pushCurrent();
+	return normalizeCalendarEventCandidates(events);
+}
+
+function parseArtifactAsJson<T>(text: string, validator: (parsed: T) => T): T {
+	return validator(JSON.parse(extractJsonObject(text)) as T);
+}
+
+function parsePhase1Artifact(text: string): DreamPhase1Plan {
 	try {
-		return validateDreamPlan(JSON.parse(extractJsonObject(text)) as DreamPlan);
-	} catch (jsonError) {
-		const sectionParsed = parseDreamPlanFromSections(text);
-		if (sectionParsed) return sectionParsed;
-		throw jsonError;
+		return parseArtifactAsJson<DreamPhase1Plan>(text, validatePhase1Plan);
+	} catch {
+		const findings = extractMarkdownSection(text, ["Consolidated Findings", "Findings", "Notes"]) || text.trim();
+		return validatePhase1Plan({
+			archiveSummaryMarkdown: extractMarkdownSection(text, ["Archive Summary", "Summary"]) || summarizeMarkdown(findings),
+			consolidatedFindingsMarkdown: findings,
+			candidateGraphQueries: parseBulletListSection(extractMarkdownSection(text, ["Candidate Graph Queries", "Graph Queries", "Graph Search Queries"])),
+			processedInboxPaths: parseBulletListSection(extractMarkdownSection(text, ["Processed Inbox", "Inbox To Archive", "Processed Inbox Paths"])),
+			retainedInboxPaths: parseBulletListSection(extractMarkdownSection(text, ["Retained Inbox", "Inbox To Keep", "Retained Inbox Paths"])),
+			candidateCalendarEvents: parseCalendarEventSection(extractMarkdownSection(text, ["Candidate Calendar Events", "Calendar Candidates"])),
+		});
+	}
+}
+
+function parsePhase2Artifact(text: string): DreamPhase2Plan {
+	try {
+		return parseArtifactAsJson<DreamPhase2Plan>(text, validatePhase2Plan);
+	} catch {
+		const memoryLinking = extractMarkdownSection(text, ["Memory Linking", "Graph Linking", "Linking", "Findings"]) || text.trim();
+		return validatePhase2Plan({
+			archiveSummaryMarkdown: extractMarkdownSection(text, ["Archive Summary", "Summary"]) || summarizeMarkdown(memoryLinking),
+			memoryLinkingMarkdown: memoryLinking,
+			graphPaths: parseBulletListSection(extractMarkdownSection(text, ["Graph Files Updated", "Graph Files Changed", "Graph Paths"])),
+			candidateCalendarEvents: parseCalendarEventSection(extractMarkdownSection(text, ["Candidate Calendar Events", "Calendar Candidates"])),
+		});
+	}
+}
+
+function parsePhase3Artifact(text: string): DreamPhase3Plan {
+	try {
+		return parseArtifactAsJson<DreamPhase3Plan>(text, validatePhase3Plan);
+	} catch {
+		const digest = extractMarkdownSection(text, ["Digest", "Daily Digest", "User Digest"]) || text.trim();
+		const reviewSection = extractMarkdownSection(text, ["Review", "Review Note", "Follow-up"]);
+		return validatePhase3Plan({
+			archiveSummaryMarkdown: extractMarkdownSection(text, ["Archive Summary", "Summary"]) || summarizeMarkdown(digest),
+			digestMarkdown: digest,
+			reviewMarkdown: reviewSection && !/^none\b/i.test(reviewSection) ? reviewSection : undefined,
+			calendarEvents: parseCalendarEventSection(extractMarkdownSection(text, ["Calendar Events To Create", "Calendar Events", "Events To Create"])),
+		});
 	}
 }
 
@@ -333,18 +395,15 @@ function normalizeCalendarCandidateForCreation(
 	return { event: { ...candidate, start: startDate.toISOString(), end: normalizedEnd.toISOString(), allDay: false } };
 }
 
-function parseStructuredJson<T>(text: string, validator: (parsed: T) => T): T {
-	return validator(JSON.parse(extractJsonObject(text)) as T);
-}
-
 async function runDreamPhase<T>(
 	ctx: any,
 	config: any,
 	subagentCore: SubagentCoreAPI,
 	phaseLabel: string,
 	task: string,
-	validator: (parsed: T) => T,
-): Promise<T> {
+	artifactAbsolutePath: string,
+	parser: (text: string) => T,
+): Promise<{ parsed: T; artifactText: string }> {
 	const result = await subagentCore.runSubagent(ctx, config, {
 		role: "memory",
 		label: phaseLabel,
@@ -352,27 +411,19 @@ async function runDreamPhase<T>(
 		tools: "full",
 		timeout: 1800000,
 	});
-	if (result.exitCode !== 0 || !result.output.trim()) throw new Error(result.errorMessage || `${phaseLabel} failed.`);
+	if (result.exitCode !== 0) throw new Error(result.errorMessage || `${phaseLabel} failed.`);
+	let artifactText = "";
 	try {
-		return parseStructuredJson(result.output, validator);
-	} catch (error) {
-		const repaired = await subagentCore.runSubagent(ctx, config, {
-			role: "custom",
-			label: `${phaseLabel}-json-repair`,
-			task: [
-				`Repair this malformed ${phaseLabel} output into valid JSON.`,
-				"Return exactly one valid JSON object and nothing else.",
-				"If archiveSummaryMarkdown or consolidatedFindingsMarkdown is missing but the other exists, derive the missing field from the existing one instead of omitting it.",
-				`Original parse error: ${error instanceof Error ? error.message : String(error)}`,
-				"Malformed output:",
-				result.output,
-			].join("\n\n"),
-			tools: "full",
-			timeout: 600000,
-		});
-		if (repaired.exitCode !== 0 || !repaired.output.trim()) throw new Error(repaired.errorMessage || `${phaseLabel} JSON repair failed.`);
-		return parseStructuredJson(repaired.output, validator);
+		artifactText = await readFile(artifactAbsolutePath, "utf8");
+	} catch {
+		artifactText = result.output.trim();
+		if (artifactText) {
+			await mkdir(dirname(artifactAbsolutePath), { recursive: true });
+			await writeFsFile(artifactAbsolutePath, `${artifactText.trimEnd()}\n`, "utf8");
+		}
 	}
+	if (!artifactText.trim()) throw new Error(`${phaseLabel} did not produce an artifact.`);
+	return { parsed: parser(artifactText), artifactText };
 }
 
 async function getJson<T>(baseUrl: string, path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
@@ -622,9 +673,9 @@ export default function (pi: ExtensionAPI) {
 				"",
 				transcript || "(empty transcript)",
 			].join("\n"));
-			const phase1ArtifactPath = `archive/dreams/${timestampStamp}/phase1.json`;
-			const phase2ArtifactPath = `archive/dreams/${timestampStamp}/phase2.json`;
-			const phase3ArtifactPath = `archive/dreams/${timestampStamp}/phase3.json`;
+			const phase1ArtifactPath = `archive/dreams/${timestampStamp}/phase1.md`;
+			const phase2ArtifactPath = `archive/dreams/${timestampStamp}/phase2.md`;
+			const phase3ArtifactPath = `archive/dreams/${timestampStamp}/phase3.md`;
 			const phase1ArtifactAbsolutePath = resolveMemoryPath(rootDir, phase1ArtifactPath);
 			const phase2ArtifactAbsolutePath = resolveMemoryPath(rootDir, phase2ArtifactPath);
 			const phase3ArtifactAbsolutePath = resolveMemoryPath(rootDir, phase3ArtifactPath);
@@ -637,22 +688,23 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			let phase1: DreamPhase1Plan;
+			let phase1ArtifactText = "";
 			try {
-				phase1 = await runDreamPhase<DreamPhase1Plan>(ctx, config, subagentCore, "dream-phase-1", [
+				const phase1Result = await runDreamPhase<DreamPhase1Plan>(ctx, config, subagentCore, "dream-phase-1", [
 					"Run dream phase 1: intake and consolidation.",
-					"Goal: read the new inbox/transcript/email inputs, normalize them, decide what is important, decide which inbox items are processed vs retained, and propose concrete candidate graph queries and candidate calendar events.",
+					"Goal: read the new inbox/transcript/email inputs, normalize them, decide what is important, decide which inbox items are processed vs retained, and propose candidate graph queries and candidate calendar events.",
+					"Write a freeform markdown artifact with clear headings. Do not output JSON unless you genuinely want to.",
+					"Preferred headings:",
+					"- ## Archive Summary",
+					"- ## Consolidated Findings",
+					"- ## Candidate Graph Queries",
+					"- ## Processed Inbox",
+					"- ## Retained Inbox",
+					"- ## Candidate Calendar Events",
+					"Under Candidate Calendar Events, use readable field lines like '- Summary: ...', 'Start: ...', 'End: ...', 'Location: ...', 'All Day: true/false', 'Calendar: ...', 'Rationale: ...'.",
 					"For this phase, use only the inbox files, the Telegram transcript archive, and the email summaries below. Do not read graph/, digest/, review/, or unrelated archive files in phase 1.",
-					"Return exactly one JSON object with these fields:",
-					"- archiveSummaryMarkdown: string",
-					"- consolidatedFindingsMarkdown: string",
-					"- candidateGraphQueries: string[]",
-					"- processedInboxPaths?: string[]",
-					"- retainedInboxPaths?: string[]",
-					"- candidateCalendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
-					"Prefer concrete, inspectable findings. Calendar candidates should only be included when the event is specific enough to create.",
-					"For calendar candidates, prefer ISO 8601 timestamps. Date-only values are allowed for all-day events.",
 					"Use find/read/grep/ls to inspect the inbox and transcript as needed instead of assuming content you have not read.",
-					`Write the final JSON object to ${phase1ArtifactAbsolutePath} using the write tool, then return exactly the same JSON object and nothing else.`,
+					`Write the artifact to ${phase1ArtifactAbsolutePath}. After writing it, you may return a short confirmation.`,
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 					`Memory root: ${rootDir}`,
 					`Inbox directory: ${resolveMemoryPath(rootDir, "inbox")}`,
@@ -663,8 +715,9 @@ export default function (pi: ExtensionAPI) {
 					`Dream target source: ${target.source}`,
 					formatEmailSummaries(recentEmails),
 					emailError ? `Recent email intake error: ${emailError}` : undefined,
-				].filter(Boolean).join("\n\n"), validatePhase1Plan);
-				await writeMemoryFile(rootDir, phase1ArtifactPath, `${JSON.stringify(phase1, null, 2)}\n`);
+				].filter(Boolean).join("\n\n"), phase1ArtifactAbsolutePath, parsePhase1Artifact);
+				phase1 = phase1Result.parsed;
+				phase1ArtifactText = phase1Result.artifactText;
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream phase 1 failed: ${error instanceof Error ? error.message : String(error)}` }],
@@ -674,66 +727,69 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			let phase2: DreamPhase2Plan;
+			let phase2ArtifactText = "";
 			try {
-				phase2 = await runDreamPhase<DreamPhase2Plan>(ctx, config, subagentCore, "dream-phase-2", [
+				const phase2Result = await runDreamPhase<DreamPhase2Plan>(ctx, config, subagentCore, "dream-phase-2", [
 					"Run dream phase 2: graph linking and memory integration.",
-					"Goal: use the structured phase 1 findings plus any graph/archive files you decide to inspect to produce coherent graph writes and refine event candidates if needed.",
+					"Goal: use the structured phase 1 findings plus any graph/archive files you decide to inspect to link memory, update graph files directly with tools, and refine event candidates if needed.",
+					"Write a freeform markdown artifact with clear headings. Do not output JSON unless you genuinely want to.",
+					"Preferred headings:",
+					"- ## Archive Summary",
+					"- ## Memory Linking",
+					"- ## Graph Files Updated",
+					"- ## Candidate Calendar Events",
+					"Under Graph Files Updated, list graph/ paths as bullets.",
 					"Read the phase 1 artifact first, then decide which graph/archive files to inspect with tools. Do not expect graph or archive contents to be preloaded for you.",
-					"Return exactly one JSON object with these fields:",
-					"- archiveSummaryMarkdown: string",
-					"- memoryLinkingMarkdown: string",
-					"- graphWrites: Array<{ path: string, content: string }> where every path stays under graph/",
-					"- candidateCalendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
-					"Prefer updating existing graph files over creating many new ones.",
-					"For calendar candidates, prefer ISO 8601 timestamps. Date-only values are allowed for all-day events.",
-					`Write the final JSON object to ${phase2ArtifactAbsolutePath} using the write tool, then return exactly the same JSON object and nothing else.`,
+					`Write the artifact to ${phase2ArtifactAbsolutePath}. Update graph files directly during this phase. After writing the artifact, you may return a short confirmation.`,
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 					`Memory root: ${rootDir}`,
 					`Phase 1 artifact: ${phase1ArtifactAbsolutePath}`,
 					`Graph directory: ${resolveMemoryPath(rootDir, "graph")}`,
 					`Archive directory: ${resolveMemoryPath(rootDir, "archive")}`,
-				].filter(Boolean).join("\n\n"), validatePhase2Plan);
-				await writeMemoryFile(rootDir, phase2ArtifactPath, `${JSON.stringify(phase2, null, 2)}\n`);
+				].filter(Boolean).join("\n\n"), phase2ArtifactAbsolutePath, parsePhase2Artifact);
+				phase2 = phase2Result.parsed;
+				phase2ArtifactText = phase2Result.artifactText;
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream phase 2 failed: ${error instanceof Error ? error.message : String(error)}` }],
-					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath, phase1 },
+					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath, phase1, phase1ArtifactText },
 					isError: true,
 				};
 			}
 
 			let phase3: DreamPhase3Plan;
+			let phase3ArtifactText = "";
 			try {
-				phase3 = await runDreamPhase<DreamPhase3Plan>(ctx, config, subagentCore, "dream-phase-3", [
+				const phase3Result = await runDreamPhase<DreamPhase3Plan>(ctx, config, subagentCore, "dream-phase-3", [
 					"Run dream phase 3: digest, review, and concrete event execution planning.",
 					"Goal: produce the user-facing digest, any needed review note, and concrete calendar events that should actually be created now.",
+					"Write a freeform markdown artifact with clear headings. Do not output JSON unless you genuinely want to.",
+					"Preferred headings:",
+					"- ## Archive Summary",
+					"- ## Digest",
+					"- ## Review",
+					"- ## Calendar Events To Create",
+					"Under Calendar Events To Create, use readable field lines like '- Summary: ...', 'Start: ...', 'End: ...', 'Location: ...', 'All Day: true/false', 'Calendar: ...', 'Rationale: ...'.",
 					"Read the structured phase 1 and phase 2 artifacts first. This phase should rely on those structured artifacts instead of raw prompt-injected context.",
-					"Return exactly one JSON object with these fields:",
-					"- digestMarkdown: string",
-					"- archiveSummaryMarkdown: string",
-					"- reviewMarkdown?: string",
-					"- calendarEvents?: Array<{ summary, start, end, location?, description?, allDay?, calendarId?, rationale? }>",
-					"Only include calendarEvents when they are concrete enough to create immediately.",
-					"Prefer ISO 8601 timestamps. Date-only values are allowed for all-day events. If end is unknown for a timed event, omit it and a default duration will be inferred.",
-					`Write the final JSON object to ${phase3ArtifactAbsolutePath} using the write tool, then return exactly the same JSON object and nothing else.`,
+					`Write the artifact to ${phase3ArtifactAbsolutePath}. After writing it, you may return a short confirmation.`,
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 					`Memory root: ${rootDir}`,
 					`Phase 1 artifact: ${phase1ArtifactAbsolutePath}`,
 					`Phase 2 artifact: ${phase2ArtifactAbsolutePath}`,
-				].filter(Boolean).join("\n\n"), validatePhase3Plan);
+				].filter(Boolean).join("\n\n"), phase3ArtifactAbsolutePath, parsePhase3Artifact);
+				phase3 = phase3Result.parsed;
+				phase3ArtifactText = phase3Result.artifactText;
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream phase 3 failed: ${error instanceof Error ? error.message : String(error)}` }],
-					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath, phase2ArtifactPath, phase1, phase2 },
+					details: { threadId: target.threadId, telegramArchive, phase1ArtifactPath, phase2ArtifactPath, phase1, phase2, phase1ArtifactText, phase2ArtifactText },
 					isError: true,
 				};
 			}
 
-			const graphWrites = [] as Array<{ path: string; absolutePath: string; relativePath: string }>;
-			for (const write of phase2.graphWrites) {
-				const stored = await writeMemoryFile(rootDir, write.path, write.content);
-				graphWrites.push({ path: write.path, ...stored });
-			}
+			const graphWrites = phase2.graphPaths
+				.map((path) => ({ path, absolutePath: resolveMemoryPath(rootDir, path), relativePath: path }))
+				.filter((file) => file.relativePath.startsWith("graph/"));
 
 			const createdEvents: Array<{ event: PaCalendarEvent; targetCalendar: { id: string; name: string }; rationale?: string }> = [];
 			const normalizedCalendarEvents: Array<DreamCalendarEventCandidate & { start: string; end: string; allDay: boolean }> = [];
@@ -771,9 +827,6 @@ export default function (pi: ExtensionAPI) {
 
 			const digestFile = await writeDailyDigest(rootDir, dayStamp, digestBody);
 			const reviewFile = reviewBody.trim() ? await writeReviewFile(rootDir, dayStamp, reviewBody.trim()) : undefined;
-			await writeMemoryFile(rootDir, phase1ArtifactPath, `${JSON.stringify(phase1, null, 2)}\n`);
-			await writeMemoryFile(rootDir, phase2ArtifactPath, `${JSON.stringify(phase2, null, 2)}\n`);
-			await writeMemoryFile(rootDir, phase3ArtifactPath, `${JSON.stringify({ ...phase3, normalizedCalendarEvents }, null, 2)}\n`);
 			const dreamArchive = await writeDreamArchive(rootDir, timestampStamp, [
 				`# Dream Run`,
 				"",
@@ -848,6 +901,9 @@ export default function (pi: ExtensionAPI) {
 					phase1,
 					phase2,
 					phase3,
+					phase1ArtifactText,
+					phase2ArtifactText,
+					phase3ArtifactText,
 					graphWrites,
 					archivedInbox,
 					createdEvents,
