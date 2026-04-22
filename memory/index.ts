@@ -5,7 +5,7 @@ import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../config/config.js";
 import { ensureAutodreamScheduled } from "../schedule/index.js";
 import { parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
-import type { HostedSessionSnapshot, HostedSessionSummary } from "../runtime/session-host-types.js";
+import type { HostedSessionHandle, HostedSessionSnapshot, HostedSessionSummary, SessionHost } from "../runtime/session-host-types.js";
 import type { PaEmailSummary } from "../pa/shared/types.js";
 import { searchEmailSummariesForContext } from "../pa/mail/index.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
@@ -171,26 +171,29 @@ async function listOtherOpenSessions(hostUrl: string, currentSessionId: string |
 	});
 }
 
-interface CreateSessionResponse {
-	sessionId: string;
-	metadata: { sessionId: string };
+function getDirectAssistantHost(pi: ExtensionAPI): SessionHost | undefined {
+	let runtime: { host?: SessionHost } | undefined;
+	pi.events.emit("magpie:webui:get-runtime", (value: unknown) => {
+		runtime = value as { host?: SessionHost } | undefined;
+	});
+	return runtime?.host;
 }
 
-interface SessionMessageResponse {
-	text: string;
-	sessionId: string;
-	accepted: unknown;
-	toolEvents?: unknown[];
+function modelRefFromContext(ctx: any): string | undefined {
+	const model = ctx?.model as { provider?: string; id?: string } | undefined;
+	if (!model?.provider || !model?.id) return undefined;
+	return `${model.provider}/${model.id}`;
 }
 
-async function createDreamOrchestratorSession(hostUrl: string) {
-	const session = await postJson<CreateSessionResponse>(hostUrl, "/api/v1/sessions", {
+async function createDreamOrchestratorSession(host: SessionHost, modelRef: string): Promise<HostedSessionHandle> {
+	return await host.createSession({
 		kind: "assistant",
 		origin: "assistant",
 		title: "Dream orchestrator",
 		assistantChannel: "internal",
 		assistantThreadId: `dream-${randomUUID()}`,
 		workspaceMode: "none",
+		modelRef,
 		toolNames: [
 			"read",
 			"bash",
@@ -203,11 +206,13 @@ async function createDreamOrchestratorSession(hostUrl: string) {
 			"calendar_create_event",
 		],
 	});
-	return session.sessionId;
 }
 
-async function promptDreamOrchestrator(hostUrl: string, sessionId: string, text: string) {
-	return await postJson<SessionMessageResponse>(hostUrl, `/api/v1/sessions/${encodeURIComponent(sessionId)}/message`, { text });
+async function promptDreamOrchestrator(session: HostedSessionHandle, modelRef: string, text: string): Promise<{ text: string }> {
+	await session.sendUserMessage({ text, modelRef, source: "system" });
+	const snapshot = await session.getSnapshot(modelRef, 12);
+	const lastAssistant = [...(snapshot?.messages ?? [])].reverse().find((message) => message.role === "assistant");
+	return { text: lastAssistant?.text?.trim() || "" };
 }
 
 function buildDreamContextMarkdown(input: {
@@ -308,6 +313,9 @@ function buildDreamOrchestratorPrompt(input: {
 		"Read the context file first, then read the plan doc before dispatching any phase.",
 		"Use the memory_subagent tool to run exactly three sequential memory phase subagents.",
 		"Each phase subagent gets one focused task and must write its own markdown artifact file.",
+		"When you dispatch a phase, explicitly tell the phase subagent to use real tools, not narration.",
+		"Tell each phase subagent to use the write tool to create the required artifact path directly. The write tool can create parent directories.",
+		"Tell phase 2 to move processed inbox items itself using shell/file tools.",
 		"Handoff is file-based. Verify the required artifact exists and is non-empty before moving on.",
 		"If a phase fails, retry that phase up to 3 total attempts with a short corrective task. Fail loudly if the third attempt still fails.",
 		"Do not use search_subagent, oracle_subagent, or librarian_subagent. They are not available here.",
@@ -337,6 +345,17 @@ function buildDreamOrchestratorPrompt(input: {
 		`Digest absolute path: ${input.digestAbsolutePath}`,
 		`Optional review absolute path: ${input.reviewAbsolutePath}`,
 		`Required summary relative path: ${input.summaryRelativePath}`,
+		"",
+		"Use phase tasks shaped like this:",
+		"",
+		"Phase 1 task template:",
+		`Run dream phase 1: intake, transcript compaction, and handoff preparation. Actually do the work using tools. Read the context file and transcript archive, inspect inbox and recent email notes, do not curate graph in phase 1, and write a freeform markdown artifact to ${input.phase1ArtifactAbsolutePath}. Use the write tool to create that exact file path.`,
+		"",
+		"Phase 2 task template:",
+		`Run dream phase 2: inbox-to-graph integration. Actually do the work using tools. Read phase 1 artifact first, inspect graph/archive as needed, process inbox items into long-term graph files, archive processed inbox items under this dream run, and write a freeform markdown artifact to ${input.phase2ArtifactAbsolutePath}. Use the write tool to create that exact file path.`,
+		"",
+		"Phase 3 task template:",
+		`Run dream phase 3: digest, review, and calendar planning. Actually do the work using tools. Read phase 1 and phase 2 artifacts first, write the actual digest file to ${input.digestAbsolutePath}, optionally write review file to ${input.reviewAbsolutePath}, and write a freeform markdown artifact to ${input.phase3ArtifactAbsolutePath}. Use the write tool to create the artifact path. If events should be created now, include them under a markdown heading named Calendar Events To Create.`,
 	].join("\n\n");
 }
 
@@ -535,6 +554,11 @@ export default function (pi: ExtensionAPI) {
 			const rootDir = getMemoryRootDir(config.memory);
 			await ensureMemoryDirs(rootDir);
 			const hostUrl = config.telegram?.hostUrl?.trim() || "http://127.0.0.1:8787";
+			const directHost = getDirectAssistantHost(pi);
+			const modelRef = modelRefFromContext(ctx);
+			if (!modelRef) {
+				return { content: [{ type: "text", text: "Could not determine a modelRef for the dream orchestrator." }], details: {}, isError: true };
+			}
 			const resetThread = params.resetThread !== false;
 			const currentSessionId = (ctx.sessionManager as any).getSessionId?.();
 
@@ -629,21 +653,53 @@ export default function (pi: ExtensionAPI) {
 			}));
 
 			let orchestratorSessionId: string;
-			let orchestratorResponse: SessionMessageResponse;
+			let orchestratorResponse: { text: string };
 			try {
-				orchestratorSessionId = await createDreamOrchestratorSession(hostUrl);
-				orchestratorResponse = await promptDreamOrchestrator(hostUrl, orchestratorSessionId, buildDreamOrchestratorPrompt({
-					contextRelativePath: contextPath,
-					contextAbsolutePath,
-					planDocPath,
-					phase1ArtifactAbsolutePath,
-					phase2ArtifactAbsolutePath,
-					phase3ArtifactAbsolutePath,
-					digestAbsolutePath,
-					reviewAbsolutePath,
-					summaryRelativePath: summaryPath,
-					rootDir,
-				}));
+				const orchestratorSession = directHost
+					? await createDreamOrchestratorSession(directHost, modelRef)
+					: await (async () => {
+						const created = await postJson<{ sessionId: string }>(hostUrl, "/api/v1/sessions", {
+							kind: "assistant",
+							origin: "assistant",
+							title: "Dream orchestrator",
+							assistantChannel: "internal",
+							assistantThreadId: `dream-${randomUUID()}`,
+							workspaceMode: "none",
+							modelRef,
+							toolNames: ["read", "bash", "grep", "find", "ls", "read_memory", "write_memory", "memory_subagent", "calendar_create_event"],
+						});
+						const session = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encodeURIComponent(created.sessionId)}/snapshot`, { modelRef }).catch(() => undefined);
+						return { metadata: { sessionId: created.sessionId }, getSnapshot: async () => session } as unknown as HostedSessionHandle;
+					})();
+				orchestratorSessionId = orchestratorSession.metadata.sessionId;
+				orchestratorResponse = directHost
+					? await promptDreamOrchestrator(orchestratorSession, modelRef, buildDreamOrchestratorPrompt({
+						contextRelativePath: contextPath,
+						contextAbsolutePath,
+						planDocPath,
+						phase1ArtifactAbsolutePath,
+						phase2ArtifactAbsolutePath,
+						phase3ArtifactAbsolutePath,
+						digestAbsolutePath,
+						reviewAbsolutePath,
+						summaryRelativePath: summaryPath,
+						rootDir,
+					}))
+					: await postJson<{ text: string }>(hostUrl, `/api/v1/sessions/${encodeURIComponent(orchestratorSession.metadata.sessionId)}/message`, {
+						text: buildDreamOrchestratorPrompt({
+							contextRelativePath: contextPath,
+							contextAbsolutePath,
+							planDocPath,
+							phase1ArtifactAbsolutePath,
+							phase2ArtifactAbsolutePath,
+							phase3ArtifactAbsolutePath,
+							digestAbsolutePath,
+							reviewAbsolutePath,
+							summaryRelativePath: summaryPath,
+							rootDir,
+						}),
+						modelRef,
+					});
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Dream orchestrator failed to run: ${error instanceof Error ? error.message : String(error)}` }],

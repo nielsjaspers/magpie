@@ -63,6 +63,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.events.on("magpie:webui:get-runtime", (callback: unknown) => {
+		if (typeof callback === "function") callback(serverState?.runtime);
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		const config = await loadConfig(ctx.cwd);
 		if (config.webui?.enabled !== true) return;
