@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as chrono from "chrono-node";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -44,6 +45,8 @@ type ScheduleNotifier =
 	| { kind: "macos" }
 	| { kind: "telegram"; botToken: string; chatId: string };
 
+type ScheduleExtensionMode = "builtin" | "magpie";
+
 interface ScheduleRuntimeOptions {
 	mode?: string;
 	model?: string;
@@ -51,6 +54,7 @@ interface ScheduleRuntimeOptions {
 	systemPrompt?: { strategy: "append" | "replace"; text: string };
 	notifier: ScheduleNotifier;
 	sessionRootDir: string;
+	extensionMode: ScheduleExtensionMode;
 }
 
 interface ParsedScheduleRequest {
@@ -67,6 +71,8 @@ interface ScheduleTaskInput {
 	mode?: string;
 	cwd?: string;
 	notify?: boolean;
+	extensionMode?: ScheduleExtensionMode;
+	preferredNotifier?: "telegram" | "macos" | "none";
 }
 
 function createScheduleStore(baseDir = resolve(homedir(), ".pi/agent/magpie-schedules")): ScheduleStore {
@@ -86,6 +92,30 @@ async function ensureStore(store: ScheduleStore) {
 
 function createId() {
 	return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getMagpiePackageDir(): string {
+	return resolve(dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+async function getMagpieExtensionPaths(): Promise<string[]> {
+	const packageDir = getMagpiePackageDir();
+	const requiredExtensions = new Set([
+		"subagents/index.ts",
+		"modes/index.ts",
+		"sessions/index.ts",
+		"preferences/index.ts",
+		"memory/index.ts",
+	]);
+	try {
+		const packageJson = JSON.parse(await readFile(resolve(packageDir, "package.json"), "utf8")) as { pi?: { extensions?: string[] } };
+		const extensions = packageJson.pi?.extensions ?? [];
+		return extensions
+			.filter((value) => typeof value === "string" && requiredExtensions.has(value))
+			.map((value) => resolve(packageDir, value));
+	} catch {
+		return Array.from(requiredExtensions).map((value) => resolve(packageDir, value));
+	}
 }
 
 function shellEscape(value: string) {
@@ -268,7 +298,7 @@ function normalizeEntry(entry: any): ScheduleEntry | undefined {
 	};
 }
 
-async function readIndex(store: ScheduleStore): Promise<ScheduleEntry[]> {
+export async function readIndex(store: ScheduleStore): Promise<ScheduleEntry[]> {
 	await ensureStore(store);
 	if (!existsSync(store.indexPath)) return [];
 	try {
@@ -330,13 +360,18 @@ async function writeManagedCrontab(managed: string[]) {
 	});
 }
 
-function createPiCommand(entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions): string {
+function createPiCommand(entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
 	const args = [
 		shellEscape(piCommand),
 		"--print",
 		`--session-dir \"$SESSION_DIR\"`,
-		`--tools ${shellEscape(SCHEDULE_BUILTIN_TOOLS.join(","))}`,
 	];
+	if (runtime.extensionMode === "magpie") {
+		args.push("--no-extensions");
+		for (const extensionPath of extensionPaths) args.push(`--extension ${shellEscape(extensionPath)}`);
+	} else {
+		args.push(`--tools ${shellEscape(SCHEDULE_BUILTIN_TOOLS.join(","))}`);
+	}
 	if (runtime.model) args.push(`--model ${shellEscape(runtime.model)}`);
 	if (runtime.thinkingLevel) args.push(`--thinking ${shellEscape(runtime.thinkingLevel)}`);
 	if (runtime.systemPrompt?.text) {
@@ -414,7 +449,7 @@ NODE
 `;
 }
 
-function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions): string {
+function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
 	const runtimeNodeDir = dirname(process.execPath);
 	const inheritedPath = process.env.PATH || "";
 	const runnerPath = [runtimeNodeDir, inheritedPath, ...COMMON_PATHS].filter(Boolean).join(":");
@@ -428,7 +463,7 @@ if command -v crontab >/dev/null 2>&1; then
 fi
 `
 		: "";
-	const piInvocation = createPiCommand(entry, piCommand, runtime);
+	const piInvocation = createPiCommand(entry, piCommand, runtime, extensionPaths);
 	const notify = createNotificationScript(entry, runtime);
 	const updateIndex = createIndexUpdateScript(store, entry);
 	return `#!/usr/bin/env bash
@@ -502,7 +537,7 @@ async function scheduleEntry(entry: ScheduleEntry): Promise<ScheduleEntry> {
 	return { ...entry, backend, cronId };
 }
 
-async function cancelScheduledEntry(entry: ScheduleEntry) {
+export async function cancelScheduledEntry(entry: ScheduleEntry) {
 	if (entry.atJobId && await commandExists("atrm")) {
 		try { await execFileAsync("atrm", [entry.atJobId]); } catch {}
 	}
@@ -538,9 +573,9 @@ function formatEntry(entry: ScheduleEntry) {
 	].filter(Boolean).join("\n");
 }
 
-function resolveScheduleNotifier(config: MagpieConfig, auth: MagpieAuthConfig, shouldNotify: boolean): ScheduleNotifier {
+function resolveScheduleNotifier(config: MagpieConfig, auth: MagpieAuthConfig, shouldNotify: boolean, preferred?: "telegram" | "macos" | "none"): ScheduleNotifier {
 	if (!shouldNotify) return { kind: "none" };
-	const explicit = config.schedule?.notifier;
+	const explicit = preferred ?? config.schedule?.notifier;
 	const telegramConfigured = Boolean(config.schedule?.telegram?.chatId?.trim() && (config.schedule?.telegram?.botToken?.trim() || auth.telegram?.botToken?.trim()));
 	const kind = explicit ?? (process.platform === "darwin" ? "macos" : telegramConfigured ? "telegram" : "none");
 	if (kind === "none") return { kind: "none" };
@@ -573,8 +608,9 @@ async function resolveScheduleRuntimeOptions(
 			strategy: mode?.prompt?.strategy ?? "append",
 			text: promptParts.join("\n\n"),
 		},
-		notifier: resolveScheduleNotifier(config, auth, input.notify !== false),
+		notifier: resolveScheduleNotifier(config, auth, input.notify !== false, input.preferredNotifier),
 		sessionRootDir: resolve(store.baseDir, "sessions", id),
+		extensionMode: input.extensionMode ?? "builtin",
 	} satisfies ScheduleRuntimeOptions & { cwd: string };
 }
 
@@ -584,7 +620,41 @@ function formatNotificationSummary(notifier: ScheduleNotifier, enabled: boolean)
 	return "Notification will be sent via Telegram when complete.";
 }
 
-async function scheduleTask(ctx: ExtensionContext, input: ScheduleTaskInput) {
+export async function ensureAutodreamScheduled(
+	ctx: ExtensionContext,
+	input: { enabled: boolean; schedule?: string; task: string; cwd?: string },
+): Promise<ScheduleEntry | undefined> {
+	const store = createScheduleStore();
+	const entries = await readIndex(store);
+	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task);
+	if (!input.enabled || !input.schedule?.trim()) {
+		for (const entry of activeEntries) {
+			await cancelScheduledEntry(entry);
+			entry.cancelledAt = new Date().toISOString();
+		}
+		if (activeEntries.length > 0) await writeIndex(store, entries);
+		return undefined;
+	}
+	const cronWhen = input.schedule.trim().startsWith("cron:") ? input.schedule.trim() : `cron:${input.schedule.trim()}`;
+	const existing = activeEntries.find((entry) => entry.when === cronWhen && entry.cwd === resolve(input.cwd?.trim() || ctx.cwd));
+		if (existing) return existing;
+	for (const entry of activeEntries) {
+		await cancelScheduledEntry(entry);
+		entry.cancelledAt = new Date().toISOString();
+	}
+	if (activeEntries.length > 0) await writeIndex(store, entries);
+	const scheduled = await scheduleTask(ctx, {
+		when: cronWhen,
+		task: input.task,
+		cwd: input.cwd,
+		notify: true,
+		preferredNotifier: "telegram",
+		extensionMode: "magpie",
+	});
+	return scheduled.entry;
+}
+
+export async function scheduleTask(ctx: ExtensionContext, input: ScheduleTaskInput) {
 	const store = createScheduleStore();
 	const parsed = parseWhenSpec(input.when);
 	if (!parsed) throw new Error(`Could not parse time: ${input.when}`);
@@ -595,6 +665,7 @@ async function scheduleTask(ctx: ExtensionContext, input: ScheduleTaskInput) {
 	const id = createId();
 	await ensureStore(store);
 	const runtime = await resolveScheduleRuntimeOptions(ctx, store, id, input);
+	const extensionPaths = runtime.extensionMode === "magpie" ? await getMagpieExtensionPaths() : [];
 	const scriptPath = resolve(store.scriptsDir, `${id}.sh`);
 	let entry: ScheduleEntry = {
 		id,
@@ -616,7 +687,7 @@ async function scheduleTask(ctx: ExtensionContext, input: ScheduleTaskInput) {
 		runs: [],
 	};
 	entry = { ...entry, backend: await chooseBackend(entry.type) };
-	await writeFile(scriptPath, createRunnerScript(store, entry, piCommand, runtime), "utf8");
+	await writeFile(scriptPath, createRunnerScript(store, entry, piCommand, runtime, extensionPaths), "utf8");
 	await chmod(scriptPath, 0o755);
 	entry = await scheduleEntry(entry);
 	entries.push(entry);

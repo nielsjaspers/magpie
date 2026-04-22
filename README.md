@@ -175,7 +175,9 @@ Preferences config:
 
 Memory config:
 - `memory.rootDir` controls the root directory for the new inbox/graph/archive/digest/review memory system
-- `memory.autodream.enabled` and `memory.autodream.schedule` configure nightly dream scheduling metadata
+- `memory.autodream.enabled` and `memory.autodream.schedule` configure nightly autodream scheduling
+- when autodream is enabled, Magpie will maintain a recurring background schedule entry for nightly dream runs
+- nightly autodream uses the `dream` tool against the most recently active Telegram assistant thread and sends the result through schedule notifications (preferably Telegram)
 
 Personal assistant config:
 - `personalAssistant.storageDir` controls local PA persistence and supports `~` expansion

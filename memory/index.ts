@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../config/config.js";
+import { ensureAutodreamScheduled } from "../schedule/index.js";
 import { parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
+import type { HostedSessionSnapshot, HostedSessionSummary } from "../runtime/session-host-types.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import {
 	createInboxMemoryItem,
@@ -49,6 +51,13 @@ function sessionConversationText(ctx: any): string {
 		.join("\n\n");
 }
 
+function snapshotConversationText(snapshot: HostedSessionSnapshot | undefined): string {
+	if (!snapshot?.messages?.length) return "";
+	return snapshot.messages
+		.map((message) => `## ${message.role}\n\n${message.text?.trim() || "(no text)"}`)
+		.join("\n\n");
+}
+
 function extractJsonObject(text: string): string {
 	const trimmed = text.trim();
 	if (trimmed.startsWith("```")) {
@@ -82,6 +91,17 @@ function parseDreamPlan(text: string): DreamPlan {
 	return parsed;
 }
 
+async function getJson<T>(baseUrl: string, path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
+	const url = new URL(path, baseUrl);
+	for (const [key, value] of Object.entries(params ?? {})) {
+		if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
+	}
+	const response = await fetch(url);
+	const json = await response.json();
+	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`);
+	return json as T;
+}
+
 async function queueTelegramReset(hostUrl: string, threadId: string) {
 	setTimeout(() => {
 		void fetch(new URL("/api/v1/assistant/reset", hostUrl), {
@@ -93,6 +113,56 @@ async function queueTelegramReset(hostUrl: string, threadId: string) {
 		});
 	}, 1500);
 }
+
+async function resolveDreamTarget(hostUrl: string, explicitThreadId: string | undefined, currentSessionId: string | undefined) {
+	if (explicitThreadId?.trim()) return { threadId: explicitThreadId.trim(), source: "explicit" as const };
+	const parsedThread = typeof currentSessionId === "string" ? parseAssistantThreadKey(currentSessionId) : undefined;
+	if (parsedThread?.channel === "telegram") return { threadId: parsedThread.threadId, source: "current-session" as const };
+	const listed = await getJson<{ sessions: HostedSessionSummary[] }>(hostUrl, "/api/v1/sessions", {
+		kind: "assistant",
+		assistantChannel: "telegram",
+		includeArchived: 0,
+		limit: 10,
+	});
+	const target = listed.sessions
+		.filter((session) => session.assistantThreadId)
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+	if (!target?.assistantThreadId) throw new Error("No active Telegram assistant thread found.");
+	return { threadId: target.assistantThreadId, source: "active-telegram" as const };
+}
+
+async function getAssistantSnapshot(hostUrl: string, threadId: string, limit = 200) {
+	return await getJson<HostedSessionSnapshot>(hostUrl, "/api/v1/assistant/snapshot", {
+		channel: "telegram",
+		threadId,
+		limit,
+	});
+}
+
+async function getOpenSessionContext(hostUrl: string, excludeThreadId: string, limit = 3): Promise<string> {
+	const listed = await getJson<{ sessions: HostedSessionSummary[] }>(hostUrl, "/api/v1/sessions", {
+		includeArchived: 0,
+		limit: 12,
+	});
+	const candidates = listed.sessions
+		.filter((session) => session.sessionId && !(session.assistantChannel === "telegram" && session.assistantThreadId === excludeThreadId))
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+		.slice(0, limit);
+	if (candidates.length === 0) return "Other open sessions: none";
+	const sections: string[] = ["Other open sessions context"];
+	for (const session of candidates) {
+		try {
+			const encoded = encodeURIComponent(session.sessionId);
+			const snapshot = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encoded}/snapshot`, { limit: 12 });
+			sections.push(`## ${session.sessionId}\n\n${snapshotConversationText(snapshot).trim() || "(no text)"}`);
+		} catch {
+			sections.push(`## ${session.sessionId}\n\n(unavailable)`);
+		}
+	}
+	return sections.join("\n\n");
+}
+
+const NIGHTLY_AUTODREAM_TASK = "[magpie:autodream] Run nightly autodream now. Use the dream tool to process the active Telegram thread, include other open sessions as context, write digest/review/graph artifacts, and reset the Telegram thread when done.";
 
 export default function (pi: ExtensionAPI) {
 	let subagentCore: SubagentCoreAPI | null = null;
@@ -106,6 +176,16 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		const config = await loadConfig(ctx.cwd);
 		await ensureMemoryDirs(getMemoryRootDir(config.memory));
+		try {
+			await ensureAutodreamScheduled(ctx, {
+				enabled: config.memory?.autodream?.enabled === true,
+				schedule: config.memory?.autodream?.schedule,
+				task: NIGHTLY_AUTODREAM_TASK,
+				cwd: ctx.cwd,
+			});
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.notify(`Autodream scheduling failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
 	});
 
 	pi.registerCommand("remember", {
@@ -228,10 +308,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "dream",
 		label: "Dream",
-		description: "Trigger the manual Telegram dream flow: archive the current session, consolidate memory, write digest/review/graph updates, and reset the Telegram thread.",
-		promptSnippet: "Trigger the manual dream flow.",
+		description: "Trigger the dream flow: archive the Telegram thread, consolidate memory, write digest/review/graph updates, and optionally reset the Telegram thread.",
+		promptSnippet: "Trigger the dream flow.",
 		parameters: Type.Object({
 			note: Type.Optional(Type.String({ description: "Optional note about what this dream run should focus on" })),
+			threadId: Type.Optional(Type.String({ description: "Optional Telegram threadId. Omit to use the current Telegram thread or the most recently active Telegram thread." })),
+			resetThread: Type.Optional(Type.Boolean({ description: "Whether to reset the Telegram thread after dreaming. Defaults to true." })),
+			includeOpenSessions: Type.Optional(Type.Boolean({ description: "Whether to include other open sessions as context. Defaults to true." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (!subagentCore) {
@@ -241,27 +324,42 @@ export default function (pi: ExtensionAPI) {
 			const config = await loadConfig(ctx.cwd);
 			const rootDir = getMemoryRootDir(config.memory);
 			await ensureMemoryDirs(rootDir);
+			const hostUrl = config.telegram?.hostUrl?.trim() || "http://127.0.0.1:8787";
+			const resetThread = params.resetThread !== false;
+			const includeOpenSessions = params.includeOpenSessions !== false;
+			const currentSessionId = (ctx.sessionManager as any).getSessionId?.();
 
-			const sessionId = (ctx.sessionManager as any).getSessionId?.();
-			const parsedThread = typeof sessionId === "string" ? parseAssistantThreadKey(sessionId) : undefined;
-			if (!parsedThread || parsedThread.channel !== "telegram") {
-				return {
-					content: [{ type: "text", text: "dream currently only supports Telegram assistant threads." }],
-					details: { sessionId },
-					isError: true,
-				};
+			let target;
+			try {
+				target = await resolveDreamTarget(hostUrl, params.threadId, currentSessionId);
+			} catch (error) {
+				return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: {}, isError: true };
+			}
+
+			let telegramSnapshot: HostedSessionSnapshot | undefined;
+			try {
+				telegramSnapshot = await getAssistantSnapshot(hostUrl, target.threadId, 250);
+			} catch (error) {
+				if (target.source !== "current-session") {
+					return {
+						content: [{ type: "text", text: `Failed to load Telegram thread snapshot: ${error instanceof Error ? error.message : String(error)}` }],
+						details: { threadId: target.threadId },
+						isError: true,
+					};
+				}
 			}
 
 			const timezone = config.personalAssistant?.timezone?.trim() || "Europe/Amsterdam";
 			const now = new Date();
 			const { dayStamp, timestampStamp } = getLocalDateParts(now, timezone);
-			const transcript = sessionConversationText(ctx);
+			const transcript = snapshotConversationText(telegramSnapshot) || sessionConversationText(ctx);
 			const inboxFiles = await listMemoryFiles(rootDir, "inbox", { recursive: true, extensions: [".md", ".json", ".txt"] });
 			const recentReviewFiles = await listMemoryFiles(rootDir, "review", { recursive: false, extensions: [".md"] });
 			const graphContextFiles = await searchMemoryFiles(rootDir, params.note?.trim() || transcript.slice(0, 800), 10);
+			const openSessionContext = includeOpenSessions ? await getOpenSessionContext(hostUrl, target.threadId, 3) : "Other open sessions: omitted";
 
 			const dreamPrompt = [
-				"Run a manual Telegram dream pass.",
+				"Run a memory dream pass.",
 				"Return exactly one JSON object with these fields:",
 				"- digestMarkdown: string (user-facing digest for Telegram and digest/daily/<day>.md)",
 				"- archiveSummaryMarkdown: string (internal archive summary for this dream run)",
@@ -275,11 +373,14 @@ export default function (pi: ExtensionAPI) {
 				params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 				`Local timezone: ${timezone}`,
 				`Current local day: ${dayStamp}`,
+				`Target Telegram thread: ${target.threadId}`,
+				`Dream target source: ${target.source}`,
 				formatStoredFiles(inboxFiles, "Inbox items"),
 				formatStoredFiles(recentReviewFiles.slice(-3), "Recent review files"),
 				graphContextFiles.length
 					? ["Relevant graph/archive context", ...graphContextFiles.map((file) => `## ${file.relativePath}\n\n${file.content.trim()}`)].join("\n\n")
 					: "Relevant graph/archive context: none",
+				openSessionContext,
 				"Current Telegram transcript:",
 				transcript || "(empty transcript)",
 			].filter(Boolean).join("\n\n");
@@ -321,7 +422,8 @@ export default function (pi: ExtensionAPI) {
 				`# Telegram Transcript Archive`,
 				"",
 				`- dreamedAt: ${now.toISOString()}`,
-				`- threadId: ${parsedThread.threadId}`,
+				`- threadId: ${target.threadId}`,
+				`- source: ${target.source}`,
 				"",
 				transcript || "(empty transcript)",
 			].join("\n"));
@@ -331,6 +433,7 @@ export default function (pi: ExtensionAPI) {
 				`- dreamedAt: ${now.toISOString()}`,
 				`- timezone: ${timezone}`,
 				`- day: ${dayStamp}`,
+				`- threadId: ${target.threadId}`,
 				params.note?.trim() ? `- note: ${params.note.trim()}` : undefined,
 				"",
 				`## Archive Summary`,
@@ -348,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 				: [];
 			const archivedInbox = await moveInboxItemsToArchive(rootDir, processedInbox, timestampStamp);
 
-			await queueTelegramReset(config.telegram?.hostUrl?.trim() || "http://127.0.0.1:8787", parsedThread.threadId);
+			if (resetThread) await queueTelegramReset(hostUrl, target.threadId);
 
 			const summaryLines = [
 				"Dream complete.",
@@ -362,8 +465,7 @@ export default function (pi: ExtensionAPI) {
 				`- dream archive: ${dreamArchive.relativePath}`,
 				...graphWrites.map((file) => `- graph: ${file.relativePath}`),
 				...archivedInbox.map((file) => `- archived inbox: ${file.to}`),
-				"",
-				"Telegram thread reset has been queued.",
+				resetThread ? "Telegram thread reset has been queued." : "Telegram thread reset skipped.",
 			].filter(Boolean);
 
 			return {
@@ -371,6 +473,8 @@ export default function (pi: ExtensionAPI) {
 				details: {
 					dayStamp,
 					timestampStamp,
+					threadId: target.threadId,
+					targetSource: target.source,
 					digestFile,
 					reviewFile,
 					telegramArchive,
