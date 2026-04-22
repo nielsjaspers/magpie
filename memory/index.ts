@@ -688,15 +688,13 @@ export default function (pi: ExtensionAPI) {
 			let phase1ArtifactText = "";
 			try {
 				phase1ArtifactText = await runDreamPhase(ctx, config, subagentCore, "dream-phase-1", [
-					"Run dream phase 1: intake and consolidation.",
-					"You are a normal subagent with full coding tools. Actually do the work. Read files, use bash, write files, and move files when needed. Do not merely describe intended actions.",
-					"Task: inspect the inbox, Telegram transcript archive, and recent email summaries. Decide what should be integrated now versus retained for later.",
-					"For processed inbox items, actually move them yourself out of inbox and into the archive folder for this dream run, using bash mv if needed.",
-					"Leave only genuinely unresolved or intentionally retained items in inbox.",
-					"If an inbox item contains a durable personal fact, preference, relationship, pet fact, project fact, or other stable context, do not leave it sitting in inbox after processing it.",
-					"Write a freeform markdown artifact summarizing what you read, what you changed, what you archived, what you retained, and any graph/search directions that matter next.",
+					"Run dream phase 1: intake, transcript compaction, and handoff preparation.",
+					"You are a normal subagent with full coding tools. Actually do the work. Read files, use bash, and write the handoff artifact. Do not merely describe intended actions.",
+					"Task: inspect the current inbox, the archived Telegram transcript for this dream run, and the recent email summaries. Consolidate what matters into a freeform markdown handoff artifact for the next phase.",
+					"This phase is about intake and compaction, not graph curation. Do not update graph files in phase 1.",
+					"This phase should identify what seems durable, what seems unresolved, what likely belongs in long-term memory, and what the next phase should verify against the graph.",
+					"Write a freeform markdown artifact that a second subagent can read to do the actual inbox-to-graph integration work.",
 					`Required artifact path: ${phase1ArtifactAbsolutePath}`,
-					`Archive processed inbox items under: ${resolveMemoryPath(rootDir, `archive/dreams/${timestampStamp}/inbox`)}`,
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 					`Memory root: ${rootDir}`,
 					`Inbox directory: ${resolveMemoryPath(rootDir, "inbox")}`,
@@ -719,15 +717,18 @@ export default function (pi: ExtensionAPI) {
 			let phase2ArtifactText = "";
 			try {
 				phase2ArtifactText = await runDreamPhase(ctx, config, subagentCore, "dream-phase-2", [
-					"Run dream phase 2: graph linking and memory integration.",
-					"You are a normal subagent with full coding tools. Actually do the work. Read files, grep, use bash, edit files, and write files when needed. Do not merely describe intended actions.",
-					"Task: read the phase 1 artifact, inspect graph/archive files as needed, and directly update graph files with durable memory extracted from the dream inputs.",
+					"Run dream phase 2: inbox-to-graph integration.",
+					"You are a normal subagent with full coding tools. Actually do the work. Read files, grep, use bash, edit files, write files, and move files when needed. Do not merely describe intended actions.",
+					"Task: read the phase 1 artifact first, then inspect graph/archive files as needed, process inbox items into long-term graph updates, and archive any processed inbox items for this dream run.",
 					"Use the graph for stable durable context: people, pets, preferences, relationships, projects, places, routines, and other reusable long-lived facts.",
-					"Write a freeform markdown artifact summarizing what graph files you changed, what durable links you added, and any remaining ambiguity.",
+					"If an inbox item is processed into long-term memory, actually move it out of inbox into this run's archive folder. Leave only genuinely unresolved items in inbox.",
+					"Write a freeform markdown artifact summarizing what graph files you changed, which inbox items you processed and archived, which items you retained, and any remaining ambiguity for review or digest generation.",
 					`Required artifact path: ${phase2ArtifactAbsolutePath}`,
+					`Archive processed inbox items under: ${resolveMemoryPath(rootDir, `archive/dreams/${timestampStamp}/inbox`)}`,
 					params.note?.trim() ? `Dream focus note: ${params.note.trim()}` : undefined,
 					`Memory root: ${rootDir}`,
 					`Phase 1 artifact: ${phase1ArtifactAbsolutePath}`,
+					`Inbox directory: ${resolveMemoryPath(rootDir, "inbox")}`,
 					`Graph directory: ${resolveMemoryPath(rootDir, "graph")}`,
 					`Archive directory: ${resolveMemoryPath(rootDir, "archive")}`,
 				].filter(Boolean).join("\n\n"), phase2ArtifactAbsolutePath);
