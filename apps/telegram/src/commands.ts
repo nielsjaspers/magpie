@@ -37,7 +37,7 @@ const HELP_TEXT = `Available commands:
 /model <alias>   Switch model
 /session         Show current session status
 /peek            Show a lightweight recent session snapshot
-/restart         Clear session and start fresh
+/restart         Clear session and reset to the default configured model
 /new             Clear session (will support session reattachment later)
 /clear           Clear session
 /help            Show this help message
@@ -114,7 +114,12 @@ export function registerCommands(bot: Bot, config: TelegramAppConfig): void {
 		const chatId = String(ctx.chat.id);
 		const { ref } = getActiveModel();
 		await resetAssistantThread(config, chatId, ref);
-		await replyHtml(ctx, "Session cleared. Starting fresh on your next message.");
+		const firstAlias = Object.keys(config.models)[0];
+		const firstRef = firstAlias ? config.models[firstAlias] : undefined;
+		if (firstAlias && firstRef) setActiveModel(firstAlias, firstRef);
+		await replyHtml(ctx, firstAlias && firstRef
+			? `Session cleared. Model reset to ${firstAlias} (${firstRef}).`
+			: "Session cleared. Starting fresh on your next message.");
 	});
 
 	bot.command("new", async (ctx) => {

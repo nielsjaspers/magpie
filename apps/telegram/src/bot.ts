@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { extname, resolve } from "node:path";
 import { Bot, GrammyError, HttpError } from "grammy";
 import type { Context } from "grammy";
 import { isTelegramLocalCommand, registerCommands } from "./commands.js";
@@ -23,15 +25,32 @@ export function isAllowed(sender: string, allowList: Set<string>): boolean {
 
 async function sendHtml(ctx: Context, text: string) {
 	if (!ctx.chat) return;
-	try {
-		await ctx.api.sendMessage(ctx.chat.id, convertMarkdownToTelegramHtml(text), { parse_mode: "HTML" });
-	} catch (error: unknown) {
-		if (error instanceof GrammyError) {
-			await ctx.api.sendMessage(ctx.chat.id, text);
-		} else {
-			throw error;
+	for (const chunk of splitMessage(text)) {
+		try {
+			await ctx.api.sendMessage(ctx.chat.id, convertMarkdownToTelegramHtml(chunk), { parse_mode: "HTML" });
+		} catch (error: unknown) {
+			if (error instanceof GrammyError) {
+				await ctx.api.sendMessage(ctx.chat.id, chunk);
+			} else {
+				throw error;
+			}
 		}
 	}
+}
+
+async function downloadTelegramFile(ctx: Context, config: TelegramAppConfig, fileId: string, preferredName: string) {
+	const file = await ctx.api.getFile(fileId);
+	if (!file.file_path) throw new Error("Telegram file path unavailable");
+	const url = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
+	const response = await fetch(url);
+	if (!response.ok) throw new Error(`Failed to download Telegram file: ${response.status}`);
+	const buffer = Buffer.from(await response.arrayBuffer());
+	const attachmentDir = resolve(config.storageDir, "attachments", String(ctx.chat?.id ?? "unknown"));
+	await mkdir(attachmentDir, { recursive: true });
+	const safeName = preferredName.replace(/[^a-zA-Z0-9._-]+/g, "-");
+	const path = resolve(attachmentDir, safeName);
+	await writeFile(path, buffer);
+	return path;
 }
 
 export function createBot(config: TelegramAppConfig): Bot {
@@ -50,38 +69,78 @@ export function createBot(config: TelegramAppConfig): Bot {
 
 	registerCommands(bot, config);
 
-	bot.on("message:text", async (ctx) => {
-		const text = ctx.message.text.trim();
-		if (!text) return;
-		if (isTelegramLocalCommand(text)) return;
+	const handleIncomingMessage = async (ctx: Context, text: string) => {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		if (isTelegramLocalCommand(trimmed)) return;
 
-		const chatId = String(ctx.chat.id);
+		const chatId = String(ctx.chat!.id);
 		const { ref } = getActiveModel();
 
-		try {
-			await ctx.api.sendChatAction(ctx.chat.id, "typing");
-			await resolveAssistantThread(config, chatId, ref);
-			const response = await sendAssistantMessage(config, chatId, text, ref);
-			if (config.showToolCalls && response.toolEvents?.length) {
-				for (const event of response.toolEvents) {
-					if (event.type === "start") {
-						const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
-						const toolText = `[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`;
-						await sendHtml(ctx, toolText);
-					} else {
-						const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
-						let resultPreview = event.result || "";
-						if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
-						await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
-					}
+		await ctx.api.sendChatAction(ctx.chat!.id, "typing");
+		await resolveAssistantThread(config, chatId, ref);
+		const response = await sendAssistantMessage(config, chatId, trimmed, ref);
+		if (config.showToolCalls && response.toolEvents?.length) {
+			for (const event of response.toolEvents) {
+				if (event.type === "start") {
+					const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
+					const toolText = `[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`;
+					await sendHtml(ctx, toolText);
+				} else {
+					const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
+					let resultPreview = event.result || "";
+					if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
+					await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
 				}
 			}
-			for (const chunk of splitMessage(response.text || "(empty response)")) {
-				await sendHtml(ctx, chunk);
-			}
+		}
+		await sendHtml(ctx, response.text || "(empty response)");
+	};
+
+	bot.on("message:text", async (ctx) => {
+		try {
+			await handleIncomingMessage(ctx, ctx.message.text);
 		} catch (error: unknown) {
 			console.error("Failed to process Telegram message", error);
 			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error."), { parse_mode: "HTML" });
+		}
+	});
+
+	bot.on("message:document", async (ctx) => {
+		try {
+			const doc = ctx.message.document;
+			const ext = extname(doc.file_name || "") || ".bin";
+			const fileName = doc.file_name || `${doc.file_unique_id}${ext}`;
+			const savedPath = await downloadTelegramFile(ctx, config, doc.file_id, fileName);
+			const caption = ctx.message.caption?.trim();
+			const prompt = [
+				caption ? `User caption: ${caption}` : undefined,
+				`A Telegram file was attached and saved locally at: ${savedPath}`,
+				`Original filename: ${fileName}`,
+				"Use read if you need to inspect it.",
+			].filter(Boolean).join("\n\n");
+			await handleIncomingMessage(ctx, prompt);
+		} catch (error: unknown) {
+			console.error("Failed to process Telegram document", error);
+			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error while handling that file."), { parse_mode: "HTML" });
+		}
+	});
+
+	bot.on("message:photo", async (ctx) => {
+		try {
+			const photo = ctx.message.photo.at(-1);
+			if (!photo) return;
+			const savedPath = await downloadTelegramFile(ctx, config, photo.file_id, `${photo.file_unique_id}.jpg`);
+			const caption = ctx.message.caption?.trim();
+			const prompt = [
+				caption ? `User caption: ${caption}` : undefined,
+				`A Telegram image was attached and saved locally at: ${savedPath}`,
+				"Use read if you need to inspect it.",
+			].filter(Boolean).join("\n\n");
+			await handleIncomingMessage(ctx, prompt);
+		} catch (error: unknown) {
+			console.error("Failed to process Telegram photo", error);
+			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error while handling that image."), { parse_mode: "HTML" });
 		}
 	});
 

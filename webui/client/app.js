@@ -25,8 +25,7 @@ const els = {
   attachBtn: document.getElementById('attachBtn'),
   copyIdBtn: document.getElementById('copyIdBtn'),
   interruptBtn: document.getElementById('interruptBtn'),
-  newAssistantBtn: document.getElementById('newAssistantBtn'),
-  newCodingBtn: document.getElementById('newCodingBtn'),
+  newSessionBtn: document.getElementById('newSessionBtn'),
   mobileNewSessionBtn: document.getElementById('mobileNewSessionBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
   sidebar: document.getElementById('sidebar'),
@@ -62,9 +61,8 @@ async function init() {
 
 function setupEventListeners() {
   els.refreshBtn.addEventListener('click', refreshSessions);
-  els.newAssistantBtn.addEventListener('click', () => createSession('assistant'));
-  els.newCodingBtn.addEventListener('click', () => createSession('coding'));
-  els.mobileNewSessionBtn.addEventListener('click', () => createSession('assistant'));
+  els.newSessionBtn.addEventListener('click', () => createSession());
+  els.mobileNewSessionBtn.addEventListener('click', () => createSession());
   els.sendBtn.addEventListener('click', sendMessage);
   els.interruptBtn.addEventListener('click', interruptSession);
   
@@ -290,14 +288,11 @@ function connectStream(sessionId) {
 
 // --- Actions ---
 
-async function createSession(kind = 'assistant') {
+async function createSession() {
   try {
     const modelRef = getSelectedModel();
-    const title = 'New ' + (kind === 'coding' ? 'Coding' : 'Conversation');
-    
-    const body = kind === 'coding'
-      ? { kind: 'coding', origin: 'remote', workspaceMode: 'attached', title, modelRef }
-      : { kind: 'assistant', origin: 'assistant', assistantChannel: 'web', title, modelRef };
+    const title = 'New Session';
+    const body = { kind: 'coding', origin: 'remote', workspaceMode: 'attached', title, modelRef };
     
     const result = await request('/api/v1/sessions', {
       method: 'POST',
@@ -347,10 +342,17 @@ async function sendMessage() {
       for (const file of currentAttachments) {
         formData.append('file', file);
       }
-      await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/files`, {
+      const upload = await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/files`, {
         method: 'POST',
         body: formData
       });
+      const uploadedPaths = (upload.files || []).map(file => typeof file === 'string' ? file : (file.path || file.name || '')).filter(Boolean);
+      if (uploadedPaths.length > 0) {
+        const attachmentNote = uploadedPaths.map(path => `- ${path}`).join('\n');
+        displayText = text
+          ? `${text}\n\nAttached files saved at:\n${attachmentNote}`
+          : `Attached files saved at:\n${attachmentNote}`;
+      }
     }
     
     await request(`/api/v1/sessions/${encodeURIComponent(state.activeSessionId)}/message`, {
@@ -534,7 +536,19 @@ function handleFiles(filesArray) {
 async function copySessionId() {
   if (!state.activeSessionId) return;
   try {
-    await navigator.clipboard.writeText(state.activeSessionId);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(state.activeSessionId);
+    } else {
+      const input = document.createElement('textarea');
+      input.value = state.activeSessionId;
+      input.setAttribute('readonly', '');
+      input.style.position = 'absolute';
+      input.style.left = '-9999px';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      document.body.removeChild(input);
+    }
     const originalHtml = els.copyIdBtn.innerHTML;
     els.copyIdBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-color)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
     setTimeout(() => { els.copyIdBtn.innerHTML = originalHtml; }, 2000);

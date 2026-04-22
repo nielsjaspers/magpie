@@ -1,4 +1,4 @@
-const MAX_MESSAGE_LEN = 4000;
+const MAX_MESSAGE_LEN = 3200;
 
 export function escapeHtml(text: string): string {
 	return text
@@ -56,8 +56,11 @@ export function convertMarkdownToTelegramHtml(text: string): string {
 
 	// Links: [text](url)
 	result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, linkText, url) => {
-		return `<a href="${escapeHtml(url)}">${linkText}</a>`;
+		return `<a href="${escapeHtml(url)}">${escapeHtml(linkText)}</a>`;
 	});
+
+	// Headings: # text -> bold line
+	result = result.replace(/^#{1,6}\s+([^\n]+)$/gm, "<b>$1</b>");
 
 	// Blockquotes: > text (handle line by line)
 	result = result.replace(/^\s*&gt; ([^\n]+)$/gm, "<blockquote>$1</blockquote>");

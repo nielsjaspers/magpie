@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { expandHomePath, getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
@@ -71,6 +71,23 @@ async function tryReadText(path: string): Promise<string | undefined> {
 	} catch {
 		return undefined;
 	}
+}
+
+function sanitizeUploadedFilename(name: string): string {
+	return name.replace(/[^a-zA-Z0-9._-]+/g, "-") || "upload.bin";
+}
+
+async function saveAssistantSessionFiles(sessionPath: string, sessionId: string, files: Array<{ filename?: string; data: Buffer }>) {
+	const attachmentDir = resolve(dirname(sessionPath), "attachments", sanitizeUploadedFilename(sessionId));
+	await mkdir(attachmentDir, { recursive: true });
+	const results: string[] = [];
+	for (const file of files) {
+		const fileName = sanitizeUploadedFilename(file.filename || "upload.bin");
+		const targetPath = resolve(attachmentDir, fileName);
+		await writeFile(targetPath, file.data);
+		results.push(targetPath);
+	}
+	return results;
 }
 
 export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerConfig): Promise<WebUiServerRuntime> {
@@ -558,20 +575,26 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					const codingSession = await codingHost.getSession(sessionPath.sessionId);
 					if (!codingSession) {
 						const assistantSession = await host.getSession(sessionPath.sessionId);
-						if (assistantSession) return sendJson(res, 400, { error: "File uploads are only supported for coding sessions" });
-						return sendJson(res, 404, { error: "Session not found" });
+						if (!assistantSession?.metadata.sourceSessionPath) return sendJson(res, 404, { error: "Session not found" });
+						const results = await saveAssistantSessionFiles(
+							assistantSession.metadata.sourceSessionPath,
+							sessionPath.sessionId,
+							fileParts.map((part) => ({ filename: part.filename, data: part.data })),
+						);
+						return sendJson(res, 200, { ok: true, files: results });
 					}
 
 					const workspaceDir = codingSession.metadata.cwd;
 					const results: string[] = [];
 
 					for (const part of fileParts) {
-						const targetPath = resolve(workspaceDir, part.filename!);
+						const safeName = sanitizeUploadedFilename(part.filename!);
+						const targetPath = resolve(workspaceDir, safeName);
 						if (!targetPath.startsWith(workspaceDir)) {
 							return sendJson(res, 400, { error: "Invalid filename" });
 						}
 						await writeFile(targetPath, part.data);
-						results.push(part.filename!);
+						results.push(targetPath);
 					}
 
 					return sendJson(res, 200, { ok: true, files: results });

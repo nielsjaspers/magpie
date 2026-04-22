@@ -161,18 +161,17 @@ async function restoreFetchedLocalSession(
 	if (!restorePath) throw new Error(`Unable to determine local session path for fetched session ${remoteSessionId}`);
 	const localHost = createLocalCodingHost(ctx, config);
 	const localOwner = { kind: "local_tui" as const, hostId: localHost.hostId, displayName: "Local TUI" };
-	await localHost.importSession({
+	const restoredSession = await localHost.importSession({
 		bundle: {
 			...bundle,
 			metadata: {
 				...bundle.metadata,
 				location: "local",
-				cwd: ctx.cwd,
+				cwd: bundle.metadata.cwd,
 				sourceSessionPath: restorePath,
 				owner: localOwner,
 			},
 		},
-		targetCwd: ctx.cwd,
 		owner: localOwner,
 	});
 	if (stub?.archivedSessionPath?.trim() && existsSync(stub.archivedSessionPath) && stub.archivedSessionPath !== restorePath) {
@@ -180,6 +179,7 @@ async function restoreFetchedLocalSession(
 	}
 	return {
 		restoredPath: restorePath,
+		workspacePath: restoredSession.metadata.cwd,
 		localHost,
 		localOwner,
 		sessionId: bundle.metadata.sessionId,
@@ -639,7 +639,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(`Local restore succeeded, but remote cleanup failed: ${(error as Error).message}`, "warning");
 				}
 				pi.events.emit("magpie:remote:fetched", { sessionId: remoteSessionId, remoteHost: resolvedRemoteHost.name });
-				ctx.ui.notify(`Fetched ${remoteSessionId} into ${ctx.cwd}\nSession restored at ${restored.restoredPath}${remoteArchived ? "" : "\nRemote copy still exists."}`, "info");
+				ctx.ui.notify(`Fetched ${remoteSessionId}\nSession restored at ${restored.restoredPath}${restored.workspacePath ? `\nWorkspace restored at ${restored.workspacePath}` : ""}${remoteArchived ? "" : "\nRemote copy still exists."}`, "info");
 				return;
 			}
 
