@@ -12,6 +12,12 @@ export function senderId(from: { id: number; username?: string | undefined }): s
 	return from.username ? `${from.id}|${from.username}` : String(from.id);
 }
 
+function formatErrorMessage(prefix: string, error: unknown): string {
+	const detail = error instanceof Error ? error.message : String(error);
+	const cleaned = detail.replace(/\s+/g, " ").trim();
+	return cleaned ? `${prefix}\n\n${cleaned.slice(0, 1500)}` : prefix;
+}
+
 export function isAllowed(sender: string, allowList: Set<string>): boolean {
 	if (allowList.size === 0) return true;
 	if (allowList.has("*")) return true;
@@ -88,19 +94,20 @@ export function createBot(config: TelegramAppConfig): Bot {
 			lastEditAt = now;
 			const chunks = splitMessage(streamedText);
 			const firstChunk = chunks[0] || streamedText;
+			const html = convertMarkdownToTelegramHtml(firstChunk);
 			try {
 				if (!streamedMessageId) {
-					const sent = await ctx.api.sendMessage(ctx.chat!.id, convertMarkdownToTelegramHtml(firstChunk), { parse_mode: "HTML" });
+					const sent = await ctx.api.sendMessage(ctx.chat!.id, html, { parse_mode: "HTML" });
 					streamedMessageId = sent.message_id;
 				} else {
-					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, convertMarkdownToTelegramHtml(firstChunk), { parse_mode: "HTML" });
+					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, html, { parse_mode: "HTML" });
 				}
 			} catch (error) {
 				if (!streamedMessageId) {
 					const sent = await ctx.api.sendMessage(ctx.chat!.id, firstChunk);
 					streamedMessageId = sent.message_id;
-				} else {
-					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, firstChunk).catch(() => {});
+				} else if (force) {
+					await sendHtml(ctx, firstChunk);
 				}
 			}
 		};
@@ -141,7 +148,7 @@ export function createBot(config: TelegramAppConfig): Bot {
 			await handleIncomingMessage(ctx, ctx.message.text);
 		} catch (error: unknown) {
 			console.error("Failed to process Telegram message", error);
-			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error."), { parse_mode: "HTML" });
+			await ctx.api.sendMessage(ctx.chat.id, escapeHtml(formatErrorMessage("Sorry — I hit an error.", error)), { parse_mode: "HTML" });
 		}
 	});
 
@@ -161,7 +168,7 @@ export function createBot(config: TelegramAppConfig): Bot {
 			await handleIncomingMessage(ctx, prompt);
 		} catch (error: unknown) {
 			console.error("Failed to process Telegram document", error);
-			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error while handling that file."), { parse_mode: "HTML" });
+			await ctx.api.sendMessage(ctx.chat.id, escapeHtml(formatErrorMessage("Sorry — I hit an error while handling that file.", error)), { parse_mode: "HTML" });
 		}
 	});
 
@@ -179,7 +186,7 @@ export function createBot(config: TelegramAppConfig): Bot {
 			await handleIncomingMessage(ctx, prompt);
 		} catch (error: unknown) {
 			console.error("Failed to process Telegram photo", error);
-			await ctx.api.sendMessage(ctx.chat.id, escapeHtml("Sorry — I hit an error while handling that image."), { parse_mode: "HTML" });
+			await ctx.api.sendMessage(ctx.chat.id, escapeHtml(formatErrorMessage("Sorry — I hit an error while handling that image.", error)), { parse_mode: "HTML" });
 		}
 	});
 

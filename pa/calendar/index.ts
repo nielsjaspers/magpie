@@ -242,6 +242,60 @@ function selectWritableCalendar(calendars: ICloudCalendarSource[], preferred: st
 	return calendars[0];
 }
 
+export async function createCalendarEventForContext(
+	ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+	params: { summary: string; start: string; end: string; location?: string; description?: string; allDay?: boolean; calendarId?: string },
+): Promise<{ event: PaCalendarEvent; targetCalendar: { id: string; name: string } }> {
+	const runtime = await loadPersonalAssistantRuntime(ctx);
+	const icloud = runtime.personalAssistantAuth?.calendar?.icloud;
+	if (!icloud?.email || !icloud.appPassword) {
+		throw new Error("iCloud calendar writing is not configured.");
+	}
+	const calendars = await listICloudCalendars(icloud.email, icloud.appPassword);
+	const defaultCalendar = runtime.personalAssistant?.calendar?.defaultWritableCalendar;
+	const targetCalendar = selectWritableCalendar(calendars, defaultCalendar, params.calendarId);
+	if (!targetCalendar) {
+		throw new Error(`No writable iCloud calendar matched the requested/default target. Available iCloud calendars: ${calendars.map((calendar) => calendar.name).join(", ") || "none"}`);
+	}
+	const start = new Date(params.start);
+	const end = new Date(params.end);
+	if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+		throw new Error("Invalid start/end timestamps. Use ISO 8601 and ensure end is after start.");
+	}
+	const uid = randomUUID();
+	const cal = icalGenerator({ prodId: "-//magpie//pi-calendar//EN" });
+	cal.createEvent({
+		id: uid,
+		start,
+		end,
+		summary: params.summary,
+		location: params.location,
+		description: params.description,
+		allDay: params.allDay ?? false,
+		stamp: new Date(),
+	});
+	const client = await getICloudClient(icloud.email, icloud.appPassword);
+	await client.createCalendarObject({
+		calendar: targetCalendar.calendar,
+		iCalString: cal.toString(),
+		filename: `${uid}.ics`,
+	});
+	return {
+		event: {
+			id: uid,
+			calendarId: targetCalendar.id,
+			summary: params.summary,
+			start: start.toISOString(),
+			end: end.toISOString(),
+			allDay: params.allDay ?? false,
+			location: params.location,
+			description: params.description,
+			sourceType: "icloud",
+		},
+		targetCalendar: { id: targetCalendar.id, name: targetCalendar.name },
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "calendar_list_calendars",

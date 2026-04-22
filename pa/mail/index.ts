@@ -322,6 +322,23 @@ function formatSummaryLines(messages: MailMessage[]): string {
 	].filter(Boolean).join(" | ")).join("\n");
 }
 
+export async function searchEmailSummariesForContext(
+	ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+	params: { query?: string; label?: string; limit?: number; sinceDays?: number; unreadOnly?: boolean },
+): Promise<PaEmailSummary[]> {
+	const runtime = await loadPersonalAssistantRuntime(ctx);
+	const gmail = runtime.personalAssistantAuth?.mail?.gmail;
+	if (!gmail?.address || !gmail.appPassword) throw new Error("Gmail aggregation inbox is not configured.");
+	try {
+		const client = await getClient(gmail.address, gmail.appPassword);
+		const messages = await searchMessages(client, params);
+		return messages.map(toSummary);
+	} catch (error) {
+		await resetClient();
+		throw error;
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("pa-mail-debug", {
 		description: "Debug the PA Gmail mailbox connection and counts",
