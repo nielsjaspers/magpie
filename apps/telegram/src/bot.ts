@@ -3,7 +3,7 @@ import { extname, resolve } from "node:path";
 import { Bot, GrammyError, HttpError } from "grammy";
 import type { Context } from "grammy";
 import { isTelegramLocalCommand, registerCommands } from "./commands.js";
-import { resolveAssistantThread, sendAssistantMessage } from "./host-client.js";
+import { sendAssistantMessageStreaming } from "./host-client.js";
 import { getActiveModel } from "./session.js";
 import { convertMarkdownToTelegramHtml, escapeHtml, splitMessage } from "./utils.js";
 import type { TelegramAppConfig } from "./config.js";
@@ -76,25 +76,64 @@ export function createBot(config: TelegramAppConfig): Bot {
 
 		const chatId = String(ctx.chat!.id);
 		const { ref } = getActiveModel();
+		let streamedText = "";
+		let streamedMessageId: number | undefined;
+		let lastEditAt = 0;
+		let sawStreamedText = false;
 
-		await ctx.api.sendChatAction(ctx.chat!.id, "typing");
-		await resolveAssistantThread(config, chatId, ref);
-		const response = await sendAssistantMessage(config, chatId, trimmed, ref);
-		if (config.showToolCalls && response.toolEvents?.length) {
-			for (const event of response.toolEvents) {
-				if (event.type === "start") {
-					const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
-					const toolText = `[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`;
-					await sendHtml(ctx, toolText);
+		const flushStreamedText = async (force = false) => {
+			if (!streamedText.trim()) return;
+			const now = Date.now();
+			if (!force && now - lastEditAt < 700 && streamedText.length < 120) return;
+			lastEditAt = now;
+			const chunks = splitMessage(streamedText);
+			const firstChunk = chunks[0] || streamedText;
+			try {
+				if (!streamedMessageId) {
+					const sent = await ctx.api.sendMessage(ctx.chat!.id, convertMarkdownToTelegramHtml(firstChunk), { parse_mode: "HTML" });
+					streamedMessageId = sent.message_id;
 				} else {
-					const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
-					let resultPreview = event.result || "";
-					if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
-					await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
+					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, convertMarkdownToTelegramHtml(firstChunk), { parse_mode: "HTML" });
+				}
+			} catch (error) {
+				if (!streamedMessageId) {
+					const sent = await ctx.api.sendMessage(ctx.chat!.id, firstChunk);
+					streamedMessageId = sent.message_id;
+				} else {
+					await ctx.api.editMessageText(ctx.chat!.id, streamedMessageId, firstChunk).catch(() => {});
 				}
 			}
+		};
+
+		await ctx.api.sendChatAction(ctx.chat!.id, "typing");
+		const response = await sendAssistantMessageStreaming(config, chatId, trimmed, ref, async (event) => {
+			if (event.type === "text_delta" && event.delta) {
+				sawStreamedText = true;
+				streamedText += event.delta;
+				await flushStreamedText(false);
+				return;
+			}
+			if (event.type === "message_complete") {
+				await flushStreamedText(true);
+				return;
+			}
+			if (!config.showToolCalls) return;
+			if (event.type === "tool_start") {
+				const argsPreview = event.args ? JSON.stringify(event.args, null, 2) : "";
+				const toolText = `[Tool: ${event.toolName}] executing…${argsPreview ? "\n" + argsPreview : ""}`;
+				await sendHtml(ctx, toolText);
+				return;
+			}
+			if (event.type === "tool_end") {
+				const prefix = event.isError ? `[Tool: ${event.toolName}] error` : `[Tool: ${event.toolName}] done`;
+				let resultPreview = event.result || "";
+				if (resultPreview.length > 1000) resultPreview = resultPreview.slice(0, 1000) + "\n… (truncated)";
+				await sendHtml(ctx, resultPreview ? `${prefix}\n${resultPreview}` : prefix);
+			}
+		});
+		if (!sawStreamedText || !streamedText.trim()) {
+			await sendHtml(ctx, response.text || "(empty response)");
 		}
-		await sendHtml(ctx, response.text || "(empty response)");
 	};
 
 	bot.on("message:text", async (ctx) => {

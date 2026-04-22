@@ -1,5 +1,16 @@
 import type { TelegramAppConfig } from "./config.js";
 
+export interface AssistantMessageStreamEvent {
+	type: "text_delta" | "message_complete" | "tool_start" | "tool_end" | "status" | "error";
+	delta?: string;
+	toolName?: string;
+	args?: unknown;
+	result?: string;
+	isError?: boolean;
+	status?: unknown;
+	error?: string;
+}
+
 class HostRequestError extends Error {
 	constructor(message: string, readonly status: number) {
 		super(message);
@@ -71,6 +82,57 @@ export async function sendAssistantMessage(config: TelegramAppConfig, threadId: 
 		"/api/v1/assistant/message",
 		{ channel: "telegram", threadId, text, modelRef },
 	);
+}
+
+async function streamSessionEvents(
+	config: TelegramAppConfig,
+	sessionId: string,
+	modelRef: string,
+	onEvent: (event: AssistantMessageStreamEvent) => void | Promise<void>,
+	signal?: AbortSignal,
+) {
+	const url = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}/stream`, config.hostUrl);
+	url.searchParams.set("modelRef", modelRef);
+	const response = await fetch(url, { headers: { accept: "text/event-stream" }, signal });
+	if (!response.ok || !response.body) throw new HostRequestError(`Stream failed: ${response.status}`, response.status);
+	const decoder = new TextDecoder();
+	let buffer = "";
+	for await (const chunk of response.body as any as AsyncIterable<Uint8Array>) {
+		buffer += decoder.decode(chunk, { stream: true });
+		let idx;
+		while ((idx = buffer.indexOf("\n\n")) >= 0) {
+			const rawEvent = buffer.slice(0, idx);
+			buffer = buffer.slice(idx + 2);
+			const dataLines = rawEvent.split(/\r?\n/).filter((line) => line.startsWith("data: ")).map((line) => line.slice(6));
+			if (dataLines.length === 0) continue;
+			try {
+				const parsed = JSON.parse(dataLines.join("\n"));
+				await onEvent(parsed as AssistantMessageStreamEvent);
+			} catch {
+				// ignore malformed SSE payloads
+			}
+		}
+	}
+}
+
+export async function sendAssistantMessageStreaming(
+	config: TelegramAppConfig,
+	threadId: string,
+	text: string,
+	modelRef: string,
+	onEvent: (event: AssistantMessageStreamEvent) => void | Promise<void>,
+) {
+	const resolved = await resolveAssistantThread(config, threadId, modelRef);
+	const controller = new AbortController();
+	const streamPromise = streamSessionEvents(config, resolved.sessionId, modelRef, onEvent, controller.signal)
+		.catch(() => {
+			// best-effort streaming bridge
+		});
+		const result = await sendAssistantMessage(config, threadId, text, modelRef);
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		controller.abort();
+		await streamPromise;
+		return { ...result, sessionId: resolved.sessionId };
 }
 
 export async function resetAssistantThread(config: TelegramAppConfig, threadId: string, _modelRef: string) {

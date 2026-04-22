@@ -58,15 +58,51 @@ function snapshotConversationText(snapshot: HostedSessionSnapshot | undefined): 
 		.join("\n\n");
 }
 
+function extractBalancedJsonObject(text: string): string | undefined {
+	let start = -1;
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i]!;
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (ch === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') {
+			inString = true;
+			continue;
+		}
+		if (ch === "{") {
+			if (start < 0) start = i;
+			depth += 1;
+			continue;
+		}
+		if (ch === "}") {
+			if (depth > 0) depth -= 1;
+			if (start >= 0 && depth === 0) return text.slice(start, i + 1);
+		}
+	}
+	return undefined;
+}
+
 function extractJsonObject(text: string): string {
 	const trimmed = text.trim();
-	if (trimmed.startsWith("```")) {
-		const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-		if (fenced?.[1]) return fenced[1].trim();
+	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+	if (fenced?.[1]) {
+		const balanced = extractBalancedJsonObject(fenced[1]);
+		return balanced?.trim() || fenced[1].trim();
 	}
-	const first = trimmed.indexOf("{");
-	const last = trimmed.lastIndexOf("}");
-	if (first >= 0 && last > first) return trimmed.slice(first, last + 1);
+	const balanced = extractBalancedJsonObject(trimmed);
+	if (balanced?.trim()) return balanced.trim();
 	return trimmed;
 }
 
@@ -79,8 +115,7 @@ interface DreamPlan {
 	retainedInboxPaths?: string[];
 }
 
-function parseDreamPlan(text: string): DreamPlan {
-	const parsed = JSON.parse(extractJsonObject(text)) as DreamPlan;
+function validateDreamPlan(parsed: DreamPlan): DreamPlan {
 	if (!parsed.digestMarkdown?.trim()) throw new Error("Dream output missing digestMarkdown.");
 	if (!parsed.archiveSummaryMarkdown?.trim()) throw new Error("Dream output missing archiveSummaryMarkdown.");
 	if (!Array.isArray(parsed.graphWrites)) parsed.graphWrites = [];
@@ -89,6 +124,37 @@ function parseDreamPlan(text: string): DreamPlan {
 		if (!item.path.startsWith("graph/")) throw new Error(`Dream graph write must stay under graph/: ${item.path}`);
 	}
 	return parsed;
+}
+
+function parseDreamPlanFromSections(text: string): DreamPlan | undefined {
+	const trimmed = text.trim();
+	const digestMatch = trimmed.match(/(?:^|\n)##\s*digestMarkdown\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
+	const archiveMatch = trimmed.match(/(?:^|\n)##\s*archiveSummaryMarkdown\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
+	const graphMatch = trimmed.match(/(?:^|\n)##\s*graphWrites\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
+	const reviewMatch = trimmed.match(/(?:^|\n)##\s*reviewMarkdown\s*\n([\s\S]*?)(?=\n##\s+[A-Za-z]|$)/i);
+	if (!digestMatch?.[1] || !archiveMatch?.[1]) return undefined;
+	let graphWrites: DreamPlan["graphWrites"] = [];
+	const graphText = graphMatch?.[1]?.trim();
+	if (graphText) {
+		const parsedGraph = JSON.parse(extractJsonObject(graphText));
+		graphWrites = Array.isArray(parsedGraph) ? parsedGraph : [];
+	}
+	return validateDreamPlan({
+		digestMarkdown: digestMatch[1].trim(),
+		archiveSummaryMarkdown: archiveMatch[1].trim(),
+		graphWrites,
+		reviewMarkdown: reviewMatch?.[1]?.trim() || undefined,
+	});
+}
+
+function parseDreamPlan(text: string): DreamPlan {
+		try {
+			return validateDreamPlan(JSON.parse(extractJsonObject(text)) as DreamPlan);
+		} catch (jsonError) {
+			const sectionParsed = parseDreamPlanFromSections(text);
+			if (sectionParsed) return sectionParsed;
+			throw jsonError;
+		}
 }
 
 async function getJson<T>(baseUrl: string, path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
@@ -405,11 +471,32 @@ export default function (pi: ExtensionAPI) {
 			try {
 				plan = parseDreamPlan(dreamResult.output);
 			} catch (error) {
-				return {
-					content: [{ type: "text", text: `Dream returned invalid JSON: ${error instanceof Error ? error.message : String(error)}` }],
-					details: { output: dreamResult.output },
-					isError: true,
-				};
+				try {
+					const repaired = await subagentCore.runSubagent(ctx, config, {
+						role: "custom",
+						label: "dream-json-repair",
+						task: [
+							"Repair this malformed dream output into valid JSON.",
+							"Return exactly one valid JSON object and nothing else.",
+							"Keep the same schema and content where possible.",
+							"Required fields: digestMarkdown, archiveSummaryMarkdown, graphWrites, optional reviewMarkdown, processedInboxPaths, retainedInboxPaths.",
+							"Every graphWrites item must have path and content, and path must stay under graph/.",
+							`Original parse error: ${error instanceof Error ? error.message : String(error)}`,
+							"Malformed output:",
+							dreamResult.output,
+						].join("\n\n"),
+						tools: [],
+						timeout: 120000,
+					});
+					if (repaired.exitCode !== 0 || !repaired.output.trim()) throw new Error(repaired.errorMessage || "Dream JSON repair failed.");
+					plan = parseDreamPlan(repaired.output);
+				} catch (repairError) {
+					return {
+						content: [{ type: "text", text: `Dream returned invalid JSON: ${repairError instanceof Error ? repairError.message : String(repairError)}` }],
+						details: { output: dreamResult.output },
+						isError: true,
+					};
+				}
 			}
 
 			const graphWrites = [] as Array<{ path: string; absolutePath: string; relativePath: string }>;
