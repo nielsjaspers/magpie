@@ -626,7 +626,8 @@ export async function ensureAutodreamScheduled(
 ): Promise<ScheduleEntry | undefined> {
 	const store = createScheduleStore();
 	const entries = await readIndex(store);
-	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task);
+	const targetCwd = resolve(input.cwd?.trim() || ctx.cwd);
+	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task && entry.cwd === targetCwd);
 	if (!input.enabled || !input.schedule?.trim()) {
 		for (const entry of activeEntries) {
 			await cancelScheduledEntry(entry);
@@ -636,7 +637,7 @@ export async function ensureAutodreamScheduled(
 		return undefined;
 	}
 	const cronWhen = input.schedule.trim().startsWith("cron:") ? input.schedule.trim() : `cron:${input.schedule.trim()}`;
-	const existing = activeEntries.find((entry) => entry.when === cronWhen && entry.cwd === resolve(input.cwd?.trim() || ctx.cwd));
+	const existing = activeEntries.find((entry) => entry.when === cronWhen);
 		if (existing) return existing;
 	for (const entry of activeEntries) {
 		await cancelScheduledEntry(entry);
@@ -646,9 +647,8 @@ export async function ensureAutodreamScheduled(
 	const scheduled = await scheduleTask(ctx, {
 		when: cronWhen,
 		task: input.task,
-		cwd: input.cwd,
+		cwd: targetCwd,
 		notify: true,
-		preferredNotifier: "telegram",
 		extensionMode: "magpie",
 	});
 	return scheduled.entry;

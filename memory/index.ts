@@ -355,7 +355,8 @@ export default function (pi: ExtensionAPI) {
 			const transcript = snapshotConversationText(telegramSnapshot) || sessionConversationText(ctx);
 			const inboxFiles = await listMemoryFiles(rootDir, "inbox", { recursive: true, extensions: [".md", ".json", ".txt"] });
 			const recentReviewFiles = await listMemoryFiles(rootDir, "review", { recursive: false, extensions: [".md"] });
-			const graphContextFiles = await searchMemoryFiles(rootDir, params.note?.trim() || transcript.slice(0, 800), 10);
+			const graphContextQuery = params.note?.trim() || transcript.slice(0, 800).trim();
+			const graphContextFiles = graphContextQuery ? await searchMemoryFiles(rootDir, graphContextQuery, 10) : [];
 			const openSessionContext = includeOpenSessions ? await getOpenSessionContext(hostUrl, target.threadId, 3) : "Other open sessions: omitted";
 
 			const dreamPrompt = [
