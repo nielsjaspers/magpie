@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { loadConfig } from "../config/config.js";
 import { ensureAutodreamScheduled } from "../schedule/index.js";
 import { parseAssistantThreadKey } from "../runtime/assistant-session-host.js";

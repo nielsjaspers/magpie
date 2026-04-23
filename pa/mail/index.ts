@@ -5,7 +5,7 @@ import { ImapFlow, type SearchObject } from "imapflow";
 import { simpleParser } from "mailparser";
 import { convert } from "html-to-text";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { loadPersonalAssistantRuntime } from "../shared/config.js";
 import { ensureDir, getPaMailContactDraftsDir, getPaMailHistoryDir } from "../shared/storage.js";
 import type { PaEmailSummary } from "../shared/types.js";

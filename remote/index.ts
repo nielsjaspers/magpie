@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
 import type { ExportedSessionBundle } from "../runtime/session-host-types.js";

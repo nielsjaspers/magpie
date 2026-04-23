@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as chrono from "chrono-node";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
 	getActiveConfigScope,
 	getConfigBaseDir,
@@ -188,7 +188,7 @@ function parseRecurringNaturalWhen(input: string): string | undefined {
 	return undefined;
 }
 
-function parseWhenSpec(input: string): ParsedScheduleRequest | undefined {
+export function parseWhenSpec(input: string): ParsedScheduleRequest | undefined {
 	const trimmed = input.trim();
 	if (!trimmed) return undefined;
 	if (trimmed.startsWith("cron:")) {
@@ -449,7 +449,7 @@ NODE
 `;
 }
 
-function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
+export function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
 	const runtimeNodeDir = dirname(process.execPath);
 	const inheritedPath = process.env.PATH || "";
 	const runnerPath = [runtimeNodeDir, inheritedPath, ...COMMON_PATHS].filter(Boolean).join(":");
@@ -516,8 +516,7 @@ async function chooseBackend(type: ScheduleType): Promise<ScheduleBackend> {
 }
 
 async function scheduleEntry(entry: ScheduleEntry): Promise<ScheduleEntry> {
-	const backend = await chooseBackend(entry.type);
-	if (entry.type === "one-shot" && backend === "at") {
+	if (entry.type === "one-shot" && entry.backend === "at") {
 		const atTime = formatAtTimestamp(new Date(entry.runAt!));
 		const result = await new Promise<string>((resolve, reject) => {
 			const child = execFile("at", ["-t", atTime], (error, stdout, stderr) => {
@@ -527,14 +526,14 @@ async function scheduleEntry(entry: ScheduleEntry): Promise<ScheduleEntry> {
 			child.stdin?.end(`${entry.scriptPath}\n`, "utf8");
 		});
 		const jobId = result.match(/job\s+(\d+)/i)?.[1];
-		return { ...entry, backend, atJobId: jobId };
+		return { ...entry, atJobId: jobId };
 	}
 	const cronId = `magpie-schedule-${entry.id}`;
 	const cronLine = entry.type === "recurring"
 		? `${entry.cronExpr} /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`
 		: `${new Date(entry.runAt!).getMinutes()} ${new Date(entry.runAt!).getHours()} ${new Date(entry.runAt!).getDate()} ${new Date(entry.runAt!).getMonth() + 1} * /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`;
 	await installCronLine(cronId, cronLine);
-	return { ...entry, backend, cronId };
+	return { ...entry, cronId };
 }
 
 export async function cancelScheduledEntry(entry: ScheduleEntry) {

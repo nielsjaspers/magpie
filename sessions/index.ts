@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { convertToLlm, getMarkdownTheme, SessionManager, serializeConversation, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { loadConfig } from "../config/config.js";
 import { addPendingIndexEntry, loadPendingIndexEntries, loadSessionIndex, scoreSessionEntry, updatePendingIndexEntries, upsertIndexEntry } from "./indexer.js";
 import type { PendingIndexEntry, SessionIndexEntry } from "./types.js";
