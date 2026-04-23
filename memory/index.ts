@@ -16,7 +16,6 @@ import {
 	getMemoryRootDir,
 	inspectMemoryPath,
 	resolveMemoryPath,
-	searchMemoryFiles,
 	writeMemoryFile,
 	writeTelegramArchive,
 } from "./store.js";
@@ -505,35 +504,39 @@ export default function (pi: ExtensionAPI) {
 			query: Type.String({ description: "What to recall from memory" }),
 			limit: Type.Optional(Type.Integer({ description: "Maximum files to retrieve before synthesis (default 8, max 20).", minimum: 1, maximum: 20 })),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (!subagentCore) {
 				return { content: [{ type: "text", text: "Memory subagent unavailable." }], details: {}, isError: true };
 			}
 			const config = await loadConfig(ctx.cwd);
 			const rootDir = getMemoryRootDir(config.memory);
-			const matches = await searchMemoryFiles(rootDir, params.query.trim(), Math.min(params.limit ?? 8, 20));
-			if (matches.length === 0) {
-				return { content: [{ type: "text", text: "No matching memory files." }], details: { matches: [] } };
-			}
 			const result = await subagentCore.runSubagent(ctx, config, {
 				role: "memory",
 				label: "recall-memory",
+				context: [
+					"You are answering a memory recall query against the memory filesystem.",
+					`The memory root directory is: ${rootDir}`,
+					"Search the memory root yourself using the available file tools. Do not assume relevant files have already been selected for you.",
+					"Use the memory root as your search boundary unless the task explicitly requires something else.",
+				].join("\n"),
 				task: [
-					"Answer the memory query using the provided memory materials.",
-					"Return a concise synthesized answer followed by a References section that names the relevant file paths.",
+					"Answer the memory query by searching the memory files yourself.",
+					"Prefer targeted search over reading large amounts of irrelevant material.",
+					"Return a concise synthesized answer followed by a References section that names the relevant file paths under the memory root.",
 					`Memory query: ${params.query.trim()}`,
-					"Memory materials:",
-					...matches.map((match) => `## ${match.relativePath}\n\n${match.content.trim()}`),
-				].join("\n\n"),
-				tools: [],
+					params.limit
+						? `You may inspect more files if needed, but try to keep the final set of directly relevant referenced files to about ${Math.min(params.limit, 20)} or fewer.`
+						: undefined,
+				].filter(Boolean).join("\n\n"),
+				tools: "full",
 				timeout: 180000,
-			});
+			}, signal);
 			if (result.exitCode !== 0) {
-				return { content: [{ type: "text", text: result.errorMessage || "Memory recall failed." }], details: { matches, result }, isError: true };
+				return { content: [{ type: "text", text: result.errorMessage || "Memory recall failed." }], details: { result }, isError: true };
 			}
 			return {
 				content: [{ type: "text", text: result.output.trim() }],
-				details: { matches: matches.map((match) => ({ relativePath: match.relativePath, score: match.score })) },
+				details: { result },
 			};
 		},
 	});

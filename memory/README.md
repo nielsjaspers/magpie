@@ -183,7 +183,7 @@ ls ~/.pi/agent/magpie-memory/inbox
 Ask:
 - "what do you remember about X and Y?"
 
-That should use `recall_memory` and reference files under the memory root.
+That should use `recall_memory`, which now searches the memory root itself with file tools and then references the relevant files it found.
 
 ## Manual Telegram dream test
 
