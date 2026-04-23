@@ -1,13 +1,6 @@
 import {
 	createAgentSession,
-	createBashTool,
-	createEditTool,
 	createExtensionRuntime,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
 	SessionManager,
 	type ExtensionContext,
 	type ResourceLoader,
@@ -56,37 +49,15 @@ function defaultPromptFor(spec: SubagentSpec): string {
 	return "You are a codebase retrieval subagent. Your job is to quickly find the files, symbols, call paths, commands, and code patterns needed to answer the task.\n\nGuidelines:\n- Use read-only investigation only. Prefer grep, find, ls, and read. Use bash only when the other tools are insufficient.\n- Be precise and concrete. Include exact file paths, relevant symbol names, and short snippets or line references when useful.\n- Follow the most direct path to the answer. Do not over-explore unrelated parts of the codebase.\n- When tracing behavior, identify the key entry points, intermediate calls, and where the final behavior is implemented.\n- If multiple candidate locations exist, list the most relevant ones in priority order.\n\nConstraints:\n- Do not modify files.\n- Do not speculate beyond what the code shows. If something is unclear, say what you found and what remains uncertain.\n- Do not propose follow-up work or next steps unless the task explicitly asks for them.\n- Keep output compact and information-dense.";
 }
 
-function getToolList(cwd: string, tools: SubagentSpec["tools"]) {
+function getToolList(tools: SubagentSpec["tools"]): string[] {
 	if (tools === "readonly" || tools === undefined) {
-		return [
-			createReadTool(cwd),
-			createBashTool(cwd),
-			createGrepTool(cwd),
-			createFindTool(cwd),
-			createLsTool(cwd),
-		];
+		return ["read", "bash", "grep", "find", "ls"];
 	}
 	if (tools === "full") {
-		return [
-			createReadTool(cwd),
-			createBashTool(cwd),
-			createGrepTool(cwd),
-			createFindTool(cwd),
-			createLsTool(cwd),
-			createEditTool(cwd),
-			createWriteTool(cwd),
-		];
+		return ["read", "bash", "grep", "find", "ls", "edit", "write"];
 	}
-	const builtIns = {
-		read: createReadTool(cwd),
-		bash: createBashTool(cwd),
-		grep: createGrepTool(cwd),
-		find: createFindTool(cwd),
-		ls: createLsTool(cwd),
-		edit: createEditTool(cwd),
-		write: createWriteTool(cwd),
-	};
-	return tools.flatMap((name) => (name in builtIns ? [builtIns[name as keyof typeof builtIns]] : []));
+	const builtIns = new Set(["read", "bash", "grep", "find", "ls", "edit", "write"]);
+	return tools.filter((name): name is string => builtIns.has(name));
 }
 
 function createResourceLoader(systemPrompt: string): ResourceLoader {
@@ -184,11 +155,12 @@ export async function runSubagent(
 			cwd: ctx.cwd,
 			model: modelForSession,
 			thinkingLevel: (spec.thinkingLevel as any) ?? resolved?.thinkingLevel ?? getCurrentThinkingLevel(ctx) ?? "medium",
-			tools: getToolList(ctx.cwd, spec.tools) as any,
+			tools: getToolList(spec.tools) as any,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(),
 			modelRegistry: ctx.modelRegistry,
 		});
+		await session.bindExtensions({});
 
 		session.subscribe((event: any) => {
 			if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
