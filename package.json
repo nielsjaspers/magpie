@@ -10,10 +10,11 @@
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "scripts": {
-    "dev:assistant-host": "bun run runtime/assistant-host-server.ts"
+    "dev:assistant-host": "bun run runtime/assistant-host-server.ts",
+    "test": "bun test"
   },
   "pi": {
     "extensions": [

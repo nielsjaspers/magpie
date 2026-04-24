@@ -43,6 +43,9 @@ import {
 	removeSessionSubscriber,
 } from "./session-watchers.js";
 import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
+import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
+import { promptSession, type PromptSessionResult, type SessionToolEvent } from "./session-prompt.js";
+import { createBuiltInToolsForNames } from "./sdk-tools.js";
 
 export interface AssistantSessionHostConfig {
 	hostCwd: string;
@@ -111,8 +114,7 @@ export interface AssistantThreadSnapshot extends AssistantThreadStatus {
 }
 
 export type AssistantToolEvent =
-	| { type: "start"; toolName: string; args: unknown }
-	| { type: "end"; toolName: string; result: string; isError: boolean };
+	SessionToolEvent;
 
 export interface ResolveAssistantSessionInput extends CreateSessionInput {
 	kind: "assistant";
@@ -438,7 +440,7 @@ export class AssistantSessionHost implements SessionHost {
 		sessionId: string,
 		input: { text: string; modelRef: string },
 		onToolEvent?: (event: AssistantToolEvent) => void,
-	): Promise<{ accepted: AcceptedMessage; result: PromptAssistantSessionResult }> {
+	): Promise<{ accepted: AcceptedMessage; result: PromptSessionResult }> {
 		await this.ensurePromptableSession(sessionId, input.modelRef);
 		const runtime = await this.getRuntime(sessionId, input.modelRef);
 		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
@@ -456,7 +458,7 @@ export class AssistantSessionHost implements SessionHost {
 			await this.emitStatus(sessionId, input.modelRef);
 			try {
 				const session = await runtime.sessionPromise;
-				const result = await promptAssistantSession(session, input.text, {
+				const result = await promptSession(session, input.text, {
 					onTextDelta: async (delta) => {
 						await this.emit(sessionId, { type: "text_delta", delta });
 					},
@@ -634,7 +636,7 @@ export class AssistantSessionHost implements SessionHost {
 			model: model as any,
 			resourceLoader,
 			sessionManager,
-			tools: (toolNames?.length ? toolNames : this.tools) as any,
+			tools: (toolNames?.length ? createBuiltInToolsForNames(this.hostCwd, toolNames) : this.tools) as any,
 		});
 		await session.bindExtensions({});
 		return session;
@@ -777,130 +779,6 @@ export class AssistantSessionHost implements SessionHost {
 	}
 }
 
-function extractTextFromUnknownContent(content: unknown): string | undefined {
-	if (typeof content === "string") {
-		const trimmed = content.trim();
-		return trimmed || undefined;
-	}
-	if (Array.isArray(content)) {
-		const parts = content
-			.map((part) => {
-				if (typeof part === "string") return part;
-				if (part && typeof part === "object") {
-					const record = part as Record<string, unknown>;
-					if (typeof record.text === "string") return record.text;
-					if (typeof record.content === "string") return record.content;
-				}
-				return "";
-			})
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		return parts || undefined;
-	}
-	if (content && typeof content === "object") {
-		const record = content as Record<string, unknown>;
-		if (typeof record.text === "string") {
-			const trimmed = record.text.trim();
-			return trimmed || undefined;
-		}
-		if (typeof record.content === "string") {
-			const trimmed = record.content.trim();
-			return trimmed || undefined;
-		}
-		if (Array.isArray(record.content)) return extractTextFromUnknownContent(record.content);
-		if (record.message && typeof record.message === "object") {
-			const nested = record.message as Record<string, unknown>;
-			return extractTextFromUnknownContent(nested.content);
-		}
-	}
-	return undefined;
-}
-
-function extractTextFromSessionMessage(message: unknown): string | undefined {
-	if (!message || typeof message !== "object") return undefined;
-	const record = message as Record<string, unknown>;
-	return extractTextFromUnknownContent(record.content)
-		?? extractTextFromUnknownContent(record.message)
-		?? extractTextFromUnknownContent(record.parts);
-}
-
-export interface PromptAssistantSessionResult {
-	text: string;
-	streamedText: string;
-	lastAssistant?: unknown;
-}
-
-export async function promptAssistantSession(
-	session: AgentSession,
-	prompt: string,
-	callbacks?: {
-		onTextDelta?: (delta: string) => void | Promise<void>;
-		onToolEvent?: (event: AssistantToolEvent) => void | Promise<void>;
-		onAssistantMessageComplete?: (message: unknown) => void | Promise<void>;
-	},
-): Promise<PromptAssistantSessionResult> {
-	let currentText = "";
-	let lastAssistantText = "";
-	let lastAssistantMessage: unknown;
-
-	const unsubscribe = session.subscribe((event) => {
-		if (
-			event.type === "message_update" &&
-			event.assistantMessageEvent.type === "text_delta"
-		) {
-			currentText += event.assistantMessageEvent.delta;
-			void callbacks?.onTextDelta?.(event.assistantMessageEvent.delta);
-			return;
-		}
-		if (event.type === "message_end") {
-			const message = event.message as unknown as Record<string, unknown> | undefined;
-			if (message?.role === "assistant" || message?.type === "assistant") {
-				lastAssistantMessage = event.message;
-				lastAssistantText = extractTextFromSessionMessage(event.message) || currentText.trim();
-				currentText = "";
-				void callbacks?.onAssistantMessageComplete?.(event.message);
-			}
-			return;
-		}
-		if (callbacks?.onToolEvent && event.type === "tool_execution_start") {
-			void callbacks.onToolEvent({ type: "start", toolName: event.toolName, args: event.args });
-			return;
-		}
-		if (callbacks?.onToolEvent && event.type === "tool_execution_end") {
-			const resultStr =
-				typeof event.result === "string"
-					? event.result
-					: JSON.stringify(event.result);
-			void callbacks.onToolEvent({
-				type: "end",
-				toolName: event.toolName,
-				result: resultStr ?? "",
-				isError: event.isError,
-			});
-		}
-	});
-
-	try {
-		await session.prompt(prompt);
-	} finally {
-		unsubscribe();
-	}
-
-	const fallbackAssistant = lastAssistantMessage ?? [...(session.messages as unknown[])].reverse().find((message) => {
-		if (!message || typeof message !== "object") return false;
-		const record = message as Record<string, unknown>;
-		return record.role === "assistant" || record.type === "assistant";
-	});
-	const streamed = currentText.trim();
-	const text = lastAssistantText || extractTextFromSessionMessage(fallbackAssistant) || streamed;
-	return {
-		text,
-		streamedText: text,
-		lastAssistant: fallbackAssistant,
-	};
-}
-
 export function createAssistantThreadKey(channel: string, threadId: string): string {
 	return `${channel}:${threadId}`;
 }
@@ -912,8 +790,4 @@ export function parseAssistantThreadKey(threadKey: string): { channel: Assistant
 	const threadId = threadKey.slice(idx + 1);
 	if (channel !== "telegram" && channel !== "web" && channel !== "internal") return undefined;
 	return { channel, threadId };
-}
-
-function sanitizeSessionIdForFilename(sessionId: string): string {
-	return sessionId.replace(/[^a-zA-Z0-9._-]+/g, "-");
 }

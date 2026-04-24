@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import * as chrono from "chrono-node";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
 	getActiveConfigScope,
 	getConfigBaseDir,
@@ -33,6 +33,7 @@ const CRON_BEGIN = "# MAGPIE-SCHEDULE-BEGIN";
 const CRON_END = "# MAGPIE-SCHEDULE-END";
 const SCHEDULE_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const COMMON_PATHS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+const NODE_MIN_MAJOR = 22;
 const SCHEDULE_BACKGROUND_PROMPT = [
 	"You are running as a scheduled background Magpie task.",
 	"Actually perform the requested work in the working directory using tools when needed.",
@@ -188,7 +189,7 @@ function parseRecurringNaturalWhen(input: string): string | undefined {
 	return undefined;
 }
 
-function parseWhenSpec(input: string): ParsedScheduleRequest | undefined {
+export function parseWhenSpec(input: string): ParsedScheduleRequest | undefined {
 	const trimmed = input.trim();
 	if (!trimmed) return undefined;
 	if (trimmed.startsWith("cron:")) {
@@ -449,7 +450,45 @@ NODE
 `;
 }
 
-function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
+function createNodeVersionBootstrapScript() {
+	return `
+# pi currently depends on Node.js >= ${NODE_MIN_MAJOR} (pi-tui uses modern RegExp flags).
+# Cron often has a minimal PATH, so prefer the Node runtime that created this
+# schedule, then common nvm/asdf/homebrew locations, and fail clearly if only an
+# older system node is available.
+if [ -s "$HOME/.nvm/nvm.sh" ]; then
+  # shellcheck disable=SC1090
+  . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 || true
+  nvm use ${NODE_MIN_MAJOR} >/dev/null 2>&1 || nvm use node >/dev/null 2>&1 || true
+fi
+for MAGPIE_NODE_DIR in \
+  ${shellEscape(dirname(process.execPath))} \
+  "$HOME/.nvm/versions/node/v${NODE_MIN_MAJOR}/bin" \
+  $HOME/.nvm/versions/node/v${NODE_MIN_MAJOR}*/bin \
+  "$HOME/.asdf/shims" \
+  "/opt/homebrew/bin" \
+  "/usr/local/bin"; do
+  for MAGPIE_NODE_BIN in $MAGPIE_NODE_DIR/node; do
+    [ -x "$MAGPIE_NODE_BIN" ] || continue
+    MAGPIE_NODE_MAJOR="$($MAGPIE_NODE_BIN -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+    if [ "$MAGPIE_NODE_MAJOR" -ge ${NODE_MIN_MAJOR} ] 2>/dev/null; then
+      export PATH="$(dirname "$MAGPIE_NODE_BIN"):$PATH"
+      break 2
+    fi
+  done
+done
+MAGPIE_ACTIVE_NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+if ! [ "$MAGPIE_ACTIVE_NODE_MAJOR" -ge ${NODE_MIN_MAJOR} ] 2>/dev/null; then
+  {
+    printf 'Scheduled task failed: pi requires Node.js >= ${NODE_MIN_MAJOR}, but cron resolved node as: %s (%s)\\n' "$(command -v node || echo not-found)" "$(node -v 2>/dev/null || echo unavailable)"
+    printf 'Install Node.js >= ${NODE_MIN_MAJOR} for the cron user or ensure ~/.nvm/nvm.sh can select it.\\n'
+  } | tee -a "\${RESULT_PATH:-/dev/stdout}"
+  exit 1
+fi
+`;
+}
+
+export function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
 	const runtimeNodeDir = dirname(process.execPath);
 	const inheritedPath = process.env.PATH || "";
 	const runnerPath = [runtimeNodeDir, inheritedPath, ...COMMON_PATHS].filter(Boolean).join(":");
@@ -478,6 +517,7 @@ STATE_PATH="$RESULT_DIR/$RUN_STAMP.state"
 SESSION_DIR="$SESSION_ROOT/$RUN_STAMP"
 mkdir -p "$RESULT_DIR" "$SESSION_DIR"
 printf 'startedAt=%s\nresultPath=%s\nsessionDir=%s\n' "$STARTED_AT" "$RESULT_PATH" "$SESSION_DIR" > "$STATE_PATH"
+${createNodeVersionBootstrapScript()}
 ${cleanup}
 EXIT_CODE=0
 if ! cd ${shellEscape(entry.cwd)}; then
@@ -516,8 +556,7 @@ async function chooseBackend(type: ScheduleType): Promise<ScheduleBackend> {
 }
 
 async function scheduleEntry(entry: ScheduleEntry): Promise<ScheduleEntry> {
-	const backend = await chooseBackend(entry.type);
-	if (entry.type === "one-shot" && backend === "at") {
+	if (entry.type === "one-shot" && entry.backend === "at") {
 		const atTime = formatAtTimestamp(new Date(entry.runAt!));
 		const result = await new Promise<string>((resolve, reject) => {
 			const child = execFile("at", ["-t", atTime], (error, stdout, stderr) => {
@@ -527,14 +566,14 @@ async function scheduleEntry(entry: ScheduleEntry): Promise<ScheduleEntry> {
 			child.stdin?.end(`${entry.scriptPath}\n`, "utf8");
 		});
 		const jobId = result.match(/job\s+(\d+)/i)?.[1];
-		return { ...entry, backend, atJobId: jobId };
+		return { ...entry, atJobId: jobId };
 	}
 	const cronId = `magpie-schedule-${entry.id}`;
 	const cronLine = entry.type === "recurring"
 		? `${entry.cronExpr} /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`
 		: `${new Date(entry.runAt!).getMinutes()} ${new Date(entry.runAt!).getHours()} ${new Date(entry.runAt!).getDate()} ${new Date(entry.runAt!).getMonth() + 1} * /bin/bash ${shellEscape(entry.scriptPath)} # ${cronId}`;
 	await installCronLine(cronId, cronLine);
-	return { ...entry, backend, cronId };
+	return { ...entry, cronId };
 }
 
 export async function cancelScheduledEntry(entry: ScheduleEntry) {
@@ -627,7 +666,7 @@ export async function ensureAutodreamScheduled(
 	const store = createScheduleStore();
 	const entries = await readIndex(store);
 	const targetCwd = resolve(input.cwd?.trim() || ctx.cwd);
-	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task && entry.cwd === targetCwd);
+	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task);
 	if (!input.enabled || !input.schedule?.trim()) {
 		for (const entry of activeEntries) {
 			await cancelScheduledEntry(entry);
@@ -637,8 +676,16 @@ export async function ensureAutodreamScheduled(
 		return undefined;
 	}
 	const cronWhen = input.schedule.trim().startsWith("cron:") ? input.schedule.trim() : `cron:${input.schedule.trim()}`;
-	const existing = activeEntries.find((entry) => entry.when === cronWhen);
-		if (existing) return existing;
+	const existing = activeEntries.find((entry) => entry.when === cronWhen && entry.cwd === targetCwd);
+	if (existing) {
+		const duplicates = activeEntries.filter((entry) => entry !== existing);
+		for (const entry of duplicates) {
+			await cancelScheduledEntry(entry);
+			entry.cancelledAt = new Date().toISOString();
+		}
+		if (duplicates.length > 0) await writeIndex(store, entries);
+		return existing;
+	}
 	for (const entry of activeEntries) {
 		await cancelScheduledEntry(entry);
 		entry.cancelledAt = new Date().toISOString();
