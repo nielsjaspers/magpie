@@ -53,4 +53,13 @@ describe("schedule parsing and runner generation", () => {
 		expect(cronScript).toContain("grep -v '# magpie-schedule-abc123'");
 		expect(atScript).not.toContain("grep -v '# magpie-schedule-abc123'");
 	});
+
+	test("runner bootstraps a modern Node for cron environments", () => {
+		const script = createRunnerScript(store, baseEntry({ backend: "at" }), "/usr/local/bin/pi", runtime, []);
+
+		expect(script).toContain("pi requires Node.js >= 22");
+		expect(script).toContain("$HOME/.nvm/nvm.sh");
+		expect(script).toContain("nvm use 22");
+		expect(script).toContain("tee -a \"${RESULT_PATH:-/dev/stdout}\"");
+	});
 });

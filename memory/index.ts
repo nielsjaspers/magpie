@@ -98,25 +98,49 @@ function isTruthyMarkdownField(text: string, field: string): boolean {
 	return value === "true" || value === "yes" || value === "1";
 }
 
+function describeHostFetchError(url: URL, error: unknown) {
+	const reason = error instanceof Error ? error.message : String(error);
+	return `Could not reach Magpie assistant host at ${url.toString()}: ${reason}. Ensure the webui/assistant host is running and telegram.hostUrl points to it from this machine.`;
+}
+
+async function parseJsonResponse(response: Response) {
+	try {
+		return await response.json();
+	} catch {
+		return undefined;
+	}
+}
+
 async function getJson<T>(baseUrl: string, path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
 	const url = new URL(path, baseUrl);
 	for (const [key, value] of Object.entries(params ?? {})) {
 		if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
 	}
-	const response = await fetch(url);
-	const json = await response.json();
-	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`);
+	let response: Response;
+	try {
+		response = await fetch(url);
+	} catch (error) {
+		throw new Error(describeHostFetchError(url, error));
+	}
+	const json = await parseJsonResponse(response);
+	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status} for ${url.toString()}`);
 	return json as T;
 }
 
 async function postJson<T>(baseUrl: string, path: string, body: Record<string, unknown>): Promise<T> {
-	const response = await fetch(new URL(path, baseUrl), {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	const json = await response.json();
-	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`);
+	const url = new URL(path, baseUrl);
+	let response: Response;
+	try {
+		response = await fetch(url, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	} catch (error) {
+		throw new Error(describeHostFetchError(url, error));
+	}
+	const json = await parseJsonResponse(response);
+	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status} for ${url.toString()}`);
 	return json as T;
 }
 

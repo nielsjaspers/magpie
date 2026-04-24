@@ -33,6 +33,7 @@ const CRON_BEGIN = "# MAGPIE-SCHEDULE-BEGIN";
 const CRON_END = "# MAGPIE-SCHEDULE-END";
 const SCHEDULE_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const COMMON_PATHS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+const NODE_MIN_MAJOR = 22;
 const SCHEDULE_BACKGROUND_PROMPT = [
 	"You are running as a scheduled background Magpie task.",
 	"Actually perform the requested work in the working directory using tools when needed.",
@@ -449,6 +450,44 @@ NODE
 `;
 }
 
+function createNodeVersionBootstrapScript() {
+	return `
+# pi currently depends on Node.js >= ${NODE_MIN_MAJOR} (pi-tui uses modern RegExp flags).
+# Cron often has a minimal PATH, so prefer the Node runtime that created this
+# schedule, then common nvm/asdf/homebrew locations, and fail clearly if only an
+# older system node is available.
+if [ -s "$HOME/.nvm/nvm.sh" ]; then
+  # shellcheck disable=SC1090
+  . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 || true
+  nvm use ${NODE_MIN_MAJOR} >/dev/null 2>&1 || nvm use node >/dev/null 2>&1 || true
+fi
+for MAGPIE_NODE_DIR in \
+  ${shellEscape(dirname(process.execPath))} \
+  "$HOME/.nvm/versions/node/v${NODE_MIN_MAJOR}/bin" \
+  $HOME/.nvm/versions/node/v${NODE_MIN_MAJOR}*/bin \
+  "$HOME/.asdf/shims" \
+  "/opt/homebrew/bin" \
+  "/usr/local/bin"; do
+  for MAGPIE_NODE_BIN in $MAGPIE_NODE_DIR/node; do
+    [ -x "$MAGPIE_NODE_BIN" ] || continue
+    MAGPIE_NODE_MAJOR="$($MAGPIE_NODE_BIN -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+    if [ "$MAGPIE_NODE_MAJOR" -ge ${NODE_MIN_MAJOR} ] 2>/dev/null; then
+      export PATH="$(dirname "$MAGPIE_NODE_BIN"):$PATH"
+      break 2
+    fi
+  done
+done
+MAGPIE_ACTIVE_NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
+if ! [ "$MAGPIE_ACTIVE_NODE_MAJOR" -ge ${NODE_MIN_MAJOR} ] 2>/dev/null; then
+  {
+    printf 'Scheduled task failed: pi requires Node.js >= ${NODE_MIN_MAJOR}, but cron resolved node as: %s (%s)\\n' "$(command -v node || echo not-found)" "$(node -v 2>/dev/null || echo unavailable)"
+    printf 'Install Node.js >= ${NODE_MIN_MAJOR} for the cron user or ensure ~/.nvm/nvm.sh can select it.\\n'
+  } | tee -a "\${RESULT_PATH:-/dev/stdout}"
+  exit 1
+fi
+`;
+}
+
 export function createRunnerScript(store: ScheduleStore, entry: ScheduleEntry, piCommand: string, runtime: ScheduleRuntimeOptions, extensionPaths: string[]): string {
 	const runtimeNodeDir = dirname(process.execPath);
 	const inheritedPath = process.env.PATH || "";
@@ -478,6 +517,7 @@ STATE_PATH="$RESULT_DIR/$RUN_STAMP.state"
 SESSION_DIR="$SESSION_ROOT/$RUN_STAMP"
 mkdir -p "$RESULT_DIR" "$SESSION_DIR"
 printf 'startedAt=%s\nresultPath=%s\nsessionDir=%s\n' "$STARTED_AT" "$RESULT_PATH" "$SESSION_DIR" > "$STATE_PATH"
+${createNodeVersionBootstrapScript()}
 ${cleanup}
 EXIT_CODE=0
 if ! cd ${shellEscape(entry.cwd)}; then
@@ -626,7 +666,7 @@ export async function ensureAutodreamScheduled(
 	const store = createScheduleStore();
 	const entries = await readIndex(store);
 	const targetCwd = resolve(input.cwd?.trim() || ctx.cwd);
-	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task && entry.cwd === targetCwd);
+	const activeEntries = entries.filter((entry) => !entry.cancelledAt && entry.task === input.task);
 	if (!input.enabled || !input.schedule?.trim()) {
 		for (const entry of activeEntries) {
 			await cancelScheduledEntry(entry);
@@ -636,8 +676,16 @@ export async function ensureAutodreamScheduled(
 		return undefined;
 	}
 	const cronWhen = input.schedule.trim().startsWith("cron:") ? input.schedule.trim() : `cron:${input.schedule.trim()}`;
-	const existing = activeEntries.find((entry) => entry.when === cronWhen);
-		if (existing) return existing;
+	const existing = activeEntries.find((entry) => entry.when === cronWhen && entry.cwd === targetCwd);
+	if (existing) {
+		const duplicates = activeEntries.filter((entry) => entry !== existing);
+		for (const entry of duplicates) {
+			await cancelScheduledEntry(entry);
+			entry.cancelledAt = new Date().toISOString();
+		}
+		if (duplicates.length > 0) await writeIndex(store, entries);
+		return existing;
+	}
 	for (const entry of activeEntries) {
 		await cancelScheduledEntry(entry);
 		entry.cancelledAt = new Date().toISOString();
