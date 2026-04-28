@@ -8,6 +8,7 @@ import { parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import type { HostedSessionHandle, HostedSessionSnapshot, HostedSessionSummary, SessionHost } from "../runtime/session-host-types.js";
 import type { PaEmailSummary } from "../pa/shared/types.js";
 import { searchEmailSummariesForContext } from "../pa/mail/index.js";
+import { readJsonResponse } from "../shared/http.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import {
 	createInboxMemoryItem,
@@ -103,14 +104,6 @@ function describeHostFetchError(url: URL, error: unknown) {
 	return `Could not reach Magpie assistant host at ${url.toString()}: ${reason}. Ensure the webui/assistant host is running and telegram.hostUrl points to it from this machine.`;
 }
 
-async function parseJsonResponse(response: Response) {
-	try {
-		return await response.json();
-	} catch {
-		return undefined;
-	}
-}
-
 async function getJson<T>(baseUrl: string, path: string, params?: Record<string, string | number | boolean | undefined>): Promise<T> {
 	const url = new URL(path, baseUrl);
 	for (const [key, value] of Object.entries(params ?? {})) {
@@ -122,9 +115,7 @@ async function getJson<T>(baseUrl: string, path: string, params?: Record<string,
 	} catch (error) {
 		throw new Error(describeHostFetchError(url, error));
 	}
-	const json = await parseJsonResponse(response);
-	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status} for ${url.toString()}`);
-	return json as T;
+	return await readJsonResponse<T>(response, `for ${url.toString()}`);
 }
 
 async function postJson<T>(baseUrl: string, path: string, body: Record<string, unknown>): Promise<T> {
@@ -139,9 +130,7 @@ async function postJson<T>(baseUrl: string, path: string, body: Record<string, u
 	} catch (error) {
 		throw new Error(describeHostFetchError(url, error));
 	}
-	const json = await parseJsonResponse(response);
-	if (!response.ok) throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status} for ${url.toString()}`);
-	return json as T;
+	return await readJsonResponse<T>(response, `for ${url.toString()}`);
 }
 
 async function queueTelegramReset(hostUrl: string, threadId: string) {

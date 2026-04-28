@@ -47,6 +47,24 @@ function buildFinalPrompt(goal: string, generated: string, parentSession: string
 	].filter(Boolean).join("\n\n");
 }
 
+async function switchToNewSession(ctx: ExtensionContext): Promise<boolean> {
+	const parentSession = ctx.sessionManager.getSessionFile();
+	const officialNewSession = (ctx as unknown as {
+		newSession?: (input: { parentSession?: string }) => Promise<{ cancelled?: boolean }>;
+	}).newSession;
+	if (typeof officialNewSession === "function") {
+		const result = await officialNewSession.call(ctx, { parentSession });
+		return !result?.cancelled;
+	}
+
+	const legacyNewSession = (ctx.sessionManager as unknown as {
+		newSession?: (input: { parentSession?: string }) => unknown;
+	}).newSession;
+	if (typeof legacyNewSession !== "function") return false;
+	legacyNewSession.call(ctx.sessionManager, { parentSession });
+	return true;
+}
+
 export default function (pi: ExtensionAPI) {
 	let subagentCore: SubagentCoreAPI | null = null;
 	let pendingToolHandoff: { prompt: string; goal: string; mode: HandoffMode } | null = null;
@@ -101,13 +119,12 @@ export default function (pi: ExtensionAPI) {
 		if (!pendingToolHandoff) return;
 		const pending = pendingToolHandoff;
 		pendingToolHandoff = null;
-		const sessionManager = ctx.sessionManager as any;
-		if (typeof sessionManager.newSession !== "function") {
+		const switched = await switchToNewSession(ctx);
+		if (!switched) {
 			ctx.ui.notify("Automatic handoff session switch unavailable.", "warning");
 			return;
 		}
 		handoffTimestamp = Date.now();
-		sessionManager.newSession({ parentSession: ctx.sessionManager.getSessionFile() });
 		setTimeout(() => {
 			pi.events.emit("magpie:handoff:set-mode", { mode: pending.mode });
 			pi.sendUserMessage(pending.prompt);

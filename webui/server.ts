@@ -137,7 +137,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		modelRegistry,
 		resolveModel,
 		buildSystemPrompt,
-		tools: config?.tools,
+		tools: config?.availableTools,
 		hostId: "magpie-remote-host",
 		hostRole: "remote",
 		agentDir: globalBaseDir,
@@ -742,7 +742,7 @@ export async function startWebUiServer(cwd: string, config?: WebUiServerConfig, 
 			: typeof bind === "string" && bind !== "tailscale"
 				? bind
 				: url.hostname;
-		const port = Number(runtime.config?.port || url.port || 8787);
+	const port = Number(runtime.config?.port || url.port || 8787);
 	await new Promise<void>((resolve) => {
 		server.listen(port, hostname, resolve);
 	});

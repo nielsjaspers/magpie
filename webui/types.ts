@@ -6,7 +6,7 @@ export interface WebUiServerConfig {
 	bind?: "tailscale" | "public" | "localhost" | string;
 	publicUrl?: string;
 	tailscaleUrl?: string;
-	tools?: string[];
+	availableTools?: unknown[];
 }
 
 export interface WebUiRequestContext {

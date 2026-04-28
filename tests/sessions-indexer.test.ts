@@ -17,9 +17,11 @@ import type { SessionIndexEntry } from "../sessions/types.js";
 
 function entry(sessionPath: string, summary: string): SessionIndexEntry {
 	return {
+		sessionId: sessionPath,
 		sessionPath,
 		startedAt: "2026-01-01T00:00:00.000Z",
 		endedAt: "2026-01-01T00:01:00.000Z",
+		cwd: "/tmp/project",
 		summary,
 		topics: ["calendar sync", "remote dispatch"],
 		filesModified: ["runtime/session-prompt.ts"],
@@ -48,10 +50,10 @@ describe("session indexer", () => {
 	});
 
 	test("dedupes pending entries by session path", async () => {
-		await addPendingIndexEntry({ sessionPath: "a", createdAt: "one" });
-		await addPendingIndexEntry({ sessionPath: "a", createdAt: "two" });
+		await addPendingIndexEntry({ sessionPath: "a", cwd: "/tmp/project", queuedAt: "one", attempts: 0 });
+		await addPendingIndexEntry({ sessionPath: "a", cwd: "/tmp/project", queuedAt: "two", attempts: 0 });
 
-		expect(await loadPendingIndexEntries()).toEqual([{ sessionPath: "a", createdAt: "one" }]);
+		expect(await loadPendingIndexEntries()).toEqual([{ sessionPath: "a", cwd: "/tmp/project", queuedAt: "one", attempts: 0 }]);
 		expect(getPendingIndexPath()).toContain("magpie-index-pending.jsonl");
 	});
 

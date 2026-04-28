@@ -14,7 +14,8 @@
   },
   "scripts": {
     "dev:assistant-host": "bun run runtime/assistant-host-server.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.typecheck.json"
   },
   "pi": {
     "extensions": [

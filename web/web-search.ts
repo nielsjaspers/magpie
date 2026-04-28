@@ -2,6 +2,13 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { loadConfig } from "../config/config.js";
 
+export function buildWebSearchCommand(query: string, model: string) {
+	return {
+		command: "env",
+		args: ["OPENCODE_ENABLE_EXA=1", "opencode", "run", query, "--model", model],
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "web_search",
@@ -15,10 +22,10 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			onUpdate?.({ content: [{ type: "text", text: `Searching web for: ${params.query}...` }], details: { query: params.query } });
 			const config = await loadConfig(ctx.cwd);
-			const escapedQuery = params.query.replace(/"/g, '\\"');
+			const command = buildWebSearchCommand(params.query, config.web?.searchModel ?? "opencode-go/mimo-v2-pro");
 			const result = await pi.exec(
-				"bash",
-				["-lc", `OPENCODE_ENABLE_EXA=1 opencode run \"${escapedQuery}\" --model \"${config.web?.searchModel ?? "opencode-go/mimo-v2-pro"}\"`],
+				command.command,
+				command.args,
 				{ signal, timeout: config.web?.searchTimeout ?? 120000 },
 			);
 			if (result.code !== 0) {

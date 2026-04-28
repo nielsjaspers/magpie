@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { loadAuthConfig, loadConfig, getResearchPapersDir } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
@@ -250,7 +251,7 @@ export default function (pi: ExtensionAPI) {
 					"## Transcript",
 				].join("\n"));
 				const details = {
-					runId: crypto.randomUUID(),
+					runId: randomUUID(),
 					shortId: record.metadata.short_id,
 					title: record.metadata.title,
 					firstAuthor: record.metadata.authors[0],

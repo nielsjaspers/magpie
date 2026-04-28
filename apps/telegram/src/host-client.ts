@@ -1,5 +1,7 @@
 import { Agent } from "undici";
 import type { TelegramAppConfig } from "./config.js";
+import { httpResponseErrorMessage, parseJsonOrTextResponse } from "../../../shared/http.js";
+import { extractTextFromSessionMessage } from "../../../runtime/session-content.js";
 
 const hostDispatcher = new Agent({
 	headersTimeout: 0,
@@ -62,25 +64,28 @@ async function getJson<T>(baseUrl: string, path: string, params: Record<string, 
 		if (value !== undefined && value !== "") url.searchParams.set(key, String(value));
 	}
 	const response = await fetch(url, { dispatcher: hostDispatcher as any } as any);
-	const json = await response.json();
+	const parsed = await parseJsonOrTextResponse(response);
 	if (!response.ok) {
-		throw new HostRequestError(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`, response.status);
+		throw new HostRequestError(httpResponseErrorMessage(parsed, `for ${url.toString()}`), response.status);
 	}
-	return json as T;
+	if (parsed.json === undefined) throw new HostRequestError(`Expected JSON response for ${url.toString()}`, response.status);
+	return parsed.json as T;
 }
 
 async function postJson<T>(baseUrl: string, path: string, body: unknown): Promise<T> {
-	const response = await fetch(new URL(path, baseUrl), {
+	const url = new URL(path, baseUrl);
+	const response = await fetch(url, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 		dispatcher: hostDispatcher as any,
 	} as any);
-	const json = await response.json();
+	const parsed = await parseJsonOrTextResponse(response);
 	if (!response.ok) {
-		throw new HostRequestError(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`, response.status);
+		throw new HostRequestError(httpResponseErrorMessage(parsed, `for ${url.toString()}`), response.status);
 	}
-	return json as T;
+	if (parsed.json === undefined) throw new HostRequestError(`Expected JSON response for ${url.toString()}`, response.status);
+	return parsed.json as T;
 }
 
 export async function resolveAssistantThread(config: TelegramAppConfig, threadId: string, modelRef: string) {
@@ -153,54 +158,6 @@ async function streamSessionEvents(
 			}
 		}
 	}
-}
-
-function extractTextFromUnknownContent(content: unknown): string | undefined {
-	if (typeof content === "string") {
-		const trimmed = content.trim();
-		return trimmed || undefined;
-	}
-	if (Array.isArray(content)) {
-		const parts = content
-			.map((part) => {
-				if (typeof part === "string") return part;
-				if (part && typeof part === "object") {
-					const record = part as Record<string, unknown>;
-					if (typeof record.text === "string") return record.text;
-					if (typeof record.content === "string") return record.content;
-				}
-				return "";
-			})
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		return parts || undefined;
-	}
-	if (content && typeof content === "object") {
-		const record = content as Record<string, unknown>;
-		if (typeof record.text === "string") {
-			const trimmed = record.text.trim();
-			return trimmed || undefined;
-		}
-		if (typeof record.content === "string") {
-			const trimmed = record.content.trim();
-			return trimmed || undefined;
-		}
-		if (Array.isArray(record.content)) return extractTextFromUnknownContent(record.content);
-		if (record.message && typeof record.message === "object") {
-			const nested = record.message as Record<string, unknown>;
-			return extractTextFromUnknownContent(nested.content);
-		}
-	}
-	return undefined;
-}
-
-function extractTextFromSessionMessage(message: unknown): string | undefined {
-	if (!message || typeof message !== "object") return undefined;
-	const record = message as Record<string, unknown>;
-	return extractTextFromUnknownContent(record.content)
-		?? extractTextFromUnknownContent(record.message)
-		?? extractTextFromUnknownContent(record.parts);
 }
 
 function assistantMessageTexts(messages: Array<{ role: string; text?: string }>): string[] {

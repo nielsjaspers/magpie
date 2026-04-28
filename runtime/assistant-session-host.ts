@@ -45,7 +45,7 @@ import {
 import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
 import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
 import { promptSession, type PromptSessionResult, type SessionToolEvent } from "./session-prompt.js";
-import { createBuiltInToolsForNames } from "./sdk-tools.js";
+import { resolveToolsForNames } from "./sdk-tools.js";
 
 export interface AssistantSessionHostConfig {
 	hostCwd: string;
@@ -262,11 +262,11 @@ export class AssistantSessionHost implements SessionHost {
 		return limit ? summaries.slice(0, limit) : summaries;
 	}
 
-	async getRuntime(threadKey: string, modelRef: string): Promise<AssistantSessionRuntime> {
+	async getRuntime(threadKey: string, modelRef: string, toolNames?: string[]): Promise<AssistantSessionRuntime> {
 		let runtime = this.runtimes.get(threadKey);
 		if (!runtime) {
 			runtime = {
-				sessionPromise: this.loadOrCreateSession(threadKey, modelRef),
+				sessionPromise: this.loadOrCreateSession(threadKey, modelRef, toolNames),
 				queue: Promise.resolve(),
 				sessionFilePromise: Promise.resolve(undefined),
 				runState: "idle",
@@ -283,7 +283,7 @@ export class AssistantSessionHost implements SessionHost {
 		const sessionId = createAssistantThreadKey(input.assistantChannel, input.assistantThreadId);
 		const registry = await this.readRegistry();
 		const existing = registry[sessionId];
-		const runtime = await this.getRuntime(sessionId, input.modelRef);
+		const runtime = await this.getRuntime(sessionId, input.modelRef, input.toolNames);
 		const session = await runtime.sessionPromise;
 		const sessionFile = session.sessionFile;
 		if (!sessionFile) throw new Error("Persistent assistant session did not produce a session file");
@@ -591,18 +591,19 @@ export class AssistantSessionHost implements SessionHost {
 		});
 	}
 
-	private async loadOrCreateSession(threadKey: string, modelRef: string): Promise<AgentSession> {
+	private async loadOrCreateSession(threadKey: string, modelRef: string, toolNames?: string[]): Promise<AgentSession> {
 		await this.ensureDirs();
 		const registry = await this.readRegistry();
 		const existing = registry[threadKey];
+		const selectedToolNames = toolNames ?? existing?.toolNames;
 		const existingPath = existing?.sessionPath;
 		if (existingPath && existsSync(existingPath)) {
-			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef, existing?.toolNames);
-			await this.upsertRegistryEntry(threadKey, { sessionPath: existingPath, modelRef, toolNames: existing?.toolNames });
+			const session = await this.instantiateAgentSession(SessionManager.open(existingPath, this.sessionsDir, this.hostCwd), modelRef, selectedToolNames);
+			await this.upsertRegistryEntry(threadKey, { sessionPath: existingPath, modelRef, toolNames: selectedToolNames });
 			return session;
 		}
 
-		const session = await this.instantiateAgentSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef, existing?.toolNames);
+		const session = await this.instantiateAgentSession(SessionManager.create(this.hostCwd, this.sessionsDir), modelRef, selectedToolNames);
 		if (!session.sessionFile) throw new Error("Persistent assistant session did not produce a session file");
 		await this.upsertRegistryEntry(threadKey, {
 			sessionPath: session.sessionFile,
@@ -613,7 +614,7 @@ export class AssistantSessionHost implements SessionHost {
 			assistantChannel: parseAssistantThreadKey(threadKey)?.channel,
 			assistantThreadId: parseAssistantThreadKey(threadKey)?.threadId,
 			modelRef,
-			toolNames: existing?.toolNames,
+			toolNames: selectedToolNames,
 			owner: deriveAssistantOwner(this.hostId, parseAssistantThreadKey(threadKey)?.channel, "system"),
 		});
 		return session;
@@ -636,7 +637,7 @@ export class AssistantSessionHost implements SessionHost {
 			model: model as any,
 			resourceLoader,
 			sessionManager,
-			tools: (toolNames?.length ? createBuiltInToolsForNames(this.hostCwd, toolNames) : this.tools) as any,
+			tools: (toolNames?.length ? resolveToolsForNames(this.hostCwd, toolNames, this.tools) : this.tools) as any,
 		});
 		await session.bindExtensions({});
 		return session;

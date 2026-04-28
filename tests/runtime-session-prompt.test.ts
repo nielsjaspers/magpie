@@ -46,9 +46,15 @@ describe("promptSession", () => {
 		const completed: unknown[] = [];
 
 		const result = await promptSession(session as any, "do work", {
-			onTextDelta: (delta) => deltas.push(delta),
-			onToolEvent: (event) => toolEvents.push(event),
-			onAssistantMessageComplete: (message) => completed.push(message),
+			onTextDelta: (delta) => {
+				deltas.push(delta);
+			},
+			onToolEvent: (event) => {
+				toolEvents.push(event);
+			},
+			onAssistantMessageComplete: (message) => {
+				completed.push(message);
+			},
 		});
 
 		expect(session.promptText).toBe("do work");

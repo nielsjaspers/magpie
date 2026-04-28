@@ -53,12 +53,12 @@ describe("remote bundle transport, store, snapshot, and server", () => {
 
 	test("stores, lists, loads, and archives remote bundles", async () => {
 		const store = createRemoteBundleStore(await mkdtemp(resolve("/tmp", "magpie-remote-store-")));
-		const stored = await storeRemoteBundle(store, { sessionId: "s1", sourceHostId: "local" }, bundle());
+		const stored = await storeRemoteBundle(store, { sessionId: "s1", dispatchedAt: "2026-01-01T00:00:00.000Z" }, bundle());
 
 		expect(stored.sessionId).toBe("s1");
 		expect((await listRemoteBundles(store)).map((item) => item.sessionId)).toEqual(["s1"]);
 		expect((await loadRemoteBundle(store, "s1"))?.bundle.metadata.sessionId).toBe("s1");
-		expect(await archiveRemoteBundle(store, { sessionId: "s1" })).toMatchObject({ sessionId: "s1" });
+		expect(await archiveRemoteBundle(store, { sessionId: "s1", fetchedAt: "2026-01-01T00:00:00.000Z" })).toMatchObject({ sessionId: "s1" });
 		expect(await loadRemoteBundle(store, "s1")).toBeUndefined();
 		expect(await listRemoteBundles(store)).toEqual([]);
 	});
@@ -96,7 +96,7 @@ describe("remote bundle transport, store, snapshot, and server", () => {
 		};
 
 		const accepted = await acceptDispatch(runtime, codingHost as any, "opencode/gpt-5-nano", {
-			payload: { sessionId: "s1", sourceHostId: "local", note: "continue" },
+			payload: { sessionId: "s1", dispatchedAt: "2026-01-01T00:00:00.000Z", note: "continue" },
 			bundle: serializeSessionBundle(bundle()),
 		});
 		expect(accepted.sessionId).toBe("remote-s1");
@@ -104,8 +104,8 @@ describe("remote bundle transport, store, snapshot, and server", () => {
 		expect(sentMessages).toMatchObject([{ text: "continue", modelRef: "opencode/gpt-5-nano", source: "system" }]);
 		expect(await listRemoteSessions(runtime)).toHaveLength(1);
 		expect(await getStoredRemoteBundle(runtime, "s1")).toBeDefined();
-		expect((await prepareFetch(runtime, codingHost as any, { sessionId: "remote-s1" })).bundle.metadata.sessionId).toBe("remote-s1");
-		expect(await deleteRemoteSession(runtime, codingHost as any, { sessionId: "remote-s1" })).toMatchObject({ sessionId: "remote-s1" });
+		expect((await prepareFetch(runtime, codingHost as any, { sessionId: "remote-s1", fetchedAt: "2026-01-01T00:00:00.000Z" })).bundle.metadata.sessionId).toBe("remote-s1");
+		expect(await deleteRemoteSession(runtime, codingHost as any, { sessionId: "remote-s1", fetchedAt: "2026-01-01T00:00:00.000Z" })).toMatchObject({ sessionId: "remote-s1" });
 		expect(archivedReason).toBe("fetched");
 	});
 });

@@ -1,4 +1,5 @@
 import type { SerializedSessionBundle } from "./transport.js";
+import { extractTextFromUnknownContent } from "../runtime/session-content.js";
 
 export interface RemoteBundleMessage {
 	role: string;
@@ -8,29 +9,6 @@ export interface RemoteBundleMessage {
 export interface RemoteBundleSnapshot {
 	metadata: SerializedSessionBundle["metadata"];
 	messages: RemoteBundleMessage[];
-}
-
-function extractText(content: unknown): string | undefined {
-	if (typeof content === "string") return content.trim() || undefined;
-	if (Array.isArray(content)) {
-		const text = content
-			.map((part) => {
-				if (typeof part === "string") return part;
-				if (part && typeof part === "object" && typeof (part as any).text === "string") return (part as any).text;
-				return "";
-			})
-			.filter(Boolean)
-			.join("\n")
-			.trim();
-		return text || undefined;
-	}
-	if (content && typeof content === "object") {
-		const record = content as Record<string, unknown>;
-		if (typeof record.text === "string") return record.text.trim() || undefined;
-		if (Array.isArray(record.content)) return extractText(record.content);
-		if (typeof record.content === "string") return record.content.trim() || undefined;
-	}
-	return undefined;
 }
 
 export function buildRemoteBundleSnapshot(bundle: SerializedSessionBundle, limit = 50): RemoteBundleSnapshot {
@@ -44,7 +22,7 @@ export function buildRemoteBundleSnapshot(bundle: SerializedSessionBundle, limit
 			if (entry.type !== "message") continue;
 			const message = entry.message as Record<string, unknown> | undefined;
 			const role = typeof message?.role === "string" ? message.role : typeof entry.role === "string" ? entry.role : "unknown";
-			messages.push({ role, text: extractText(message?.content) ?? extractText(entry.content) });
+			messages.push({ role, text: extractTextFromUnknownContent(message?.content) ?? extractTextFromUnknownContent(entry.content) });
 		} catch {
 			continue;
 		}

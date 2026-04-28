@@ -140,6 +140,7 @@ export interface MagpieAuthConfig {
 	telegram?: {
 		botToken?: string;
 	};
+	remote?: RemoteConfig;
 }
 
 export interface MagpieConfig {
