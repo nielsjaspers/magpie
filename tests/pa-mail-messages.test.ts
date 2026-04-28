@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { saveMailDraft } from "../pa/mail/drafts.js";
 import { formatSummaryLines, normalizeTextBody, slugify, toSummary, type MailMessage } from "../pa/mail/messages.js";
 import { buildSearchFallback } from "../pa/mail/queries.js";
+import { withGmailClient } from "../pa/mail/runtime.js";
 
 function message(patch: Partial<MailMessage> = {}): MailMessage {
 	return {
@@ -50,5 +51,16 @@ describe("PA mail message and draft helpers", () => {
 		expect(buildSearchFallback("from:ada@example.com", 14)).toMatchObject({ from: "ada@example.com" });
 		expect(buildSearchFallback("subject:hello", 14, true)).toMatchObject({ subject: "hello", seen: false });
 		expect(buildSearchFallback(undefined, 14)).toMatchObject({ all: true });
+	});
+
+	test("fails before opening Gmail when credentials are missing", async () => {
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = await mkdtemp(resolve(tmpdir(), "magpie-mail-runtime-"));
+		try {
+			await expect(withGmailClient({ cwd: process.env.PI_CODING_AGENT_DIR } as any, async () => "unused")).rejects.toThrow("Gmail aggregation inbox is not configured.");
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		}
 	});
 });

@@ -2,44 +2,31 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { loadPersonalAssistantRuntime } from "../shared/config.js";
 import type { PaEmailSummary } from "../shared/types.js";
-import { getClient, getMailboxDebugInfo, resetClient } from "./client.js";
+import { getMailboxDebugInfo } from "./client.js";
 import { saveMailDraft } from "./drafts.js";
 import {
 	formatSummaryLines,
 	toSummary,
 } from "./messages.js";
 import { fetchFullMessage, fetchThread, searchMessages } from "./queries.js";
+import { withGmailClient } from "./runtime.js";
 
 export async function searchEmailSummariesForContext(
 	ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
 	params: { query?: string; label?: string; limit?: number; sinceDays?: number; unreadOnly?: boolean },
 ): Promise<PaEmailSummary[]> {
-	const runtime = await loadPersonalAssistantRuntime(ctx);
-	const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-	if (!gmail?.address || !gmail.appPassword) throw new Error("Gmail aggregation inbox is not configured.");
-	try {
-		const client = await getClient(gmail.address, gmail.appPassword);
+	return await withGmailClient(ctx, async (client) => {
 		const messages = await searchMessages(client, params);
 		return messages.map(toSummary);
-	} catch (error) {
-		await resetClient();
-		throw error;
-	}
+	});
 }
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("pa-mail-debug", {
 		description: "Debug the PA Gmail mailbox connection and counts",
 		handler: async (_args, ctx) => {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				ctx.ui.notify("Gmail aggregation inbox is not configured.", "error");
-				return;
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
-				const debug = await getMailboxDebugInfo(client);
+				const debug = await withGmailClient(ctx, (client) => getMailboxDebugInfo(client));
 				const mailboxLines = debug.mailboxes.map((box) => `- ${box.path}${box.specialUse ? ` [${box.specialUse}]` : ""} | messages=${box.messages ?? "?"} unseen=${box.unseen ?? "?"} recent=${box.recent ?? "?"}`);
 				const latestLines = debug.latest.map((row) => `- ${row.id} | ${row.date ?? "no-date"} | ${row.from} | ${row.subject}`);
 				ctx.ui.notify([
@@ -52,7 +39,6 @@ export default function (pi: ExtensionAPI) {
 					...(latestLines.length > 0 ? latestLines : ["- none"]),
 				].join("\n"), "info");
 			} catch (error) {
-				await resetClient();
 				ctx.ui.notify(`PA mail debug failed: ${(error as Error).message}`, "error");
 			}
 		},
@@ -69,20 +55,13 @@ export default function (pi: ExtensionAPI) {
 			sinceDays: Type.Optional(Type.Number({ minimum: 1, maximum: 365, default: 14 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				return { content: [{ type: "text", text: "Gmail aggregation inbox is not configured. Add personalAssistant.mail.gmail credentials to magpie.auth.json." }], details: {}, isError: true };
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
-				const messages = await searchMessages(client, params);
+				const messages = await withGmailClient(ctx, (client) => searchMessages(client, params), "Gmail aggregation inbox is not configured. Add personalAssistant.mail.gmail credentials to magpie.auth.json.");
 				const text = messages.length > 0
 					? formatSummaryLines(messages)
 					: "No matching messages.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
-				await resetClient();
 				return { content: [{ type: "text", text: `Mail search failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -97,20 +76,13 @@ export default function (pi: ExtensionAPI) {
 			limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50, default: 10 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				return { content: [{ type: "text", text: "Gmail aggregation inbox is not configured." }], details: {}, isError: true };
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
-				const messages = await searchMessages(client, { label: params.label, limit: params.limit ?? 10, sinceDays: 365, unreadOnly: true });
+				const messages = await withGmailClient(ctx, (client) => searchMessages(client, { label: params.label, limit: params.limit ?? 10, sinceDays: 365, unreadOnly: true }));
 				const text = messages.length > 0
 					? formatSummaryLines(messages)
 					: "No unread messages.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
-				await resetClient();
 				return { content: [{ type: "text", text: `Unread mail lookup failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -122,21 +94,14 @@ export default function (pi: ExtensionAPI) {
 		description: "Fetch a full message from the Gmail aggregation inbox.",
 		parameters: Type.Object({ id: Type.String() }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				return { content: [{ type: "text", text: "Gmail aggregation inbox is not configured." }], details: {}, isError: true };
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
-				const message = await fetchFullMessage(client, params.id);
+				const message = await withGmailClient(ctx, (client) => fetchFullMessage(client, params.id));
 				if (!message) return { content: [{ type: "text", text: `Message not found: ${params.id}` }], details: {}, isError: true };
 				return {
 					content: [{ type: "text", text: `From: ${message.from}\nSubject: ${message.subject}\nDate: ${message.date}\n\n${message.body || ""}` }],
 					details: { message },
 				};
 			} catch (error) {
-				await resetClient();
 				return { content: [{ type: "text", text: `Mail fetch failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -148,18 +113,11 @@ export default function (pi: ExtensionAPI) {
 		description: "Fetch summaries for a Gmail thread.",
 		parameters: Type.Object({ threadId: Type.String() }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				return { content: [{ type: "text", text: "Gmail aggregation inbox is not configured." }], details: {}, isError: true };
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
-				const messages = await fetchThread(client, params.threadId);
+				const messages = await withGmailClient(ctx, (client) => fetchThread(client, params.threadId));
 				const text = messages.length > 0 ? formatSummaryLines(messages) : "No messages in thread.";
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary) } };
 			} catch (error) {
-				await resetClient();
 				return { content: [{ type: "text", text: `Thread fetch failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -171,19 +129,12 @@ export default function (pi: ExtensionAPI) {
 		description: "Summarize recent correspondence with a person.",
 		parameters: Type.Object({ person: Type.String() }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				return { content: [{ type: "text", text: "Gmail aggregation inbox is not configured." }], details: {}, isError: true };
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
 				const query = `from:${params.person}`;
-				const messages = await searchMessages(client, { query, limit: 20, sinceDays: 365 });
+				const messages = await withGmailClient(ctx, (client) => searchMessages(client, { query, limit: 20, sinceDays: 365 }));
 				const text = messages.length > 0 ? formatSummaryLines(messages) : `No recent conversation history for ${params.person}.`;
 				return { content: [{ type: "text", text }], details: { messages: messages.map(toSummary), person: params.person } };
 			} catch (error) {
-				await resetClient();
 				return { content: [{ type: "text", text: `Conversation history lookup failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
@@ -199,17 +150,15 @@ export default function (pi: ExtensionAPI) {
 			historyDepth: Type.Optional(Type.Number({ minimum: 1, maximum: 30, default: 15 })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const gmail = runtime.personalAssistantAuth?.mail?.gmail;
-			if (!gmail?.address || !gmail.appPassword) {
-				return { content: [{ type: "text", text: "Gmail aggregation inbox is not configured." }], details: {}, isError: true };
-			}
 			try {
-				const client = await getClient(gmail.address, gmail.appPassword);
-				const target = await fetchFullMessage(client, params.messageId);
+				const { target, history, thread } = await withGmailClient(ctx, async (client) => {
+					const target = await fetchFullMessage(client, params.messageId);
+					if (!target) return { target: null, history: [], thread: [] };
+					const history = await searchMessages(client, { query: `from:${target.from}`, limit: params.historyDepth ?? 15, sinceDays: 365 });
+					const thread = params.includeThreadContext === false ? [] : await fetchThread(client, target.threadId, 20);
+					return { target, history, thread };
+				});
 				if (!target) return { content: [{ type: "text", text: `Message not found: ${params.messageId}` }], details: {}, isError: true };
-				const history = await searchMessages(client, { query: `from:${target.from}`, limit: params.historyDepth ?? 15, sinceDays: 365 });
-				const thread = params.includeThreadContext === false ? [] : await fetchThread(client, target.threadId, 20);
 				return {
 					content: [{ type: "text", text: `Draft context loaded for ${target.subject}.` }],
 					details: {
@@ -220,7 +169,6 @@ export default function (pi: ExtensionAPI) {
 					},
 				};
 			} catch (error) {
-				await resetClient();
 				return { content: [{ type: "text", text: `Draft context lookup failed: ${(error as Error).message}` }], details: {}, isError: true };
 			}
 		},
