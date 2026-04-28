@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
@@ -14,6 +14,8 @@ import { deserializeSessionBundle, serializeSessionBundle } from "./transport.js
 import type { DispatchPayload } from "./types.js";
 import type { WebUiRouteRegistration } from "../webui/types.js";
 import { createWorkspaceArchiveFromDir } from "./workspace.js";
+import { formatExpiry, formatRemoteHosts } from "./format.js";
+import { archiveDispatchedLocalSession, recoverArchivedStubSession, resolveCurrentStub, type DispatchedStubData } from "./stub.js";
 
 type CommandContext = Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never;
 
@@ -77,55 +79,6 @@ function getCurrentSessionModelRef(ctx: Parameters<NonNullable<ExtensionAPI["reg
 	return undefined;
 }
 
-interface DispatchedStubData {
-	remoteHost?: string;
-	dispatchedAt?: string;
-	remoteSessionId?: string;
-	originalSessionPath?: string;
-	archivedSessionPath?: string;
-}
-
-async function archiveDispatchedLocalSession(sessionFile: string, remoteHost: string, remoteSessionId: string) {
-	const archiveDir = resolve(process.env.HOME || "", ".pi/agent/magpie-dispatched");
-	await mkdir(archiveDir, { recursive: true });
-	const archivedPath = resolve(archiveDir, basename(sessionFile));
-	await rename(sessionFile, archivedPath);
-	await mkdir(dirname(sessionFile), { recursive: true });
-	await writeFile(sessionFile, JSON.stringify({
-		type: "custom",
-		customType: "magpie:dispatched-stub",
-		timestamp: new Date().toISOString(),
-		data: {
-			remoteHost,
-			dispatchedAt: new Date().toISOString(),
-			remoteSessionId,
-			originalSessionPath: sessionFile,
-			archivedSessionPath: archivedPath,
-		},
-	}) + "\n", "utf8");
-	return archivedPath;
-}
-
-function parseDispatchedStubEntry(entry: any): DispatchedStubData | undefined {
-	if (!entry || entry.type !== "custom" || entry.customType !== "magpie:dispatched-stub") return undefined;
-	return typeof entry.data === "object" && entry.data ? entry.data as DispatchedStubData : undefined;
-}
-
-async function resolveCurrentStub(ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never): Promise<DispatchedStubData | undefined> {
-	const entries = ctx.sessionManager.getEntries() as unknown as Array<Record<string, unknown>>;
-	const fromEntries = [...entries].reverse().map(parseDispatchedStubEntry).find(Boolean);
-	if (fromEntries) return fromEntries;
-	const sessionFile = ctx.sessionManager.getSessionFile();
-	if (!sessionFile || !existsSync(sessionFile)) return undefined;
-	try {
-		const firstLine = (await readFile(sessionFile, "utf8")).split(/\r?\n/, 1)[0];
-		if (!firstLine?.trim()) return undefined;
-		return parseDispatchedStubEntry(JSON.parse(firstLine));
-	} catch {
-		return undefined;
-	}
-}
-
 function createLocalCodingHost(ctx: CommandContext, config: Awaited<ReturnType<typeof loadConfig>>) {
 	const authStorage = AuthStorage.create();
 	const baseDir = getMagpieAgentBaseDir();
@@ -184,39 +137,6 @@ async function restoreFetchedLocalSession(
 		localOwner,
 		sessionId: bundle.metadata.sessionId,
 	};
-}
-
-async function recoverArchivedStubSession(
-	ctx: CommandContext,
-	stub: DispatchedStubData,
-) {
-	const archivedPath = stub.archivedSessionPath?.trim();
-	const originalPath = stub.originalSessionPath?.trim() || ctx.sessionManager.getSessionFile();
-	if (!archivedPath || !existsSync(archivedPath)) throw new Error("Archived local session copy is unavailable.");
-	if (!originalPath) throw new Error("Original session path is unavailable.");
-	await mkdir(dirname(originalPath), { recursive: true });
-	await writeFile(originalPath, await readFile(archivedPath));
-	if (archivedPath !== originalPath) await rm(archivedPath, { force: true });
-	return originalPath;
-}
-
-function formatExpiry(expiresAt: string): string {
-	const ms = Date.parse(expiresAt) - Date.now();
-	const minutes = Math.max(0, Math.round(ms / 60000));
-	return `${expiresAt} (${minutes} min)`;
-}
-
-function formatRemoteHosts(config: Awaited<ReturnType<typeof loadConfig>>) {
-	const hosts = config.remote?.hosts ?? {};
-	const defaultHost = config.remote?.defaultHost?.trim();
-	const entries = Object.entries(hosts);
-	if (entries.length === 0) return "No remote hosts configured.";
-	return entries.map(([name, host]) => {
-		const marker = name === defaultHost ? " [default]" : "";
-		const urls = [host.tailscaleUrl?.trim(), host.publicUrl?.trim()].filter(Boolean).join(" | ") || "(no url configured)";
-		const token = host.deviceToken?.trim() ? "token: configured" : "token: missing";
-		return `${name}${marker}\n- ${urls}\n- ${token}`;
-	}).join("\n\n");
 }
 
 async function buildRemoteStatusMessage(
