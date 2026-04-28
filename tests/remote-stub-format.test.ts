@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { resolveRemoteHost, resolveRemoteHostByName } from "../remote/config.js";
 import { formatRemoteHosts } from "../remote/format.js";
+import { getCurrentSessionModelRef } from "../remote/host.js";
 import { parseDispatchedStubEntry, resolveCurrentStub } from "../remote/stub.js";
 
 describe("remote stub and formatting helpers", () => {
@@ -57,5 +59,42 @@ describe("remote stub and formatting helpers", () => {
 				},
 			},
 		})).toContain("home [default]\n- http://home\n- token: configured");
+	});
+
+	test("resolves default and named remote hosts", () => {
+		const config = {
+			remote: {
+				defaultHost: "home",
+				hosts: {
+					home: { tailscaleUrl: "http://home", deviceToken: " home-token " },
+					lab: { publicUrl: "https://lab" },
+					broken: { deviceToken: "missing-url" },
+				},
+			},
+		} as any;
+
+		expect(resolveRemoteHost(config)).toEqual({ name: "home", baseUrl: "http://home", deviceToken: "home-token" });
+		expect(resolveRemoteHost(config, "lab")).toEqual({ name: "lab", baseUrl: "https://lab", deviceToken: undefined });
+		expect(resolveRemoteHost(config, "broken")).toBeUndefined();
+		expect(resolveRemoteHostByName(config, "lab", { name: "home", baseUrl: "http://home", deviceToken: "fallback" }))
+			.toEqual({ name: "lab", baseUrl: "https://lab", deviceToken: "fallback" });
+	});
+
+	test("resolves the current model from the latest branch model change", () => {
+		expect(getCurrentSessionModelRef({
+			sessionManager: {
+				getBranch: () => [
+					{ type: "model_change", provider: "old", modelId: "small" },
+					{ type: "message" },
+					{ type: "model_change", provider: "new", modelId: "large" },
+				],
+			},
+			model: { provider: "fallback", id: "model" },
+		} as any)).toBe("new/large");
+
+		expect(getCurrentSessionModelRef({
+			sessionManager: { getBranch: () => [] },
+			model: { providerId: "fallback", modelId: "model" },
+		} as any)).toBe("fallback/model");
 	});
 });

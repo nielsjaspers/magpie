@@ -1,142 +1,17 @@
-import { existsSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { basename, resolve } from "node:path";
-import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { basename } from "node:path";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { getGlobalConfigPath, getProjectConfigPath, getRemoteConfig, loadConfig } from "../config/config.js";
-import { CodingSessionHost } from "../runtime/coding-session-host.js";
-import type { ExportedSessionBundle } from "../runtime/session-host-types.js";
+import { getRemoteConfig, loadConfig } from "../config/config.js";
 import { createEnrollmentCode, createRemoteAuthStore, listEnrolledDevices, revokeEnrolledDevice } from "./auth.js";
-import { claimRemoteEnrollmentCode, deleteFetchedRemoteSession, dispatchSession, fetchRemoteSession, listDispatchedSessions } from "./client.js";
-import { deserializeSessionBundle, serializeSessionBundle } from "./transport.js";
-import type { DispatchPayload } from "./types.js";
-import { createWorkspaceArchiveFromDir } from "./workspace.js";
+import { claimRemoteEnrollmentCode, deleteFetchedRemoteSession, fetchRemoteSession, listDispatchedSessions } from "./client.js";
+import { resolveRemoteHost, resolveRemoteHostByName, writeDeviceTokenToConfig } from "./config.js";
+import { checkRemoteSessionExists, dispatchCurrentSession, restoreFetchedLocalSession } from "./dispatch.js";
 import { formatExpiry, formatRemoteHosts } from "./format.js";
+import type { CommandContext } from "./host.js";
 import { buildRemoteWebUiRoutes } from "./routes.js";
-import { archiveDispatchedLocalSession, recoverArchivedStubSession, resolveCurrentStub, type DispatchedStubData } from "./stub.js";
+import { recoverArchivedStubSession, resolveCurrentStub } from "./stub.js";
+import { deserializeSessionBundle } from "./transport.js";
 export { buildRemoteWebUiRoutes } from "./routes.js";
-
-type CommandContext = Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never;
-
-function getMagpieAgentBaseDir() {
-	return process.env.PI_CODING_AGENT_DIR ?? resolve(process.env.HOME || "", ".pi/agent");
-}
-
-function resolveRemoteHost(config: Awaited<ReturnType<typeof loadConfig>>, hostName?: string) {
-	const remote = getRemoteConfig(config);
-	const targetHost = hostName?.trim() || remote?.defaultHost?.trim();
-	if (!targetHost || !remote?.hosts) return undefined;
-	const host = remote.hosts[targetHost];
-	if (!host) return undefined;
-	const baseUrl = host.tailscaleUrl?.trim() || host.publicUrl?.trim();
-	if (!baseUrl) return undefined;
-	return { name: targetHost, baseUrl, deviceToken: host.deviceToken?.trim() || undefined };
-}
-
-async function checkRemoteSessionExists(config: Awaited<ReturnType<typeof loadConfig>>, stub: DispatchedStubData): Promise<boolean | undefined> {
-	const remoteHost = resolveRemoteHost(config, stub.remoteHost);
-	const remoteSessionId = stub.remoteSessionId?.trim();
-	if (!remoteHost?.baseUrl || !remoteHost.deviceToken || !remoteSessionId) return undefined;
-	try {
-		const result = await listDispatchedSessions(remoteHost.baseUrl, remoteHost.deviceToken);
-		return result.sessions.some((session) => session.sessionId === remoteSessionId);
-	} catch {
-		return undefined;
-	}
-}
-
-function getWritableConfigPath(cwd: string): string {
-	return existsSync(getProjectConfigPath(cwd)) ? getProjectConfigPath(cwd) : getGlobalConfigPath();
-}
-
-async function writeDeviceTokenToConfig(cwd: string, hostName: string, token: string) {
-	const path = getWritableConfigPath(cwd);
-	let config: any = {};
-	try {
-		config = JSON.parse(await readFile(path, "utf8"));
-	} catch {
-		config = {};
-	}
-	config.remote ??= {};
-	config.remote.hosts ??= {};
-	config.remote.hosts[hostName] ??= {};
-	config.remote.hosts[hostName].deviceToken = token;
-	await writeFile(path, JSON.stringify(config, null, 2) + "\n", "utf8");
-	return path;
-}
-
-function getCurrentSessionModelRef(ctx: Parameters<NonNullable<ExtensionAPI["registerCommand"]>>[1]["handler"] extends (args: any, ctx: infer T) => any ? T : never): string | undefined {
-	const branch = ctx.sessionManager.getBranch() as Array<Record<string, any>>;
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
-		if (entry?.type !== "model_change") continue;
-		if (typeof entry.provider === "string" && typeof entry.modelId === "string") return `${entry.provider}/${entry.modelId}`;
-	}
-	const currentModel = (ctx as any).model;
-	if (currentModel && typeof currentModel.provider === "string" && typeof currentModel.id === "string") return `${currentModel.provider}/${currentModel.id}`;
-	if (currentModel && typeof currentModel.providerId === "string" && typeof currentModel.modelId === "string") return `${currentModel.providerId}/${currentModel.modelId}`;
-	return undefined;
-}
-
-function createLocalCodingHost(ctx: CommandContext, config: Awaited<ReturnType<typeof loadConfig>>) {
-	const authStorage = AuthStorage.create();
-	const baseDir = getMagpieAgentBaseDir();
-	return new CodingSessionHost({
-		hostCwd: ctx.cwd,
-		storageDir: resolve(baseDir, "magpie-local-hosted"),
-		workspaceRootDir: resolve(baseDir, "magpie-local-workspaces"),
-		authStorage,
-		modelRegistry: ctx.modelRegistry,
-		resolveModel: (ref: string) => {
-			const idx = ref.indexOf("/");
-			if (idx <= 0 || idx === ref.length - 1) return undefined;
-			return ctx.modelRegistry.find(ref.slice(0, idx), ref.slice(idx + 1));
-		},
-		buildSystemPrompt: async () => "You are a helpful coding assistant. Be concise, careful, and effective.",
-		hostId: "magpie-local-coding-host",
-		hostRole: "local",
-		workspaceArchiveExcludes: config.remote?.tarExclude,
-		maxWorkspaceArchiveBytes: config.remote?.maxTarSize,
-	});
-}
-
-async function restoreFetchedLocalSession(
-	ctx: CommandContext,
-	config: Awaited<ReturnType<typeof loadConfig>>,
-	remoteSessionId: string,
-	bundle: ExportedSessionBundle,
-	stub?: DispatchedStubData,
-) {
-	const restorePath = stub?.originalSessionPath?.trim()
-		|| ctx.sessionManager.getSessionFile()
-		|| bundle.metadata.sourceSessionPath?.trim();
-	if (!restorePath) throw new Error(`Unable to determine local session path for fetched session ${remoteSessionId}`);
-	const localHost = createLocalCodingHost(ctx, config);
-	const localOwner = { kind: "local_tui" as const, hostId: localHost.hostId, displayName: "Local TUI" };
-	const restoredSession = await localHost.importSession({
-		bundle: {
-			...bundle,
-			metadata: {
-				...bundle.metadata,
-				location: "local",
-				cwd: bundle.metadata.cwd,
-				sourceSessionPath: restorePath,
-				owner: localOwner,
-			},
-		},
-		owner: localOwner,
-	});
-	if (stub?.archivedSessionPath?.trim() && existsSync(stub.archivedSessionPath) && stub.archivedSessionPath !== restorePath) {
-		await rm(stub.archivedSessionPath, { force: true });
-	}
-	return {
-		restoredPath: restorePath,
-		workspacePath: restoredSession.metadata.cwd,
-		localHost,
-		localOwner,
-		sessionId: bundle.metadata.sessionId,
-	};
-}
 
 async function buildRemoteStatusMessage(
 	ctx: CommandContext,
@@ -162,61 +37,6 @@ async function buildRemoteStatusMessage(
 		? "Remote sessions: none"
 		: ["Remote sessions:", ...result.sessions.map((session) => `- ${session.sessionId} (${session.updatedAt})`)].join("\n"));
 	return lines.join("\n\n");
-}
-
-async function dispatchCurrentSession(
-	ctx: CommandContext,
-	config: Awaited<ReturnType<typeof loadConfig>>,
-	note?: string,
-	hostName?: string,
-) {
-	const remoteHost = resolveRemoteHost(config, hostName);
-	if (!remoteHost) throw new Error("Configure remote.defaultHost and remote.hosts.<name>.tailscaleUrl/publicUrl first.");
-	if (!remoteHost.deviceToken) throw new Error(`No device token configured for ${remoteHost.name}. Run /remote enroll <CODE> first.`);
-	const sessionFile = ctx.sessionManager.getSessionFile();
-	if (!sessionFile) throw new Error("Current session file unavailable.");
-	const raw = await readFile(sessionFile);
-	const sessionId = basename(sessionFile, ".jsonl");
-	const now = new Date().toISOString();
-	const modelRef = getCurrentSessionModelRef(ctx);
-	const remoteConfig = getRemoteConfig(config);
-	const workspace = await createWorkspaceArchiveFromDir(ctx.cwd, {
-		excludes: remoteConfig?.tarExclude,
-		maxBytes: remoteConfig?.maxTarSize,
-	});
-	const payload: DispatchPayload = {
-		sessionId,
-		originalCwd: ctx.cwd,
-		dispatchedAt: now,
-		modelRef,
-		note: note?.trim() || undefined,
-	};
-	const bundle = serializeSessionBundle({
-		metadata: {
-			sessionId,
-			kind: "coding",
-			origin: "local",
-			location: "remote",
-			runState: "idle",
-			createdAt: now,
-			updatedAt: now,
-			title: basename(ctx.cwd),
-			workspaceMode: "attached",
-			cwd: ctx.cwd,
-			sourceSessionPath: sessionFile,
-			summary: modelRef,
-			owner: {
-				kind: "local_tui",
-				hostId: "magpie-local-coding-host",
-				displayName: "Local TUI",
-			},
-		},
-		sessionJsonl: raw,
-		workspace: { archive: workspace, format: "tar.gz" },
-	});
-	const result = await dispatchSession(remoteHost.baseUrl, payload, bundle, remoteHost.deviceToken);
-	await archiveDispatchedLocalSession(sessionFile, remoteHost.name, result.sessionId);
-	return { remoteHost, result };
 }
 
 const DISPATCHED_WIDGET_KEY = "magpie-remote-dispatched";
@@ -430,13 +250,7 @@ export default function (pi: ExtensionAPI) {
 				const stub = await resolveCurrentStub(ctx);
 				const remoteSessionId = rest[0]?.trim() || stub?.remoteSessionId?.trim();
 				const remoteHostName = stub?.remoteHost?.trim() || remoteHost?.name;
-				const resolvedRemoteHost = remoteHostName && config.remote?.hosts?.[remoteHostName]
-					? {
-						name: remoteHostName,
-						baseUrl: config.remote.hosts[remoteHostName]?.tailscaleUrl?.trim() || config.remote.hosts[remoteHostName]?.publicUrl?.trim() || remoteHost?.baseUrl,
-						deviceToken: config.remote.hosts[remoteHostName]?.deviceToken?.trim() || remoteHost?.deviceToken,
-					}
-					: remoteHost;
+				const resolvedRemoteHost = remoteHostName ? resolveRemoteHostByName(config, remoteHostName, remoteHost) : remoteHost;
 				if (!remoteSessionId) {
 					ctx.ui.notify("Usage: /remote get <SESSION_ID> (or run it from an open dispatched stub session)", "error");
 					return;

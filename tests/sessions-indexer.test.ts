@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -13,6 +13,9 @@ import {
 	scoreSessionEntry,
 	upsertIndexEntry,
 } from "../sessions/indexer.js";
+import { listSessionFiles } from "../sessions/indexing.js";
+import { dedupeSessionEntries, formatSessionListResult } from "../sessions/format.js";
+import { parseDateBoundary, parseParentSessionPath } from "../sessions/parse.js";
 import type { SessionIndexEntry } from "../sessions/types.js";
 
 function entry(sessionPath: string, summary: string): SessionIndexEntry {
@@ -69,5 +72,33 @@ describe("session indexer", () => {
 		await appendIndexEntry(entry("b", "second"), 10);
 
 		expect((await loadSessionIndex()).map((item) => item.sessionPath)).toEqual(["a", "b"]);
+	});
+
+	test("parses parent session markers and local day boundaries", () => {
+		expect(parseParentSessionPath("**Parent session:** `/tmp/session.jsonl`")).toBe("/tmp/session.jsonl");
+		expect(parseParentSessionPath("Parent session: ./relative.jsonl")).toBe("./relative.jsonl");
+		expect(new Date(parseDateBoundary("2026-01-02", "start")!).getHours()).toBe(0);
+		expect(new Date(parseDateBoundary("2026-01-02", "end")!).getHours()).toBe(23);
+		expect(parseDateBoundary("not a date", "start")).toBeUndefined();
+	});
+
+	test("dedupes session entries by latest endedAt and formats list output", () => {
+		const older = entry("same", "older");
+		const newer = { ...entry("same", "newer"), endedAt: "2026-01-01T00:02:00.000Z" };
+		const deduped = dedupeSessionEntries([older, newer]);
+
+		expect(deduped).toEqual([newer]);
+		expect(formatSessionListResult(deduped, { sort: "newest", limit: 10 })).toContain("newer");
+	});
+
+	test("lists session JSONL files without index storage files", async () => {
+		const root = await mkdtemp(resolve(tmpdir(), "magpie-session-files-"));
+		await mkdir(resolve(root, "nested"));
+		await writeFile(resolve(root, "a.jsonl"), "", "utf8");
+		await writeFile(resolve(root, "magpie-session-index.jsonl"), "", "utf8");
+		await writeFile(resolve(root, "nested", "b.jsonl"), "", "utf8");
+		await writeFile(resolve(root, "nested", "notes.txt"), "", "utf8");
+
+		expect((await listSessionFiles(root)).map((path) => path.slice(root.length + 1))).toEqual(["a.jsonl", "nested/b.jsonl"]);
 	});
 });

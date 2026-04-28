@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { addSessionSubscriber, clearSessionWatchers, getSessionWatchers, removeSessionSubscriber } from "../runtime/session-watchers.js";
-import { buildHostedSessionStatus, buildHostedSessionSummary } from "../runtime/session-state.js";
+import { buildHostedSessionStatus, buildHostedSessionSummary, matchesHostedSessionFilter } from "../runtime/session-state.js";
 import type { HostedSessionListener, SessionWatcher } from "../runtime/session-host-types.js";
 
 describe("session watcher registries and hosted state builders", () => {
@@ -50,5 +50,24 @@ describe("session watcher registries and hosted state builders", () => {
 		expect(summary).toMatchObject({ sessionId: "s1", assistantChannel: "web", loaded: true });
 		expect(status).toMatchObject({ activeTurnId: "turn", messageCount: 4, queueDepth: 1, lastError: "none" });
 		expect(status.watchers).toHaveLength(1);
+	});
+
+	test("matches common hosted session filters", () => {
+		const summary = buildHostedSessionSummary({
+			sessionId: "s1",
+			title: "Support Thread",
+			kind: "assistant",
+			location: "remote",
+			runState: "idle",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:01:00.000Z",
+			assistantChannel: "telegram",
+			assistantThreadId: "thread-1",
+		});
+
+		expect(matchesHostedSessionFilter(summary, { kind: "assistant", query: "support" }, [summary.sessionId, summary.title])).toBe(true);
+		expect(matchesHostedSessionFilter(summary, { assistantChannel: "web" }, [summary.sessionId, summary.title])).toBe(false);
+		expect(matchesHostedSessionFilter({ ...summary, location: "archived" }, {}, [summary.sessionId])).toBe(false);
+		expect(matchesHostedSessionFilter({ ...summary, location: "archived" }, { includeArchived: true }, [summary.sessionId])).toBe(true);
 	});
 });

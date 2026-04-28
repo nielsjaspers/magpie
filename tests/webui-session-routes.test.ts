@@ -10,9 +10,17 @@ import {
 	parseSessionFilter,
 	sendSessionMessageRoute,
 } from "../webui/routes/session.js";
+import { getSessionIdFromRequestPath } from "../webui/request.js";
 import type { HostedSessionHandle, HostedSessionMetadata, HostedSessionStatus, SessionHost } from "../runtime/session-host-types.js";
+import { sanitizeUploadedFilename } from "../webui/uploads.js";
 
 describe("webui session route parsing", () => {
+	test("parses session member request paths", () => {
+		expect(getSessionIdFromRequestPath("/api/v1/sessions/abc/status")).toEqual({ sessionId: "abc", suffix: "/status" });
+		expect(getSessionIdFromRequestPath("/api/v1/sessions/a%2Fb")).toEqual({ sessionId: "a/b", suffix: "" });
+		expect(getSessionIdFromRequestPath("/api/v1/models")).toBeUndefined();
+	});
+
 	test("normalizes assistant channels and parses filters", () => {
 		expect(normalizeAssistantChannel("telegram")).toBe("telegram");
 		expect(normalizeAssistantChannel("bad")).toBeUndefined();
@@ -44,6 +52,11 @@ describe("webui session route parsing", () => {
 			source: "web",
 			modelRef: "opencode/gpt-5-nano",
 		});
+	});
+
+	test("sanitizes uploaded filenames", () => {
+		expect(sanitizeUploadedFilename("../../notes 1.txt")).toBe("..-..-notes-1.txt");
+		expect(sanitizeUploadedFilename("")).toBe("upload.bin");
 	});
 });
 

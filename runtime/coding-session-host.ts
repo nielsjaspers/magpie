@@ -46,7 +46,7 @@ import {
 	getSessionWatchers,
 	removeSessionSubscriber,
 } from "./session-watchers.js";
-import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
+import { buildHostedSessionStatus, buildHostedSessionSummary, matchesHostedSessionFilter } from "./session-state.js";
 import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
 import { promptSession } from "./session-prompt.js";
 
@@ -586,15 +586,7 @@ export class CodingSessionHost implements SessionHost {
 	}
 
 	private matchesFilter(summary: HostedSessionSummary, filter?: SessionFilter): boolean {
-		if (!filter) return true;
-		if (filter.kind && summary.kind !== filter.kind) return false;
-		if (filter.location && summary.location !== filter.location) return false;
-		if (filter.runState && summary.runState !== filter.runState) return false;
-		if (!filter.includeArchived && summary.location === "archived") return false;
-		if (filter.ownerKind && summary.owner?.kind !== filter.ownerKind) return false;
-		if (!filter.query?.trim()) return true;
-		const query = filter.query.trim().toLowerCase();
-		return [summary.sessionId, summary.title, summary.cwd].some((value) => value?.toLowerCase().includes(query));
+		return matchesHostedSessionFilter(summary, filter, [summary.sessionId, summary.title, summary.cwd]);
 	}
 
 	private createHandle(sessionId: string, metadata: HostedSessionMetadata): HostedSessionHandle {
