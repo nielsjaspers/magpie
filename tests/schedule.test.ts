@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createRunnerScript, parseWhenSpec } from "../schedule/index.js";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { describeEntryStatus, formatEntry } from "../schedule/format.js";
+import { createRunnerScript, createScheduleStore, parseWhenSpec, readIndex } from "../schedule/index.js";
 import type { ScheduleEntry, ScheduleStore } from "../schedule/types.js";
 
 function baseEntry(patch: Partial<ScheduleEntry> = {}): ScheduleEntry {
@@ -61,5 +65,47 @@ describe("schedule parsing and runner generation", () => {
 		expect(script).toContain("$HOME/.nvm/nvm.sh");
 		expect(script).toContain("nvm use 22");
 		expect(script).toContain("tee -a \"${RESULT_PATH:-/dev/stdout}\"");
+	});
+
+	test("loads and normalizes legacy schedule index entries", async () => {
+		const store = createScheduleStore(await mkdtemp(resolve(tmpdir(), "magpie-schedule-store-")));
+		await writeFile(store.indexPath, JSON.stringify([
+			{
+				id: "old",
+				task: "legacy task",
+				cwd: "/tmp/project",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				resultPath: "/tmp/result.md",
+				statePath: "/tmp/state",
+				notify: false,
+			},
+			{ id: "bad" },
+		], null, 2), "utf8");
+
+		const entries = await readIndex(store);
+
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({
+			id: "old",
+			type: "one-shot",
+			backend: "at",
+			notify: false,
+			resultPath: "/tmp/result.md",
+			runs: [{ startedAt: "2026-01-01T00:00:00.000Z", resultPath: "/tmp/result.md", statePath: "/tmp/state" }],
+		});
+	});
+
+	test("formats completed entries from latest run status", () => {
+		const entry = baseEntry({
+			runs: [{
+				startedAt: "2026-01-01T00:00:00.000Z",
+				endedAt: "2026-01-01T00:02:00.000Z",
+				exitCode: 0,
+				resultPath: "/tmp/result.md",
+			}],
+		});
+
+		expect(describeEntryStatus(entry)).toBe("completed (0) at 2026-01-01T00:02:00.000Z");
+		expect(formatEntry(entry)).toContain("- runs: 1");
 	});
 });
