@@ -50,6 +50,7 @@ import { buildHostedSessionStatus, buildHostedSessionSummary, matchesHostedSessi
 import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
 import { promptSession } from "./session-prompt.js";
 import { normalizeRecord, readJsonStore, writeJsonStore } from "../shared/json-store.js";
+import { acceptQueuedTurn, finishQueuedTurn, markRuntimeError, markRuntimeIdle, markRuntimeRunning } from "./hosted-runtime-controller.js";
 
 interface CodingSessionRegistryEntry {
 	sessionPath: string;
@@ -243,12 +244,9 @@ export class CodingSessionHost implements SessionHost {
 			await this.writeRegistry(registry);
 			if (ownerChanged) await this.emit(sessionId, { type: "ownership_changed", owner: nextOwner });
 		}
-		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
-		runtime.queueDepth += 1;
-		const accepted: AcceptedMessage = { sessionId, accepted: true, queued, runState: queued ? "running" : runtime.runState };
+		const accepted: AcceptedMessage = acceptQueuedTurn(sessionId, runtime);
 		const pending = runtime.queue.then(async () => {
-			runtime.runState = "running";
-			runtime.activeTurnId = randomUUID();
+			markRuntimeRunning(runtime);
 			await this.persistRuntimeState(sessionId, runtime);
 			await this.emitStatus(sessionId, modelRef);
 			try {
@@ -265,20 +263,16 @@ export class CodingSessionHost implements SessionHost {
 						}
 					},
 				});
-				runtime.runState = "idle";
-				runtime.activeTurnId = undefined;
-				runtime.lastError = undefined;
+				markRuntimeIdle(runtime);
 				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "message_complete" });
 			} catch (error) {
-				runtime.runState = "error";
-				runtime.activeTurnId = undefined;
-				runtime.lastError = error instanceof Error ? error.message : String(error);
+				const message = markRuntimeError(runtime, error);
 				await this.persistRuntimeState(sessionId, runtime);
-				await this.emit(sessionId, { type: "error", error: runtime.lastError });
+				await this.emit(sessionId, { type: "error", error: message });
 				throw error;
 			} finally {
-				runtime.queueDepth = Math.max(0, runtime.queueDepth - 1);
+				finishQueuedTurn(runtime);
 				await this.emitStatus(sessionId, modelRef);
 			}
 		});
