@@ -45,7 +45,7 @@ export async function acceptDispatch(
 			owner: remoteOwner,
 		},
 	});
-	const modelRef = input.payload.modelRef?.trim() || bundle.metadata.summary?.trim() || defaultModelRef;
+	const modelRef = input.payload.modelRef?.trim() || bundle.metadata.modelRef?.trim() || bundle.metadata.summary?.trim() || defaultModelRef;
 	if (input.payload.note?.trim()) {
 		void session.sendUserMessage({
 			text: input.payload.note.trim(),
