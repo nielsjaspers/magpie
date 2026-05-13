@@ -1,11 +1,48 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+export const DEFAULT_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
+
+export class RequestBodyTooLargeError extends Error {
+	statusCode = 413;
+
+	constructor(limitBytes: number) {
+		super(`Request body exceeds ${limitBytes} bytes`);
+		this.name = "RequestBodyTooLargeError";
+	}
+}
+
+function parseContentLength(req: IncomingMessage): number | undefined {
+	const value = req.headers["content-length"];
+	if (typeof value !== "string" || !value.trim()) return undefined;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+export function readBody(req: IncomingMessage, maxBytes = DEFAULT_JSON_BODY_LIMIT_BYTES): Promise<Record<string, unknown>> {
 	return new Promise((resolve, reject) => {
+		const contentLength = parseContentLength(req);
+		if (contentLength !== undefined && contentLength > maxBytes) {
+			reject(new RequestBodyTooLargeError(maxBytes));
+			req.destroy();
+			return;
+		}
 		let data = "";
+		let byteLength = 0;
+		let rejected = false;
 		req.setEncoding("utf8");
-		req.on("data", (chunk) => { data += chunk; });
+		req.on("data", (chunk) => {
+			if (rejected) return;
+			byteLength += Buffer.byteLength(chunk, "utf8");
+			if (byteLength > maxBytes) {
+				rejected = true;
+				reject(new RequestBodyTooLargeError(maxBytes));
+				req.destroy();
+				return;
+			}
+			data += chunk;
+		});
 		req.on("end", () => {
+			if (rejected) return;
 			try {
 				resolve(data ? JSON.parse(data) : {});
 			} catch (error) {

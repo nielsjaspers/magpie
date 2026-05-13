@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { RequestBodyTooLargeError } from "./request.js";
 
 export interface MultipartPart {
 	name: string;
@@ -12,6 +13,8 @@ export interface MultipartPart {
 export function sanitizeUploadedFilename(name: string): string {
 	return name.replace(/[^a-zA-Z0-9._-]+/g, "-") || "upload.bin";
 }
+
+export const DEFAULT_MULTIPART_BODY_LIMIT_BYTES = 50 * 1024 * 1024;
 
 export async function saveAssistantSessionFiles(sessionPath: string, sessionId: string, files: Array<{ filename?: string; data: Buffer }>) {
 	const attachmentDir = resolve(dirname(sessionPath), "attachments", sanitizeUploadedFilename(sessionId));
@@ -38,17 +41,44 @@ export async function saveWorkspaceFiles(workspaceDir: string, files: Array<{ fi
 	return results;
 }
 
-export function parseMultipartFormData(req: IncomingMessage): Promise<MultipartPart[]> {
+function parseContentLength(req: IncomingMessage): number | undefined {
+	const value = req.headers["content-length"];
+	if (typeof value !== "string" || !value.trim()) return undefined;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+export function parseMultipartFormData(req: IncomingMessage, maxBytes = DEFAULT_MULTIPART_BODY_LIMIT_BYTES): Promise<MultipartPart[]> {
 	return new Promise((resolve, reject) => {
 		const contentType = req.headers["content-type"] || "";
 		const match = contentType.match(/boundary=([^;]+)/i);
 		if (!match) return reject(new Error("Missing multipart boundary"));
+		const contentLength = parseContentLength(req);
+		if (contentLength !== undefined && contentLength > maxBytes) {
+			reject(new RequestBodyTooLargeError(maxBytes));
+			req.destroy();
+			return;
+		}
 		let boundary = match[1].trim();
 		if (boundary.startsWith('"') && boundary.endsWith('"')) boundary = boundary.slice(1, -1);
 
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+		let byteLength = 0;
+		let rejected = false;
+		req.on("data", (chunk) => {
+			if (rejected) return;
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			byteLength += buffer.byteLength;
+			if (byteLength > maxBytes) {
+				rejected = true;
+				reject(new RequestBodyTooLargeError(maxBytes));
+				req.destroy();
+				return;
+			}
+			chunks.push(buffer);
+		});
 		req.on("end", () => {
+			if (rejected) return;
 			try {
 				const body = Buffer.concat(chunks);
 				const boundaryBuf = Buffer.from(`--${boundary}`);

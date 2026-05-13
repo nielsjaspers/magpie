@@ -294,6 +294,10 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				return;
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/code") {
+				if (!isLoopbackRequest(req)) {
+					const device = await authenticateRequest(auth, req);
+					if (!device) return sendJson(res, 401, { error: "Unauthorized" });
+				}
 				const result = await createEnrollmentCode(auth);
 				return sendJson(res, 201, { code: result.code, expiresAt: result.expiresAt });
 			}
@@ -458,6 +462,8 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 
 					return sendJson(res, 200, { ok: true, files: results });
 				} catch (err) {
+					const statusCode = (err as { statusCode?: number }).statusCode;
+					if (statusCode === 413) return sendJson(res, 413, { error: (err as Error).message });
 					return sendJson(res, 500, { error: (err as Error).message });
 				}
 			}
@@ -579,13 +585,16 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				if (!res.writableEnded) res.end();
 				return;
 			}
+			if ((error as { statusCode?: number }).statusCode === 413) {
+				return sendJson(res, 413, { error: (error as Error).message });
+			}
 			return sendJson(res, 500, { error: (error as Error).message });
 		}
 	});
-	server.requestTimeout = 0;
-	server.headersTimeout = 0;
-	server.timeout = 0;
-	server.keepAliveTimeout = 0;
+	server.requestTimeout = 60_000;
+	server.headersTimeout = 65_000;
+	server.timeout = 120_000;
+	server.keepAliveTimeout = 5_000;
 	return server;
 }
 

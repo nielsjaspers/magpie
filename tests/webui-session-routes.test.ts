@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PassThrough } from "node:stream";
 import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
@@ -10,9 +11,21 @@ import {
 	parseSessionFilter,
 	sendSessionMessageRoute,
 } from "../webui/routes/session.js";
-import { getSessionIdFromRequestPath } from "../webui/request.js";
+import { readBody, RequestBodyTooLargeError, getSessionIdFromRequestPath } from "../webui/request.js";
 import type { HostedSessionHandle, HostedSessionMetadata, HostedSessionStatus, SessionHost } from "../runtime/session-host-types.js";
-import { sanitizeUploadedFilename } from "../webui/uploads.js";
+import { parseMultipartFormData, sanitizeUploadedFilename } from "../webui/uploads.js";
+import type { IncomingMessage } from "node:http";
+
+function requestFromBody(body: string | Buffer, headers: Record<string, string> = {}): IncomingMessage {
+	const stream = new PassThrough();
+	const req = stream as unknown as IncomingMessage;
+	req.headers = { ...headers };
+	req.socket = { remoteAddress: "127.0.0.1" } as IncomingMessage["socket"];
+	queueMicrotask(() => {
+		stream.end(body);
+	});
+	return req;
+}
 
 describe("webui session route parsing", () => {
 	test("parses session member request paths", () => {
@@ -57,6 +70,25 @@ describe("webui session route parsing", () => {
 	test("sanitizes uploaded filenames", () => {
 		expect(sanitizeUploadedFilename("../../notes 1.txt")).toBe("..-..-notes-1.txt");
 		expect(sanitizeUploadedFilename("")).toBe("upload.bin");
+	});
+
+	test("rejects oversized JSON bodies before parsing", async () => {
+		await expect(readBody(requestFromBody('{"ok":true}', { "content-length": "11" }), 4)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+		await expect(readBody(requestFromBody('{"ok":true}'), 4)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+	});
+
+	test("rejects oversized multipart bodies", async () => {
+		const body = [
+			"--x",
+			'Content-Disposition: form-data; name="file"; filename="a.txt"',
+			"Content-Type: text/plain",
+			"",
+			"hello",
+			"--x--",
+			"",
+		].join("\r\n");
+		const req = requestFromBody(body, { "content-type": "multipart/form-data; boundary=x" });
+		await expect(parseMultipartFormData(req, 8)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
 	});
 });
 
