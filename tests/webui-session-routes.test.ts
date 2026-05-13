@@ -68,7 +68,9 @@ describe("webui session route parsing", () => {
 	});
 
 	test("sanitizes uploaded filenames", () => {
-		expect(sanitizeUploadedFilename("../../notes 1.txt")).toBe("..-..-notes-1.txt");
+		expect(sanitizeUploadedFilename("../../notes 1.txt")).toBe("notes-1.txt");
+		expect(sanitizeUploadedFilename(".")).toBe("upload.bin");
+		expect(sanitizeUploadedFilename("..")).toBe("upload.bin");
 		expect(sanitizeUploadedFilename("")).toBe("upload.bin");
 	});
 

@@ -2,16 +2,14 @@ import type { IncomingMessage } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { RequestBodyTooLargeError } from "./request.js";
+export { sanitizeUploadedFilename } from "../shared/uploads.js";
+import { resolveContainedPath, sanitizeUploadedFilename } from "../shared/uploads.js";
 
 export interface MultipartPart {
 	name: string;
 	filename?: string;
 	contentType?: string;
 	data: Buffer;
-}
-
-export function sanitizeUploadedFilename(name: string): string {
-	return name.replace(/[^a-zA-Z0-9._-]+/g, "-") || "upload.bin";
 }
 
 export const DEFAULT_MULTIPART_BODY_LIMIT_BYTES = 50 * 1024 * 1024;
@@ -22,7 +20,7 @@ export async function saveAssistantSessionFiles(sessionPath: string, sessionId: 
 	const results: string[] = [];
 	for (const file of files) {
 		const fileName = sanitizeUploadedFilename(file.filename || "upload.bin");
-		const targetPath = resolve(attachmentDir, fileName);
+		const targetPath = resolveContainedPath(attachmentDir, fileName);
 		await writeFile(targetPath, file.data);
 		results.push(targetPath);
 	}
@@ -33,8 +31,7 @@ export async function saveWorkspaceFiles(workspaceDir: string, files: Array<{ fi
 	const results: string[] = [];
 	for (const file of files) {
 		const safeName = sanitizeUploadedFilename(file.filename);
-		const targetPath = resolve(workspaceDir, safeName);
-		if (!targetPath.startsWith(workspaceDir)) throw new Error("Invalid filename");
+		const targetPath = resolveContainedPath(workspaceDir, safeName);
 		await writeFile(targetPath, file.data);
 		results.push(targetPath);
 	}

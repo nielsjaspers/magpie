@@ -7,6 +7,7 @@ import { sendAssistantMessageWithEvents } from "./host-client.js";
 import { getActiveModel } from "./session.js";
 import { convertMarkdownToTelegramHtml, escapeHtml, splitMessage } from "./utils.js";
 import type { TelegramAppConfig } from "./config.js";
+import { resolveContainedPath, sanitizeUploadedFilename } from "../../../shared/uploads.js";
 
 export function senderId(from: { id: number; username?: string | undefined }): string {
 	return from.username ? `${from.id}|${from.username}` : String(from.id);
@@ -53,8 +54,8 @@ async function downloadTelegramFile(ctx: Context, config: TelegramAppConfig, fil
 	const buffer = Buffer.from(await response.arrayBuffer());
 	const attachmentDir = resolve(config.storageDir, "attachments", String(ctx.chat?.id ?? "unknown"));
 	await mkdir(attachmentDir, { recursive: true });
-	const safeName = preferredName.replace(/[^a-zA-Z0-9._-]+/g, "-");
-	const path = resolve(attachmentDir, safeName);
+	const safeName = sanitizeUploadedFilename(preferredName);
+	const path = resolveContainedPath(attachmentDir, safeName);
 	await writeFile(path, buffer);
 	return path;
 }
