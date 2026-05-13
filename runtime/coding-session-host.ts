@@ -49,6 +49,7 @@ import {
 import { buildHostedSessionStatus, buildHostedSessionSummary, matchesHostedSessionFilter } from "./session-state.js";
 import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
 import { promptSession } from "./session-prompt.js";
+import { normalizeRecord, readJsonStore, writeJsonStore } from "../shared/json-store.js";
 
 interface CodingSessionRegistryEntry {
 	sessionPath: string;
@@ -189,7 +190,7 @@ export class CodingSessionHost implements SessionHost {
 			cwd: targetWorkspace,
 			workspaceDir: targetWorkspace,
 			originalCwd: bundle.metadata.cwd,
-			modelRef: bundle.metadata.summary || undefined,
+			modelRef: bundle.metadata.modelRef || bundle.metadata.summary || undefined,
 			owner: input.owner ?? bundle.metadata.owner ?? deriveCodingOwner(this.hostId, this.hostRole, bundle.metadata.origin, "system"),
 		});
 		const metadata = await this.getMetadata(sessionId);
@@ -218,7 +219,7 @@ export class CodingSessionHost implements SessionHost {
 			metadata: {
 				...metadata,
 				cwd: entry.originalCwd || metadata.cwd,
-				summary: entry.modelRef || metadata.summary,
+				modelRef: entry.modelRef || metadata.modelRef,
 			},
 			sessionJsonl,
 			workspace,
@@ -269,17 +270,16 @@ export class CodingSessionHost implements SessionHost {
 				runtime.lastError = undefined;
 				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "message_complete" });
-				await this.emitStatus(sessionId, modelRef);
 			} catch (error) {
 				runtime.runState = "error";
 				runtime.activeTurnId = undefined;
 				runtime.lastError = error instanceof Error ? error.message : String(error);
 				await this.persistRuntimeState(sessionId, runtime);
 				await this.emit(sessionId, { type: "error", error: runtime.lastError });
-				await this.emitStatus(sessionId, modelRef);
 				throw error;
 			} finally {
 				runtime.queueDepth = Math.max(0, runtime.queueDepth - 1);
+				await this.emitStatus(sessionId, modelRef);
 			}
 		});
 		runtime.queue = pending.then(() => undefined, () => undefined);
@@ -426,7 +426,7 @@ export class CodingSessionHost implements SessionHost {
 			workspaceMode: entry.workspaceMode ?? "attached",
 			cwd: entry.cwd || this.hostCwd,
 			sourceSessionPath: entry.sessionPath,
-			summary: entry.modelRef,
+			modelRef: entry.modelRef,
 			owner: entry.owner,
 		};
 	}
@@ -516,16 +516,11 @@ export class CodingSessionHost implements SessionHost {
 	}
 
 	private async readRegistry(): Promise<CodingSessionRegistry> {
-		if (!existsSync(this.registryPath)) return {};
-		try {
-			return JSON.parse(await readFile(this.registryPath, "utf8")) as CodingSessionRegistry;
-		} catch {
-			return {};
-		}
+		return readJsonStore(this.registryPath, normalizeRecord<CodingSessionRegistryEntry>);
 	}
 
 	private async writeRegistry(registry: CodingSessionRegistry) {
-		await writeFile(this.registryPath, JSON.stringify(registry, null, 2), "utf8");
+		await writeJsonStore(this.registryPath, registry);
 	}
 
 	private async upsertRegistryEntry(sessionId: string, patch: Partial<CodingSessionRegistryEntry> & { sessionPath: string }) {

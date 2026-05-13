@@ -29,6 +29,7 @@ export interface HostedSessionMetadata {
 	updatedAt: string;
 	title?: string;
 	summary?: string;
+	modelRef?: string;
 	owner?: SessionOwner;
 	workspaceMode: WorkspaceMode;
 	cwd?: string;
