@@ -2,43 +2,19 @@ import { Agent } from "undici";
 import type { TelegramAppConfig } from "./config.js";
 import { httpResponseErrorMessage, parseJsonOrTextResponse } from "../../../shared/http.js";
 import { extractTextFromSessionMessage } from "../../../runtime/session-content.js";
+import type {
+	SessionCreateResponse,
+	SessionMessageResponse,
+	SessionSnapshotResponse,
+	SessionStatusResponse,
+	SessionStreamEvent,
+} from "../../../webui/protocol.js";
 
 const hostDispatcher = new Agent({
 	headersTimeout: 0,
 	bodyTimeout: 0,
 	connectTimeout: 30_000,
 });
-
-interface AssistantThreadSnapshotResponse {
-	metadata: { sessionId: string };
-	status: {
-		sessionId: string;
-		sessionPath?: string;
-		updatedAt?: string;
-		loaded?: boolean;
-		messageCount?: number;
-		createdAt?: string;
-		runState?: "idle" | "running" | "aborting" | "error";
-		queueDepth?: number;
-		lastError?: string;
-		assistantChannel?: string;
-		assistantThreadId?: string;
-	};
-	messages: Array<{ role: string; text?: string }>;
-}
-
-interface HostedAssistantStreamEvent {
-	type: "snapshot" | "status" | "text_delta" | "message_complete" | "tool_start" | "tool_end" | "error";
-	session?: AssistantThreadSnapshotResponse;
-	status?: unknown;
-	delta?: string;
-	message?: unknown;
-	toolName?: string;
-	args?: unknown;
-	result?: unknown;
-	isError?: boolean;
-	error?: string;
-}
 
 export interface AssistantSessionDeliveryEvent {
 	type: "assistant_message" | "tool_start" | "tool_end" | "status" | "error";
@@ -89,15 +65,10 @@ async function postJson<T>(baseUrl: string, path: string, body: unknown): Promis
 }
 
 export async function resolveAssistantThread(config: TelegramAppConfig, threadId: string, modelRef: string) {
-	return await postJson<{
-		sessionId: string;
-		created: boolean;
-		sessionFile?: string;
-		metadata?: { sessionId: string };
-	}>(
+	return await postJson<SessionCreateResponse>(
 		config.hostUrl,
-		"/api/v1/assistant/resolve",
-		{ channel: "telegram", threadId, modelRef },
+		"/api/v1/sessions",
+		{ kind: "assistant", origin: "assistant", assistantChannel: "telegram", assistantThreadId: threadId, workspaceMode: "none", modelRef },
 	);
 }
 
@@ -106,26 +77,11 @@ function assistantSessionId(threadId: string): string {
 }
 
 export async function sendAssistantMessage(config: TelegramAppConfig, threadId: string, text: string, modelRef: string) {
-	return await postJson<{
-		text: string;
-		sessionId: string;
-		accepted?: {
-			sessionId: string;
-			accepted: boolean;
-			queued: boolean;
-			runState: "idle" | "running" | "aborting" | "error";
-		};
-		toolEvents?: Array<{
-			type: "start" | "end";
-			toolName: string;
-			args?: unknown;
-			result?: string;
-			isError?: boolean;
-		}>;
-	}>(
+	const sessionId = assistantSessionId(threadId);
+	return await postJson<SessionMessageResponse>(
 		config.hostUrl,
-		"/api/v1/assistant/message",
-		{ channel: "telegram", threadId, text, modelRef },
+		`/api/v1/sessions/${encodeURIComponent(sessionId)}/message`,
+		{ text, modelRef, source: "telegram" },
 	);
 }
 
@@ -133,7 +89,7 @@ async function streamSessionEvents(
 	config: TelegramAppConfig,
 	sessionId: string,
 	modelRef: string,
-	onEvent: (event: HostedAssistantStreamEvent) => void | Promise<void>,
+	onEvent: (event: SessionStreamEvent) => void | Promise<void>,
 	signal?: AbortSignal,
 ) {
 	const url = new URL(`/api/v1/sessions/${encodeURIComponent(sessionId)}/stream`, config.hostUrl);
@@ -152,7 +108,7 @@ async function streamSessionEvents(
 			if (dataLines.length === 0) continue;
 			try {
 				const parsed = JSON.parse(dataLines.join("\n"));
-				await onEvent(parsed as HostedAssistantStreamEvent);
+				await onEvent(parsed as SessionStreamEvent);
 			} catch {
 				// ignore malformed SSE payloads
 			}
@@ -273,41 +229,18 @@ export async function sendAssistantMessageWithEvents(
 }
 
 export async function resetAssistantThread(config: TelegramAppConfig, threadId: string, _modelRef: string) {
+	const sessionId = assistantSessionId(threadId);
 	return await postJson<{ ok: boolean }>(
 		config.hostUrl,
-		"/api/v1/assistant/reset",
-		{ channel: "telegram", threadId },
+		`/api/v1/sessions/${encodeURIComponent(sessionId)}/reset`,
+		{},
 	);
 }
 
 export async function getAssistantThreadStatus(config: TelegramAppConfig, threadId: string, modelRef: string) {
-	let status: {
-		sessionId: string;
-		sessionPath?: string;
-		updatedAt?: string;
-		loaded?: boolean;
-		messageCount?: number;
-		createdAt?: string;
-		runState?: "idle" | "running" | "aborting" | "error";
-		queueDepth?: number;
-		lastError?: string;
-		assistantChannel?: string;
-		assistantThreadId?: string;
-	};
+	let status: SessionStatusResponse;
 	try {
-		status = await getJson<{
-			sessionId: string;
-			sessionPath?: string;
-			updatedAt?: string;
-			loaded?: boolean;
-			messageCount?: number;
-			createdAt?: string;
-			runState?: "idle" | "running" | "aborting" | "error";
-			queueDepth?: number;
-			lastError?: string;
-			assistantChannel?: string;
-			assistantThreadId?: string;
-		}>(config.hostUrl, "/api/v1/assistant/status", { channel: "telegram", threadId, modelRef });
+		status = await getJson<SessionStatusResponse>(config.hostUrl, `/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/status`, { modelRef });
 	} catch (error) {
 		if (error instanceof HostRequestError && error.status === 404) {
 			return {
@@ -336,9 +269,9 @@ export async function getAssistantThreadStatus(config: TelegramAppConfig, thread
 }
 
 export async function getAssistantThreadSnapshot(config: TelegramAppConfig, threadId: string, modelRef: string, limit = 20) {
-	let snapshot: AssistantThreadSnapshotResponse;
+	let snapshot: SessionSnapshotResponse;
 	try {
-		snapshot = await getJson<AssistantThreadSnapshotResponse>(config.hostUrl, "/api/v1/assistant/snapshot", { channel: "telegram", threadId, modelRef, limit });
+		snapshot = await getJson<SessionSnapshotResponse>(config.hostUrl, `/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/snapshot`, { modelRef, limit });
 	} catch (error) {
 		if (error instanceof HostRequestError && error.status === 404) {
 			return {
