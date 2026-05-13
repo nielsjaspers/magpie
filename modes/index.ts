@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
 import { getConfigBaseDir, getGlobalConfigPath, getMode, getProjectConfigPath, getStartupMode, loadConfig, resolvePromptText } from "../config/config.js";
 import type { ResolvedMode } from "../config/types.js";

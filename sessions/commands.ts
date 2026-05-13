@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { dedupeSessionEntries } from "./format.js";

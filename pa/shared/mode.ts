@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMode, getStartupMode } from "../../config/config.js";
 import type { MagpieConfig } from "../../config/types.js";
 

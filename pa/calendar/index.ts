@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ical from "node-ical";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadPersonalAssistantRuntime } from "../shared/config.js";
 import { ensureDir, getPaCalendarCacheDir } from "../shared/storage.js";
@@ -53,7 +53,7 @@ async function loadCachedFeed(id: string, storageDir: string): Promise<PaCalenda
 }
 
 export async function createCalendarEventForContext(
-	ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+	ctx: import("@earendil-works/pi-coding-agent").ExtensionContext,
 	params: { summary: string; start: string; end: string; location?: string; description?: string; allDay?: boolean; calendarId?: string },
 ): Promise<{ event: PaCalendarEvent; targetCalendar: { id: string; name: string } }> {
 	const runtime = await loadPersonalAssistantRuntime(ctx);

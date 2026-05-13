@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig } from "../config/config.js";
 import { addPendingIndexEntry, loadPendingIndexEntries, loadSessionIndex, scoreSessionEntry, updatePendingIndexEntries, upsertIndexEntry } from "./indexer.js";

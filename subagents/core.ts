@@ -4,7 +4,7 @@ import {
 	SessionManager,
 	type ExtensionContext,
 	type ResourceLoader,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { MagpieConfig } from "../config/types.js";
 import { resolveModel, resolveSubagentModel, resolveSubagentPrompt } from "../config/config.js";
 import { resolveSubagentHeaders } from "./headers.js";

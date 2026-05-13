@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadPersonalAssistantRuntime } from "../shared/config.js";
 import { getClient, resetClient } from "./client.js";
 

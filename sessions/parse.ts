@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { extractTextFromUnknownContent } from "../runtime/session-content.js";
-import type { SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export function messageToText(message: { content?: unknown }): string {
 	return extractTextFromUnknownContent(message.content) ?? "";

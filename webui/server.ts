@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { expandHomePath, getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
 import { AssistantSessionHost, parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";

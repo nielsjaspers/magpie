@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { convertToLlm, SessionManager, serializeConversation, type ExtensionContext, type SessionEntry } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, SessionManager, serializeConversation, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { dedupeSessionEntries } from "./format.js";

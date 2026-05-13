@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { AuthStorage, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { loadConfig } from "../config/config.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
 

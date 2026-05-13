@@ -1,6 +1,6 @@
 import { chmod, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { cancelScheduledEntry, chooseBackend, resolveCommandPath, scheduleEntry } from "./backends.js";

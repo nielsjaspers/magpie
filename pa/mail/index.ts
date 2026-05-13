@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { loadPersonalAssistantRuntime } from "../shared/config.js";
 import type { PaEmailSummary } from "../shared/types.js";
@@ -12,7 +12,7 @@ import { fetchFullMessage, fetchThread, searchMessages } from "./queries.js";
 import { withGmailClient } from "./runtime.js";
 
 export async function searchEmailSummariesForContext(
-	ctx: import("@mariozechner/pi-coding-agent").ExtensionContext,
+	ctx: import("@earendil-works/pi-coding-agent").ExtensionContext,
 	params: { query?: string; label?: string; limit?: number; sinceDays?: number; unreadOnly?: boolean },
 ): Promise<PaEmailSummary[]> {
 	return await withGmailClient(ctx, async (client) => {

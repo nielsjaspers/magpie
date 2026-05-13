@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadAuthConfig, loadConfig, getResearchPapersDir } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { buildDigestContextMessage, DIGEST_CONTEXT_TYPE, getActiveDigestContext, loadDigestPrompt, persistActiveDigestSession, resolveDigestPaper } from "./digest.js";

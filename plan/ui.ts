@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TodoItem } from "./utils.js";
 
 export function updatePlanStatus(ctx: ExtensionContext, input: {

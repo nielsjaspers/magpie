@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config/config.js";
 import type { HostedSessionSnapshot, HostedSessionSummary } from "../runtime/session-host-types.js";
 import type { PaEmailSummary } from "../pa/shared/types.js";

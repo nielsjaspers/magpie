@@ -10,7 +10,7 @@
     "start": "bun run src/index.ts"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
     "grammy": "^1.38.2"
   },
   "devDependencies": {

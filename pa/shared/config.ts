@@ -1,5 +1,5 @@
 import { loadAuthConfig, loadConfig, getPersonalAssistantAuth, getPersonalAssistantConfig, getPersonalAssistantStorageDir } from "../../config/config.js";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export async function loadPersonalAssistantRuntime(ctx: ExtensionContext) {
 	const [config, auth] = await Promise.all([loadConfig(ctx.cwd), loadAuthConfig(ctx.cwd)]);

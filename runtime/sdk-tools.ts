@@ -6,7 +6,7 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 const BUILT_IN_TOOL_FACTORIES: Record<string, (cwd: string) => unknown> = {
 	read: createReadTool,

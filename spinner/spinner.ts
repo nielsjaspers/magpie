@@ -8,7 +8,7 @@
  *   pi --extension spinner/spinner.ts
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SPINNER_VERBS } from "./verbs.js";
 
 export function randomVerb(): string {

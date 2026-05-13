@@ -1,5 +1,5 @@
-import { convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { loadConfig } from "../config/config.js";
 import { isToolDisabledInActiveMode } from "../pa/shared/mode.js";

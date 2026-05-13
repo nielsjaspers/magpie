@@ -1,6 +1,6 @@
-import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
-import { convertToLlm, getMarkdownTheme, serializeConversation } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getMarkdownTheme, serializeConversation } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { loadConfig } from "../config/config.js";
 import { isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI, SubagentResult } from "../subagents/types.js";

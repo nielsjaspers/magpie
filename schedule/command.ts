@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig, resolveSubagentModelRef } from "../config/config.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { cancelScheduledEntry } from "./backends.js";

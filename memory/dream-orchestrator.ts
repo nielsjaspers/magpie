@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { HostedSessionHandle, HostedSessionSnapshot, SessionHost } from "../runtime/session-host-types.js";
 import { getJson, postJson } from "./host-client.js";
 
