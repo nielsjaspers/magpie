@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { JsonStoreCorruptionError } from "../shared/json-store.js";
 import { describeEntryStatus, formatEntry } from "../schedule/format.js";
 import { createRunnerScript, createScheduleStore, parseWhenSpec, readIndex } from "../schedule/index.js";
+import { parseInterpretedScheduleOutput, renderScheduleInterpretProgress } from "../schedule/command.js";
+import { formatNotificationSummary } from "../schedule/runtime.js";
 import type { ScheduleEntry, ScheduleStore } from "../schedule/types.js";
 
 function baseEntry(patch: Partial<ScheduleEntry> = {}): ScheduleEntry {
@@ -95,6 +98,12 @@ describe("schedule parsing and runner generation", () => {
 		});
 	});
 
+	test("surfaces corrupt schedule index instead of treating it as empty", async () => {
+		const store = createScheduleStore(await mkdtemp(resolve(tmpdir(), "magpie-schedule-store-")));
+		await writeFile(store.indexPath, "{ invalid", "utf8");
+		await expect(readIndex(store)).rejects.toBeInstanceOf(JsonStoreCorruptionError);
+	});
+
 	test("formats completed entries from latest run status", () => {
 		const entry = baseEntry({
 			runs: [{
@@ -107,5 +116,26 @@ describe("schedule parsing and runner generation", () => {
 
 		expect(describeEntryStatus(entry)).toBe("completed (0) at 2026-01-01T00:02:00.000Z");
 		expect(formatEntry(entry)).toContain("- runs: 1");
+	});
+
+	test("parses interpreted schedule output and renders progress", () => {
+		expect(parseInterpretedScheduleOutput('{"when":"in 5 minutes","task":"check logs","mode":"smart"}')).toEqual({
+			when: "in 5 minutes",
+			task: "check logs",
+			mode: "smart",
+			cwd: undefined,
+		});
+		expect(() => parseInterpretedScheduleOutput('{"error":"nope"}')).toThrow("nope");
+		expect(renderScheduleInterpretProgress("partial\nrest", [{ name: "read" }])).toEqual([
+			"⏳ schedule: interpreting request",
+			"  → read",
+			"  partial",
+		]);
+	});
+
+	test("formats notification summary", () => {
+		expect(formatNotificationSummary({ kind: "none" }, true)).toBe("Notification disabled.");
+		expect(formatNotificationSummary({ kind: "macos" }, true)).toBe("Notification will be sent via macOS when complete.");
+		expect(formatNotificationSummary({ kind: "telegram", botToken: "t", chatId: "c" }, true)).toBe("Notification will be sent via Telegram when complete.");
 	});
 });

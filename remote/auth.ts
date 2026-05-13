@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { IncomingMessage } from "node:http";
 import type { DeviceRecord } from "./types.js";
+import { readJsonStore, writeJsonStore } from "../shared/json-store.js";
 
 interface EnrollmentCodeRecord {
 	code: string;
@@ -36,17 +36,21 @@ async function ensureStore(store: RemoteAuthStore) {
 
 async function readIndex(store: RemoteAuthStore): Promise<AuthStoreIndex> {
 	await ensureStore(store);
-	if (!existsSync(store.indexPath)) return { devices: [], enrollmentCodes: [] };
-	try {
-		return JSON.parse(await readFile(store.indexPath, "utf8")) as AuthStoreIndex;
-	} catch {
-		return { devices: [], enrollmentCodes: [] };
-	}
+	return readJsonStore(store.indexPath, normalizeAuthStoreIndex);
 }
 
 async function writeIndex(store: RemoteAuthStore, index: AuthStoreIndex) {
 	await ensureStore(store);
-	await writeFile(store.indexPath, JSON.stringify(index, null, 2), "utf8");
+	await writeJsonStore(store.indexPath, index);
+}
+
+function normalizeAuthStoreIndex(value: unknown): AuthStoreIndex {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { devices: [], enrollmentCodes: [] };
+	const raw = value as Partial<AuthStoreIndex>;
+	return {
+		devices: Array.isArray(raw.devices) ? raw.devices : [],
+		enrollmentCodes: Array.isArray(raw.enrollmentCodes) ? raw.enrollmentCodes : [],
+	};
 }
 
 function sha256(value: string): string {

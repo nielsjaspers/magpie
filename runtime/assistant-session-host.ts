@@ -46,6 +46,8 @@ import { buildHostedSessionStatus, buildHostedSessionSummary, matchesHostedSessi
 import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
 import { promptSession, type PromptSessionResult, type SessionToolEvent } from "./session-prompt.js";
 import { resolveToolsForNames } from "./sdk-tools.js";
+import { normalizeRecord, readJsonStore, writeJsonStore } from "../shared/json-store.js";
+import { acceptQueuedTurn, finishQueuedTurn, markRuntimeError, markRuntimeIdle, markRuntimeRunning } from "./hosted-runtime-controller.js";
 
 export interface AssistantSessionHostConfig {
 	hostCwd: string;
@@ -443,17 +445,9 @@ export class AssistantSessionHost implements SessionHost {
 	): Promise<{ accepted: AcceptedMessage; result: PromptSessionResult }> {
 		await this.ensurePromptableSession(sessionId, input.modelRef);
 		const runtime = await this.getRuntime(sessionId, input.modelRef);
-		const queued = runtime.queueDepth > 0 || runtime.runState === "running";
-		runtime.queueDepth += 1;
-		const accepted: AcceptedMessage = {
-			sessionId,
-			accepted: true,
-			queued,
-			runState: queued ? "running" : runtime.runState,
-		};
+		const accepted: AcceptedMessage = acceptQueuedTurn(sessionId, runtime);
 		const pending = runtime.queue.then(async () => {
-			runtime.runState = "running";
-			runtime.activeTurnId = randomUUID();
+			markRuntimeRunning(runtime);
 			await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
 			await this.emitStatus(sessionId, input.modelRef);
 			try {
@@ -474,25 +468,20 @@ export class AssistantSessionHost implements SessionHost {
 						await this.emit(sessionId, { type: "message_complete", message });
 					},
 				});
-				runtime.runState = "idle";
-				runtime.activeTurnId = undefined;
-				runtime.lastError = undefined;
+				markRuntimeIdle(runtime);
 				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: undefined, updatedAt: new Date().toISOString() });
-				await this.emitStatus(sessionId, input.modelRef);
 				return result;
 			} catch (error) {
-				runtime.runState = "error";
-				runtime.activeTurnId = undefined;
-				runtime.lastError = error instanceof Error ? error.message : String(error);
-				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: runtime.lastError, updatedAt: new Date().toISOString() });
-				await this.emit(sessionId, { type: "error", error: runtime.lastError });
-				await this.emitStatus(sessionId, input.modelRef);
+				const message = markRuntimeError(runtime, error);
+				await this.updateRegistryState(sessionId, { runState: runtime.runState, lastError: message, updatedAt: new Date().toISOString() });
+				await this.emit(sessionId, { type: "error", error: message });
 				throw error;
 			} finally {
-				runtime.queueDepth = Math.max(0, runtime.queueDepth - 1);
+				finishQueuedTurn(runtime);
+				await this.emitStatus(sessionId, input.modelRef);
 			}
 		});
-		runtime.queue = pending.then(() => undefined, () => undefined);
+		runtime.queue = pending.then((): undefined => undefined, (): undefined => undefined);
 		const result = await pending;
 		return { accepted, result };
 	}
@@ -513,6 +502,7 @@ export class AssistantSessionHost implements SessionHost {
 			createdAt: entry.createdAt ?? entry.updatedAt,
 			updatedAt: entry.updatedAt,
 			title: entry.title,
+			modelRef: entry.modelRef,
 			workspaceMode: entry.workspaceMode ?? "none",
 			cwd: this.hostCwd,
 			sourceSessionPath: entry.sessionPath,
@@ -649,12 +639,7 @@ export class AssistantSessionHost implements SessionHost {
 	}
 
 	private async readRegistry(): Promise<SessionRegistry> {
-		if (!existsSync(this.registryPath)) return {};
-		try {
-			return JSON.parse(await readFile(this.registryPath, "utf8")) as SessionRegistry;
-		} catch {
-			return {};
-		}
+		return readJsonStore(this.registryPath, normalizeRecord<AssistantSessionRegistryEntry>);
 	}
 
 	private async hasStoredSession(sessionId: string): Promise<boolean> {
@@ -664,7 +649,7 @@ export class AssistantSessionHost implements SessionHost {
 	}
 
 	private async writeRegistry(registry: SessionRegistry) {
-		await writeFile(this.registryPath, JSON.stringify(registry, null, 2), "utf8");
+		await writeJsonStore(this.registryPath, registry);
 	}
 
 	private async upsertRegistryEntry(sessionId: string, patch: Partial<AssistantSessionRegistryEntry> & { sessionPath: string }) {

@@ -5,6 +5,11 @@ import type {
 	SessionFilter,
 	SessionHost,
 } from "../../runtime/session-host-types.js";
+import type {
+	SessionCreateResponse,
+	SessionListResponse,
+	SessionMessageResponse,
+} from "../protocol.js";
 
 export function normalizeAssistantChannel(value: string | null | undefined): AssistantChannel | undefined {
 	if (value === "telegram" || value === "web" || value === "internal") return value;
@@ -59,12 +64,12 @@ export function parseSendMessageInput(body: Record<string, unknown>, defaultMode
 	};
 }
 
-export async function listSessionRoute(host: SessionHost, filter?: SessionFilter) {
+export async function listSessionRoute(host: SessionHost, filter?: SessionFilter): Promise<SessionListResponse> {
 	const sessions = await host.listSessions(filter);
 	return { sessions };
 }
 
-export async function createSessionRoute(host: SessionHost, input: CreateSessionInput) {
+export async function createSessionRoute(host: SessionHost, input: CreateSessionInput): Promise<SessionCreateResponse> {
 	if (input.kind !== "assistant") {
 		throw new Error("Only assistant session creation is supported by the current host");
 	}
@@ -74,7 +79,7 @@ export async function createSessionRoute(host: SessionHost, input: CreateSession
 			? { kind: "remote_web", hostId: host.hostId, displayName: "Remote web assistant session" }
 			: undefined),
 	});
-	return { sessionId: session.metadata.sessionId, metadata: session.metadata };
+	return { sessionId: session.metadata.sessionId, metadata: session.metadata, created: true };
 }
 
 async function requireSessionHandle(host: SessionHost, sessionId: string, modelRef?: string) {
@@ -97,7 +102,7 @@ export async function getSessionSnapshotRoute(host: SessionHost, sessionId: stri
 	return snapshot;
 }
 
-export async function sendSessionMessageRoute(host: SessionHost, sessionId: string, input: SendMessageInput) {
+export async function sendSessionMessageRoute(host: SessionHost, sessionId: string, input: SendMessageInput): Promise<SessionMessageResponse> {
 	const session = await requireSessionHandle(host, sessionId, input.modelRef);
 	const accepted = await session.sendUserMessage(input);
 	const snapshot = await session.getSnapshot(input.modelRef, 8);

@@ -13,6 +13,7 @@ import {
 	getProjectConfigPath,
 	loadAuthConfig,
 	loadConfig,
+	MagpieConfigParseError,
 	resolveModel,
 	resolvePromptText,
 	resolveSubagentModel,
@@ -80,6 +81,15 @@ describe("config loading and resolution", () => {
 		expect(auth.remote?.hosts?.home?.deviceToken).toBe("global-device");
 	});
 
+	test("fails loudly for invalid config or auth JSON instead of falling back to defaults", async () => {
+		await writeFile(resolve(projectDir, ".pi/magpie.json"), "{ invalid", "utf8");
+		await expect(loadConfig(projectDir)).rejects.toBeInstanceOf(MagpieConfigParseError);
+
+		await writeFile(resolve(projectDir, ".pi/magpie.json"), "{}", "utf8");
+		await writeFile(resolve(projectDir, ".pi/magpie.auth.json"), "{ invalid", "utf8");
+		await expect(loadAuthConfig(projectDir)).rejects.toBeInstanceOf(MagpieConfigParseError);
+	});
+
 	test("resolves modes, subagent models, prompt files, and model refs", async () => {
 		const promptFile = resolve(projectDir, "prompt.md");
 		await writeFile(promptFile, "from file\n", "utf8");
@@ -104,6 +114,6 @@ describe("config loading and resolution", () => {
 		expect(await resolvePromptText(projectDir, { file: "prompt.md", text: "inline" })).toBe("from file\n\ninline");
 		expect(await resolveSubagentPrompt(config, projectDir, "commit")).toEqual({ strategy: "replace", text: "from file\n\ninline" });
 		expect(resolveModel({ modelRegistry: { find: (provider: string, model: string) => `${provider}:${model}` } } as any, "opencode/gpt-5-nano")).toBe("opencode:gpt-5-nano");
-		expect(resolveModel({ modelRegistry: { find: () => undefined } } as any, "bad-ref")).toBeUndefined();
+		expect(resolveModel({ modelRegistry: { find: (): undefined => undefined } } as any, "bad-ref")).toBeUndefined();
 	});
 });

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createRemoteAuthStore, consumeEnrollmentCode, createEnrollmentCode, extractBearerToken, isLoopbackRequest, revokeEnrolledDevice, authenticateRequest } from "../remote/auth.js";
+import { JsonStoreCorruptionError } from "../shared/json-store.js";
 
 function request(headers: Record<string, string | undefined>, remoteAddress = "127.0.0.1") {
 	return {
@@ -36,5 +37,13 @@ describe("remote auth", () => {
 		expect(await authenticateRequest(store, request({ authorization: `Bearer ${token}` }))).toMatchObject({ id: device.id, revoked: false });
 		await revokeEnrolledDevice(store, device.id);
 		expect(await authenticateRequest(store, request({ authorization: `Bearer ${token}` }))).toBeUndefined();
+	});
+
+	test("surfaces corrupt auth index instead of treating it as empty", async () => {
+		const baseDir = await mkdtemp(resolve(tmpdir(), "magpie-auth-test-"));
+		const store = createRemoteAuthStore(baseDir);
+		await mkdir(baseDir, { recursive: true });
+		await writeFile(store.indexPath, "{ invalid", "utf8");
+		await expect(createEnrollmentCode(store, 5)).rejects.toBeInstanceOf(JsonStoreCorruptionError);
 	});
 });

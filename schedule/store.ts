@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { readJsonStore, writeJsonStore } from "../shared/json-store.js";
 import type { ScheduleEntry, ScheduleRunRecord, ScheduleStore } from "./types.js";
 
 export function createScheduleStore(baseDir = resolve(homedir(), ".pi/agent/magpie-schedules")): ScheduleStore {
@@ -77,16 +77,14 @@ function normalizeEntry(entry: any): ScheduleEntry | undefined {
 
 export async function readIndex(store: ScheduleStore): Promise<ScheduleEntry[]> {
 	await ensureStore(store);
-	if (!existsSync(store.indexPath)) return [];
-	try {
-		const raw = JSON.parse(await readFile(store.indexPath, "utf8")) as unknown[];
-		return Array.isArray(raw) ? raw.map(normalizeEntry).filter(Boolean) as ScheduleEntry[] : [];
-	} catch {
-		return [];
-	}
+	return readJsonStore(store.indexPath, normalizeScheduleIndex);
 }
 
 export async function writeIndex(store: ScheduleStore, entries: ScheduleEntry[]) {
 	await ensureStore(store);
-	await writeFile(store.indexPath, JSON.stringify(entries, null, 2) + "\n", "utf8");
+	await writeJsonStore(store.indexPath, entries);
+}
+
+function normalizeScheduleIndex(value: unknown): ScheduleEntry[] {
+	return Array.isArray(value) ? value.map(normalizeEntry).filter(Boolean) as ScheduleEntry[] : [];
 }
