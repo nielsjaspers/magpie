@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
-import { basename, relative, resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { StringEnum, type AssistantMessage } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -21,11 +21,18 @@ import {
 	PLAN_STATE_TYPE,
 	type PlanState,
 } from "./state.js";
+import { updatePlanStatus } from "./ui.js";
 import { extractTodoItems, isPlanPath, isSafeCommand, markCompletedSteps, randomName, slugify, type TodoItem } from "./utils.js";
 
 const PLAN_TOOLS = ["read", "bash", "grep", "find", "ls", "write", "edit", "web_search", "web_fetch", "session_query", "plan_subagent", "user_question", "plan_exit"];
 const PLAN_ONLY_TOOLS = ["plan_subagent", "user_question", "plan_exit"];
 const MAX_STRICT_LOOP_VIOLATIONS = 3;
+type PlanSubagentTask = {
+	role: "explore" | "design" | "risk" | "custom";
+	title?: string;
+	task: string;
+	model?: string;
+};
 
 function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
 	return (message as any).role === "assistant" && Array.isArray((message as any).content);
@@ -86,18 +93,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const updateStatus = (ctx: ExtensionContext) => {
-		if (executionMode && todoItems.length > 0) {
-			const complete = todoItems.filter((item) => item.completed).length;
-			ctx.ui.setStatus("magpie-plan", ctx.ui.theme.fg("accent", `📋 ${complete}/${todoItems.length}`));
-			ctx.ui.setWidget("magpie-plan-todos", todoItems.map((item) => item.completed ? `☑ ${item.text}` : `☐ ${item.text}`));
-			return;
-		}
-		ctx.ui.setWidget("magpie-plan-todos", undefined);
-		if (planModeEnabled) {
-			ctx.ui.setStatus("magpie-plan", ctx.ui.theme.fg("warning", activePlanFile ? `⏸ plan:${basename(activePlanFile)}` : "⏸ plan"));
-			return;
-		}
-		ctx.ui.setStatus("magpie-plan", undefined);
+		updatePlanStatus(ctx, { planModeEnabled, executionMode, todoItems, activePlanFile });
 	};
 
 	const persistState = () => {
@@ -205,7 +201,8 @@ export default function (pi: ExtensionAPI) {
 			if (!planModeEnabled || executionMode) return { content: [{ type: "text", text: "plan_subagent can only be used in planning mode." }], details: {}, isError: true };
 			if (!subagentCore) return { content: [{ type: "text", text: "Subagent core unavailable." }], details: {}, isError: true };
 			const config = await loadConfig(ctx.cwd);
-			const specs = params.tasks.slice(0, 6).map((task, index) => ({
+			const tasks = params.tasks as PlanSubagentTask[];
+			const specs = tasks.slice(0, 6).map((task: PlanSubagentTask, index: number) => ({
 				role: "plan" as const,
 				planSubRole: task.role,
 				label: task.title || `${task.role}-${index + 1}`,
