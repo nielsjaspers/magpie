@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import type { ExportedSessionBundle } from "../runtime/session-host-types.js";
+import { readJsonStore, writeJsonStore } from "../shared/json-store.js";
 import type { DispatchPayload, FetchPayload } from "./types.js";
 import { deserializeSessionBundle, serializeSessionBundle, type SerializedSessionBundle } from "./transport.js";
 
@@ -42,17 +43,19 @@ async function ensureStore(store: RemoteBundleStore) {
 
 async function readIndex(store: RemoteBundleStore): Promise<RemoteStoreIndex> {
 	await ensureStore(store);
-	if (!existsSync(store.indexPath)) return { sessions: {} };
-	try {
-		return JSON.parse(await readFile(store.indexPath, "utf8")) as RemoteStoreIndex;
-	} catch {
-		return { sessions: {} };
-	}
+	return readJsonStore(store.indexPath, normalizeRemoteStoreIndex);
 }
 
 async function writeIndex(store: RemoteBundleStore, index: RemoteStoreIndex) {
 	await ensureStore(store);
-	await writeFile(store.indexPath, JSON.stringify(index, null, 2), "utf8");
+	await writeJsonStore(store.indexPath, index);
+}
+
+function normalizeRemoteStoreIndex(value: unknown): RemoteStoreIndex {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { sessions: {} };
+	const rawSessions = (value as { sessions?: unknown }).sessions;
+	if (!rawSessions || typeof rawSessions !== "object" || Array.isArray(rawSessions)) return { sessions: {} };
+	return { sessions: rawSessions as Record<string, RemoteStoredSessionRecord> };
 }
 
 function activeBundlePath(store: RemoteBundleStore, sessionId: string) {

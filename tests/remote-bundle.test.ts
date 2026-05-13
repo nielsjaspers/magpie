@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { JsonStoreCorruptionError } from "../shared/json-store.js";
 import { createRemoteServerRuntime, deleteRemoteSession, acceptDispatch, getStoredRemoteBundle, listRemoteSessions, prepareFetch } from "../remote/server.js";
 import { createRemoteBundleStore, archiveRemoteBundle, listRemoteBundles, loadRemoteBundle, storeRemoteBundle } from "../remote/store.js";
 import { buildRemoteBundleSnapshot } from "../remote/snapshot.js";
@@ -61,6 +62,12 @@ describe("remote bundle transport, store, snapshot, and server", () => {
 		expect(await archiveRemoteBundle(store, { sessionId: "s1", fetchedAt: "2026-01-01T00:00:00.000Z" })).toMatchObject({ sessionId: "s1" });
 		expect(await loadRemoteBundle(store, "s1")).toBeUndefined();
 		expect(await listRemoteBundles(store)).toEqual([]);
+	});
+
+	test("surfaces corrupt remote index instead of treating it as empty", async () => {
+		const store = createRemoteBundleStore(await mkdtemp(resolve("/tmp", "magpie-remote-store-")));
+		await writeFile(store.indexPath, "{ invalid", "utf8");
+		await expect(listRemoteBundles(store)).rejects.toBeInstanceOf(JsonStoreCorruptionError);
 	});
 
 	test("remote server accepts dispatch, prepares fetch, and deletes remote session", async () => {
