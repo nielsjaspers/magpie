@@ -45,7 +45,7 @@ describe("Telegram host client protocol", () => {
 				: url.pathname.endsWith("/status")
 					? { sessionId: "telegram:t1", runState: "idle", updatedAt: "now" }
 					: url.pathname.endsWith("/snapshot")
-						? { metadata: { sessionId: "telegram:t1" }, status: { sessionId: "telegram:t1" }, messages: [] }
+						? { metadata: { sessionId: "telegram:t1" }, status: { sessionId: "telegram:t1" }, messages: [] as Array<{ role: string; text?: string }> }
 						: { ok: true, sessionId: "telegram:t1", metadata: { sessionId: "telegram:t1" } };
 			return new Response(JSON.stringify(json), { status: 200, headers: { "content-type": "application/json" } });
 		}) as typeof fetch;

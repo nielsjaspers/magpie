@@ -274,12 +274,12 @@ export async function getAssistantThreadSnapshot(config: TelegramAppConfig, thre
 		snapshot = await getJson<SessionSnapshotResponse>(config.hostUrl, `/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/snapshot`, { modelRef, limit });
 	} catch (error) {
 		if (error instanceof HostRequestError && error.status === 404) {
-			return {
-				threadKey: assistantSessionId(threadId),
-				exists: false,
-				loaded: false,
-				messages: [],
-			};
+				return {
+					threadKey: assistantSessionId(threadId),
+					exists: false,
+					loaded: false,
+					messages: [] as Array<{ role: string; text?: string }>,
+				};
 		}
 		throw error;
 	}

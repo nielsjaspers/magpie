@@ -481,7 +481,7 @@ export class AssistantSessionHost implements SessionHost {
 				await this.emitStatus(sessionId, input.modelRef);
 			}
 		});
-		runtime.queue = pending.then(() => undefined, () => undefined);
+		runtime.queue = pending.then((): undefined => undefined, (): undefined => undefined);
 		const result = await pending;
 		return { accepted, result };
 	}

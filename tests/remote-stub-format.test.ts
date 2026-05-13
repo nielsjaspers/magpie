@@ -93,7 +93,7 @@ describe("remote stub and formatting helpers", () => {
 		} as any)).toBe("new/large");
 
 		expect(getCurrentSessionModelRef({
-			sessionManager: { getBranch: () => [] },
+				sessionManager: { getBranch: (): unknown[] => [] },
 			model: { providerId: "fallback", modelId: "model" },
 		} as any)).toBe("fallback/model");
 	});

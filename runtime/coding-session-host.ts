@@ -276,7 +276,7 @@ export class CodingSessionHost implements SessionHost {
 				await this.emitStatus(sessionId, modelRef);
 			}
 		});
-		runtime.queue = pending.then(() => undefined, () => undefined);
+		runtime.queue = pending.then((): undefined => undefined, (): undefined => undefined);
 		await pending;
 		return accepted;
 	}

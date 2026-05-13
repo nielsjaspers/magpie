@@ -53,8 +53,8 @@ export async function createRemoteDreamOrchestratorSession(hostUrl: string, mode
 		modelRef,
 		toolNames: DREAM_TOOL_NAMES,
 	});
-	const session = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encodeURIComponent(created.sessionId)}/snapshot`, { modelRef }).catch(() => undefined);
-	return { metadata: { sessionId: created.sessionId }, getSnapshot: async () => session } as unknown as HostedSessionHandle;
+	const session = await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encodeURIComponent(created.sessionId)}/snapshot`, { modelRef }).catch((): undefined => undefined);
+	return { metadata: { sessionId: created.sessionId }, getSnapshot: async (): Promise<HostedSessionSnapshot | undefined> => session } as unknown as HostedSessionHandle;
 }
 
 export async function promptDreamOrchestrator(session: HostedSessionHandle, modelRef: string, text: string): Promise<{ text: string }> {

@@ -114,6 +114,6 @@ describe("config loading and resolution", () => {
 		expect(await resolvePromptText(projectDir, { file: "prompt.md", text: "inline" })).toBe("from file\n\ninline");
 		expect(await resolveSubagentPrompt(config, projectDir, "commit")).toEqual({ strategy: "replace", text: "from file\n\ninline" });
 		expect(resolveModel({ modelRegistry: { find: (provider: string, model: string) => `${provider}:${model}` } } as any, "opencode/gpt-5-nano")).toBe("opencode:gpt-5-nano");
-		expect(resolveModel({ modelRegistry: { find: () => undefined } } as any, "bad-ref")).toBeUndefined();
+		expect(resolveModel({ modelRegistry: { find: (): undefined => undefined } } as any, "bad-ref")).toBeUndefined();
 	});
 });
