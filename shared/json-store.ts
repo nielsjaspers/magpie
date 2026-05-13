@@ -16,9 +16,15 @@ export class JsonStoreCorruptionError extends Error {
 }
 
 export async function readJsonStore<T>(path: string, normalize: (value: unknown) => T): Promise<T> {
-	if (!existsSync(path)) return normalize(undefined);
+	let text: string;
 	try {
-		const text = await readFile(path, "utf8");
+		text = await readFile(path, "utf8");
+	} catch (error: any) {
+		if (error.code === "ENOENT") return normalize(undefined);
+		throw error;
+	}
+
+	try {
 		return normalize(JSON.parse(text));
 	} catch (error) {
 		throw new JsonStoreCorruptionError(path, error);
