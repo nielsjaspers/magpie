@@ -385,6 +385,51 @@ async function interruptSession() {
 
 // --- Rendering ---
 
+function iconSvg(name) {
+  if (name === 'unarchive') {
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`;
+  }
+  if (name === 'archive') {
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>`;
+  }
+  if (name === 'attachment') {
+    return `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>`;
+  }
+  if (name === 'remove') {
+    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+  }
+  return '';
+}
+
+function escapeHtml(value) {
+  const div = document.createElement('div');
+  div.textContent = value || '';
+  return div.innerHTML;
+}
+
+function sanitizeHtml(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html || '';
+  const blockedTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base', 'form', 'input', 'button', 'textarea', 'select']);
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+  const removals = [];
+  while (walker.nextNode()) {
+    const el = walker.currentNode;
+    if (blockedTags.has(el.tagName.toLowerCase())) {
+      removals.push(el);
+      continue;
+    }
+    [...el.attributes].forEach(attr => {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim().toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || value.startsWith('javascript:') || value.startsWith('data:text/html')) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  }
+  removals.forEach(el => el.remove());
+  return template.innerHTML;
+}
 
 async function archiveSession(sessionId, event) {
   event.stopPropagation();
@@ -433,22 +478,32 @@ function renderSessionsList() {
     
     const title = session.title || session.sessionId;
     const kind = session.kind === 'coding' ? 'Coding' : 'Assistant';
-    
-    el.innerHTML = `
-      <div class="session-item-content">
-        <div class="session-item-title" title="${title}">${title}</div>
-        <div class="session-item-meta">${kind} · ${session.updatedAt.split('T')[0]}</div>
-      </div>
-      <button class="hide-session-btn" aria-label="${isArchived ? 'Unarchive' : 'Archive'}" title="${isArchived ? 'Restore session' : 'Archive session'}">
-        ${isArchived 
-          ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>` 
-          : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>`
-        }
-      </button>
-    `;
+
+    const content = document.createElement('div');
+    content.className = 'session-item-content';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'session-item-title';
+    titleEl.title = title;
+    titleEl.textContent = title;
+    content.appendChild(titleEl);
+
+    const meta = document.createElement('div');
+    meta.className = 'session-item-meta';
+    meta.textContent = `${kind} · ${session.updatedAt.split('T')[0]}`;
+    content.appendChild(meta);
+
+    const button = document.createElement('button');
+    button.className = 'hide-session-btn';
+    button.setAttribute('aria-label', isArchived ? 'Unarchive' : 'Archive');
+    button.title = isArchived ? 'Restore session' : 'Archive session';
+    button.innerHTML = iconSvg(isArchived ? 'unarchive' : 'archive');
+
+    el.appendChild(content);
+    el.appendChild(button);
     
     el.onclick = () => openSession(session.sessionId);
-    el.querySelector('.hide-session-btn').onclick = (e) => isArchived ? unarchiveSession(session.sessionId, e) : archiveSession(session.sessionId, e);
+    button.onclick = (e) => isArchived ? unarchiveSession(session.sessionId, e) : archiveSession(session.sessionId, e);
     return el;
   };
   
@@ -481,8 +536,8 @@ function renderMessages() {
     if (msg.role === 'system') {
       content.textContent = msg.text || '';
     } else {
-      // Parse markdown
-      content.innerHTML = window.marked ? marked.parse(msg.text || '') : (msg.text || '').replace(/\n/g, '<br>');
+      const markdownHtml = window.marked ? marked.parse(msg.text || '') : escapeHtml(msg.text || '').replace(/\n/g, '<br>');
+      content.innerHTML = sanitizeHtml(markdownHtml);
     }
     
     el.appendChild(content);
@@ -499,15 +554,19 @@ function renderAttachments() {
   state.attachments.forEach((file, idx) => {
     const el = document.createElement('div');
     el.className = 'attachment-pill';
-    el.innerHTML = `
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
-      <span>${file.name}</span>
-      <span class="remove-attachment" data-idx="${idx}">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-      </span>
-    `;
+    el.innerHTML = iconSvg('attachment');
+
+    const name = document.createElement('span');
+    name.textContent = file.name;
+    el.appendChild(name);
+
+    const remove = document.createElement('span');
+    remove.className = 'remove-attachment';
+    remove.dataset.idx = String(idx);
+    remove.innerHTML = iconSvg('remove');
+    el.appendChild(remove);
     
-    el.querySelector('.remove-attachment').onclick = () => {
+    remove.onclick = () => {
       state.attachments.splice(idx, 1);
       renderAttachments();
     };

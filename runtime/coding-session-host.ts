@@ -46,7 +46,9 @@ import {
 	getSessionWatchers,
 	removeSessionSubscriber,
 } from "./session-watchers.js";
-import { buildHostedSessionStatus, buildHostedSessionSummary } from "./session-state.js";
+import { buildHostedSessionStatus, buildHostedSessionSummary, matchesHostedSessionFilter } from "./session-state.js";
+import { extractTextFromSessionMessage, sanitizeSessionIdForFilename } from "./session-content.js";
+import { promptSession } from "./session-prompt.js";
 
 interface CodingSessionRegistryEntry {
 	sessionPath: string;
@@ -250,22 +252,18 @@ export class CodingSessionHost implements SessionHost {
 			await this.emitStatus(sessionId, modelRef);
 			try {
 				const session = await runtime.sessionPromise;
-				const unsubscribe = session.subscribe((event) => {
-					if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-						void this.emit(sessionId, { type: "text_delta", delta: event.assistantMessageEvent.delta });
-					}
-					if (event.type === "tool_execution_start") {
-						void this.emit(sessionId, { type: "tool_start", toolName: event.toolName, args: event.args });
-					}
-					if (event.type === "tool_execution_end") {
-						void this.emit(sessionId, { type: "tool_end", toolName: event.toolName, result: event.result, isError: event.isError });
-					}
+				await promptSession(session, input.text, {
+					onTextDelta: async (delta) => {
+						await this.emit(sessionId, { type: "text_delta", delta });
+					},
+					onToolEvent: async (event) => {
+						if (event.type === "start") {
+							await this.emit(sessionId, { type: "tool_start", toolName: event.toolName, args: event.args });
+						} else {
+							await this.emit(sessionId, { type: "tool_end", toolName: event.toolName, result: event.result, isError: event.isError });
+						}
+					},
 				});
-				try {
-					await session.prompt(input.text);
-				} finally {
-					unsubscribe();
-				}
 				runtime.runState = "idle";
 				runtime.activeTurnId = undefined;
 				runtime.lastError = undefined;
@@ -588,15 +586,7 @@ export class CodingSessionHost implements SessionHost {
 	}
 
 	private matchesFilter(summary: HostedSessionSummary, filter?: SessionFilter): boolean {
-		if (!filter) return true;
-		if (filter.kind && summary.kind !== filter.kind) return false;
-		if (filter.location && summary.location !== filter.location) return false;
-		if (filter.runState && summary.runState !== filter.runState) return false;
-		if (!filter.includeArchived && summary.location === "archived") return false;
-		if (filter.ownerKind && summary.owner?.kind !== filter.ownerKind) return false;
-		if (!filter.query?.trim()) return true;
-		const query = filter.query.trim().toLowerCase();
-		return [summary.sessionId, summary.title, summary.cwd].some((value) => value?.toLowerCase().includes(query));
+		return matchesHostedSessionFilter(summary, filter, [summary.sessionId, summary.title, summary.cwd]);
 	}
 
 	private createHandle(sessionId: string, metadata: HostedSessionMetadata): HostedSessionHandle {
@@ -644,40 +634,4 @@ export class CodingSessionHost implements SessionHost {
 			watchers: this.getWatchers(sessionId),
 		});
 	}
-}
-
-function sanitizeSessionIdForFilename(sessionId: string): string {
-	return sessionId.replace(/[^a-zA-Z0-9._-]+/g, "-");
-}
-
-function extractTextFromUnknownContent(content: unknown): string | undefined {
-	if (typeof content === "string") return content.trim() || undefined;
-	if (Array.isArray(content)) {
-		const parts = content.map((part) => {
-			if (typeof part === "string") return part;
-			if (part && typeof part === "object") {
-				const record = part as Record<string, unknown>;
-				if (typeof record.text === "string") return record.text;
-				if (typeof record.content === "string") return record.content;
-			}
-			return "";
-		}).filter(Boolean).join("\n").trim();
-		return parts || undefined;
-	}
-	if (content && typeof content === "object") {
-		const record = content as Record<string, unknown>;
-		if (typeof record.text === "string") return record.text.trim() || undefined;
-		if (typeof record.content === "string") return record.content.trim() || undefined;
-		if (Array.isArray(record.content)) return extractTextFromUnknownContent(record.content);
-		if (record.message && typeof record.message === "object") return extractTextFromUnknownContent((record.message as Record<string, unknown>).content);
-	}
-	return undefined;
-}
-
-function extractTextFromSessionMessage(message: unknown): string | undefined {
-	if (!message || typeof message !== "object") return undefined;
-	const record = message as Record<string, unknown>;
-	return extractTextFromUnknownContent(record.content)
-		?? extractTextFromUnknownContent(record.message)
-		?? extractTextFromUnknownContent(record.parts);
 }

@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "allowJs": false
+  },
+  "include": [
+    "*.ts",
+    "apps/telegram/src/**/*.ts",
+    "btw/**/*.ts",
+    "commit/**/*.ts",
+    "config/**/*.ts",
+    "handoff/**/*.ts",
+    "memory/**/*.ts",
+    "modes/**/*.ts",
+    "pa/**/*.ts",
+    "plan/**/*.ts",
+    "preferences/**/*.ts",
+    "remote/**/*.ts",
+    "research/**/*.ts",
+    "runtime/**/*.ts",
+    "schedule/**/*.ts",
+    "sessions/**/*.ts",
+    "shared/**/*.ts",
+    "spinner/**/*.ts",
+    "subagents/**/*.ts",
+    "tests/**/*.ts",
+    "types/**/*.d.ts",
+    "web/**/*.ts",
+    "webui/**/*.ts"
+  ],
+  "exclude": [
+    "webui/client/**/*.js",
+    "node_modules",
+    "apps/telegram/node_modules"
+  ]
+}

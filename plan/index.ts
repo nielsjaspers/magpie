@@ -5,7 +5,7 @@ import { StringEnum, type AssistantMessage } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Key } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 import { loadConfig } from "../config/config.js";
 import { isAnyToolDisabledInActiveMode, isToolDisabledInActiveMode } from "../pa/shared/mode.js";

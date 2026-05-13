@@ -1,6 +1,6 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type Server } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { expandHomePath, getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
@@ -17,6 +17,15 @@ import {
 } from "../remote/auth.js";
 import { serializeSessionBundle } from "../remote/transport.js";
 import {
+	getRequestIp,
+	getSessionIdFromRequestPath,
+	readBody,
+	recordRateLimit,
+	sendJson,
+	sendSseEvent,
+	startSse,
+} from "./request.js";
+import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
 	getSessionStatusRoute,
@@ -26,6 +35,7 @@ import {
 	parseSessionFilter,
 } from "./routes/session.js";
 import type { WebUiRouteRegistration, WebUiServerConfig } from "./types.js";
+import { parseMultipartFormData, saveAssistantSessionFiles, saveWorkspaceFiles } from "./uploads.js";
 
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
@@ -71,23 +81,6 @@ async function tryReadText(path: string): Promise<string | undefined> {
 	} catch {
 		return undefined;
 	}
-}
-
-function sanitizeUploadedFilename(name: string): string {
-	return name.replace(/[^a-zA-Z0-9._-]+/g, "-") || "upload.bin";
-}
-
-async function saveAssistantSessionFiles(sessionPath: string, sessionId: string, files: Array<{ filename?: string; data: Buffer }>) {
-	const attachmentDir = resolve(dirname(sessionPath), "attachments", sanitizeUploadedFilename(sessionId));
-	await mkdir(attachmentDir, { recursive: true });
-	const results: string[] = [];
-	for (const file of files) {
-		const fileName = sanitizeUploadedFilename(file.filename || "upload.bin");
-		const targetPath = resolve(attachmentDir, fileName);
-		await writeFile(targetPath, file.data);
-		results.push(targetPath);
-	}
-	return results;
 }
 
 export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerConfig): Promise<WebUiServerRuntime> {
@@ -137,7 +130,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		modelRegistry,
 		resolveModel,
 		buildSystemPrompt,
-		tools: config?.tools,
+		tools: config?.availableTools,
 		hostId: "magpie-remote-host",
 		hostRole: "remote",
 		agentDir: globalBaseDir,
@@ -166,133 +159,6 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 		defaultModelRef,
 		hostUrl: webui?.publicUrl?.trim() || webui?.tailscaleUrl?.trim() || telegram?.hostUrl?.trim() || config?.tailscaleUrl?.trim() || "http://127.0.0.1:8787",
 		config: { ...webui, ...config },
-	};
-}
-
-function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-	return new Promise((resolve, reject) => {
-		let data = "";
-		req.setEncoding("utf8");
-		req.on("data", (chunk) => { data += chunk; });
-		req.on("end", () => {
-			try {
-				resolve(data ? JSON.parse(data) : {});
-			} catch (error) {
-				reject(error);
-			}
-		});
-		req.on("error", reject);
-	});
-}
-
-function parseMultipartFormData(req: IncomingMessage): Promise<Array<{ name: string; filename?: string; contentType?: string; data: Buffer }>> {
-	return new Promise((resolve, reject) => {
-		const contentType = req.headers["content-type"] || "";
-		const match = contentType.match(/boundary=([^;]+)/i);
-		if (!match) return reject(new Error("Missing multipart boundary"));
-		let boundary = match[1].trim();
-		if (boundary.startsWith('"') && boundary.endsWith('"')) boundary = boundary.slice(1, -1);
-
-		const chunks: Buffer[] = [];
-		req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-		req.on("end", () => {
-			try {
-				const body = Buffer.concat(chunks);
-				const boundaryBuf = Buffer.from(`--${boundary}`);
-				const parts: Array<{ name: string; filename?: string; contentType?: string; data: Buffer }> = [];
-
-				let idx = 0;
-				while (true) {
-					idx = body.indexOf(boundaryBuf, idx);
-					if (idx === -1) break;
-					idx += boundaryBuf.length;
-
-					if (body.slice(idx, idx + 2).toString() === "--") break;
-
-					if (body.slice(idx, idx + 2).toString() === "\r\n") idx += 2;
-					else if (body[idx] === 0x0a) idx += 1;
-
-					const nextBoundary = body.indexOf(boundaryBuf, idx);
-					if (nextBoundary === -1) break;
-
-					let partEnd = nextBoundary;
-					if (body[partEnd - 2] === 0x0d && body[partEnd - 1] === 0x0a) partEnd -= 2;
-					else if (body[partEnd - 1] === 0x0a) partEnd -= 1;
-
-					const part = body.slice(idx, partEnd);
-					const headerEnd = part.indexOf("\r\n\r\n");
-					if (headerEnd === -1) continue;
-
-					const headerStr = part.slice(0, headerEnd).toString("utf8");
-					const data = part.slice(headerEnd + 4);
-
-					const nameMatch = headerStr.match(/name="([^"]+)"/);
-					const filenameMatch = headerStr.match(/filename="([^"]*)"/);
-					const ctMatch = headerStr.match(/Content-Type:\s*([^\r\n]+)/i);
-
-					if (nameMatch) {
-						parts.push({
-							name: nameMatch[1],
-							filename: filenameMatch ? filenameMatch[1] : undefined,
-							contentType: ctMatch ? ctMatch[1].trim() : undefined,
-							data,
-						});
-					}
-					idx = nextBoundary;
-				}
-				resolve(parts);
-			} catch (err) {
-				reject(err);
-			}
-		});
-		req.on("error", reject);
-	});
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown) {
-	res.statusCode = status;
-	res.setHeader("content-type", "application/json; charset=utf-8");
-	res.end(JSON.stringify(body));
-}
-
-function startSse(res: ServerResponse) {
-	res.statusCode = 200;
-	res.setHeader("content-type", "text/event-stream; charset=utf-8");
-	res.setHeader("cache-control", "no-cache, no-transform");
-	res.setHeader("connection", "keep-alive");
-	res.setHeader("x-accel-buffering", "no");
-	res.write(": connected\n\n");
-}
-
-function sendSseEvent(res: ServerResponse, event: unknown) {
-	res.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-
-function recordRateLimit(map: Map<string, number[]>, key: string, maxEvents: number, windowMs: number): boolean {
-	const now = Date.now();
-	const cutoff = now - windowMs;
-	const events = (map.get(key) ?? []).filter((value) => value > cutoff);
-	events.push(now);
-	map.set(key, events);
-	return events.length <= maxEvents;
-}
-
-function getRequestIp(req: IncomingMessage): string {
-	const forwarded = req.headers["x-forwarded-for"];
-	if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
-	return req.socket.remoteAddress || "unknown";
-}
-
-function getSessionIdFromRequestPath(pathname: string): { sessionId: string; suffix: string } | undefined {
-	const prefix = "/api/v1/sessions/";
-	if (!pathname.startsWith(prefix)) return undefined;
-	const rest = pathname.slice(prefix.length);
-	if (!rest) return undefined;
-	const slash = rest.indexOf("/");
-	if (slash < 0) return { sessionId: decodeURIComponent(rest), suffix: "" };
-	return {
-		sessionId: decodeURIComponent(rest.slice(0, slash)),
-		suffix: rest.slice(slash),
 	};
 }
 
@@ -428,6 +294,10 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				return;
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/code") {
+				if (!isLoopbackRequest(req)) {
+					const device = await authenticateRequest(auth, req);
+					if (!device) return sendJson(res, 401, { error: "Unauthorized" });
+				}
 				const result = await createEnrollmentCode(auth);
 				return sendJson(res, 201, { code: result.code, expiresAt: result.expiresAt });
 			}
@@ -585,20 +455,15 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					}
 
 					const workspaceDir = codingSession.metadata.cwd;
-					const results: string[] = [];
-
-					for (const part of fileParts) {
-						const safeName = sanitizeUploadedFilename(part.filename!);
-						const targetPath = resolve(workspaceDir, safeName);
-						if (!targetPath.startsWith(workspaceDir)) {
-							return sendJson(res, 400, { error: "Invalid filename" });
-						}
-						await writeFile(targetPath, part.data);
-						results.push(targetPath);
-					}
+					const results = await saveWorkspaceFiles(
+						workspaceDir,
+						fileParts.map((part) => ({ filename: part.filename!, data: part.data })),
+					);
 
 					return sendJson(res, 200, { ok: true, files: results });
 				} catch (err) {
+					const statusCode = (err as { statusCode?: number }).statusCode;
+					if (statusCode === 413) return sendJson(res, 413, { error: (err as Error).message });
 					return sendJson(res, 500, { error: (err as Error).message });
 				}
 			}
@@ -720,13 +585,16 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				if (!res.writableEnded) res.end();
 				return;
 			}
+			if ((error as { statusCode?: number }).statusCode === 413) {
+				return sendJson(res, 413, { error: (error as Error).message });
+			}
 			return sendJson(res, 500, { error: (error as Error).message });
 		}
 	});
-	server.requestTimeout = 0;
-	server.headersTimeout = 0;
-	server.timeout = 0;
-	server.keepAliveTimeout = 0;
+	server.requestTimeout = 60_000;
+	server.headersTimeout = 65_000;
+	server.timeout = 120_000;
+	server.keepAliveTimeout = 5_000;
 	return server;
 }
 
@@ -742,7 +610,7 @@ export async function startWebUiServer(cwd: string, config?: WebUiServerConfig, 
 			: typeof bind === "string" && bind !== "tailscale"
 				? bind
 				: url.hostname;
-		const port = Number(runtime.config?.port || url.port || 8787);
+	const port = Number(runtime.config?.port || url.port || 8787);
 	await new Promise<void>((resolve) => {
 		server.listen(port, hostname, resolve);
 	});

@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { expandHomePath, loadConfig } from "../config/config.js";
 import { addPreference, forgetPreference, getDefaultPreferenceStorePath, loadPreferences, searchPreferences } from "./store.js";
 

@@ -1,5 +1,41 @@
+import type { ThinkingLevel } from "../config/types.js";
+
 export type ScheduleBackend = "at" | "cron_fallback";
 export type ScheduleType = "one-shot" | "recurring";
+export type ScheduleExtensionMode = "builtin" | "magpie";
+
+export type ScheduleNotifier =
+	| { kind: "none" }
+	| { kind: "macos" }
+	| { kind: "telegram"; botToken: string; chatId: string };
+
+export interface ScheduleRuntimeOptions {
+	mode?: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	systemPrompt?: { strategy: "append" | "replace"; text: string };
+	notifier: ScheduleNotifier;
+	sessionRootDir: string;
+	extensionMode: ScheduleExtensionMode;
+}
+
+export interface ParsedScheduleRequest {
+	type: ScheduleType;
+	when: string;
+	runAt?: string;
+	cronExpr?: string;
+}
+
+export interface ScheduleTaskInput {
+	when: string;
+	task: string;
+	model?: string;
+	mode?: string;
+	cwd?: string;
+	notify?: boolean;
+	extensionMode?: ScheduleExtensionMode;
+	preferredNotifier?: "telegram" | "macos" | "none";
+}
 
 export interface ScheduleRunRecord {
 	startedAt: string;

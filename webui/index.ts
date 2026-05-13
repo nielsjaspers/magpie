@@ -11,6 +11,7 @@ let serverState:
 		starting?: Promise<void>;
 		server?: Awaited<ReturnType<typeof startWebUiServer>>["server"];
 		runtime?: Awaited<ReturnType<typeof startWebUiServer>>["runtime"];
+		stopping?: Promise<void>;
 		hostname?: string;
 		port?: number;
 		cwd?: string;
@@ -20,21 +21,26 @@ let serverState:
 async function ensureServerStarted(ctx: ExtensionContext, pi: ExtensionAPI) {
 	const config = await loadConfig(ctx.cwd);
 	if (config.webui?.enabled === false) return;
-	serverState ??= { activeSessions: 0 };
-	if (serverState.server) return;
-	if (!serverState.starting) {
-		serverState.starting = (async () => {
+	const state = serverState ??= { activeSessions: 0 };
+	if (state.cwd && state.cwd !== ctx.cwd) {
+		throw new Error(`Web UI server is already running for ${state.cwd}; cannot attach session for ${ctx.cwd}`);
+	}
+	state.cwd ??= ctx.cwd;
+	if (state.stopping) {
+		await state.stopping;
+		return ensureServerStarted(ctx, pi);
+	}
+	if (state.server) return;
+	if (!state.starting) {
+		state.starting = (async () => {
 			const started = await startWebUiServer(ctx.cwd, {
-				tools: pi.getAllTools().map((tool) => tool.name),
+				availableTools: pi.getAllTools(),
 			}, routeRegistrations);
-			serverState = {
-				...(serverState ?? { activeSessions: 0 }),
-				server: started.server,
-				runtime: started.runtime,
-				hostname: started.hostname,
-				port: started.port,
-				cwd: ctx.cwd,
-			};
+			state.server = started.server;
+			state.runtime = started.runtime;
+			state.hostname = started.hostname;
+			state.port = started.port;
+			state.cwd = ctx.cwd;
 			pi.events.emit("magpie:webui:server-ready", {
 				port: started.port,
 				bindAddr: started.hostname,
@@ -42,15 +48,26 @@ async function ensureServerStarted(ctx: ExtensionContext, pi: ExtensionAPI) {
 			});
 		})();
 	}
-	await serverState.starting;
-	serverState.starting = undefined;
+	try {
+		await state.starting;
+	} finally {
+		if (serverState === state) state.starting = undefined;
+	}
 }
 
 async function maybeStopServer() {
-	if (!serverState?.server || (serverState.activeSessions ?? 0) > 0) return;
-	const server = serverState.server;
-	await new Promise<void>((resolve) => server.close(() => resolve()));
-	serverState = undefined;
+	const state = serverState;
+	if (!state?.server || (state.activeSessions ?? 0) > 0) return;
+	if (state.stopping) return state.stopping;
+	const server = state.server;
+	state.stopping = new Promise<void>((resolve, reject) => {
+		server.close((error) => error ? reject(error) : resolve());
+	});
+	try {
+		await state.stopping;
+	} finally {
+		if (serverState === state) serverState = undefined;
+	}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -59,6 +76,8 @@ export default function (pi: ExtensionAPI) {
 		if (!Array.isArray(data?.routes)) return;
 		for (const route of data.routes) {
 			if (typeof route?.handler !== "function") continue;
+			if (route.name && routeRegistrations.some((existing) => existing.name === route.name)) continue;
+			if (routeRegistrations.some((existing) => existing.handler === route.handler)) continue;
 			routeRegistrations.push(route);
 		}
 	});
@@ -78,7 +97,9 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`Web UI listening on ${serverState.runtime.hostUrl}`, "info");
 			}
 		} catch (error) {
+			if (serverState) serverState.activeSessions = Math.max(0, serverState.activeSessions - 1);
 			if (ctx.hasUI) ctx.ui.notify(`Failed to start Web UI: ${(error as Error).message}`, "error");
+			await maybeStopServer();
 		}
 	});
 

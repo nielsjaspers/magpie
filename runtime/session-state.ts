@@ -5,6 +5,7 @@ import type {
 	HostedSessionRunState,
 	HostedSessionStatus,
 	HostedSessionSummary,
+	SessionFilter,
 	SessionOwner,
 	SessionWatcher,
 } from "./session-host-types.js";
@@ -63,4 +64,17 @@ export function buildHostedSessionStatus(input: BuildHostedSessionStatusInput): 
 		lastError: input.lastError,
 		watchers: input.watchers,
 	};
+}
+
+export function matchesHostedSessionFilter(summary: HostedSessionSummary, filter: SessionFilter | undefined, queryFields: Array<string | undefined>): boolean {
+	if (!filter) return true;
+	if (filter.kind && summary.kind !== filter.kind) return false;
+	if (filter.location && summary.location !== filter.location) return false;
+	if (filter.runState && summary.runState !== filter.runState) return false;
+	if (filter.assistantChannel && summary.assistantChannel !== filter.assistantChannel) return false;
+	if (!filter.includeArchived && summary.location === "archived") return false;
+	if (filter.ownerKind && summary.owner?.kind !== filter.ownerKind) return false;
+	if (!filter.query?.trim()) return true;
+	const query = filter.query.trim().toLowerCase();
+	return queryFields.some((value) => value?.toLowerCase().includes(query));
 }

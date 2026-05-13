@@ -5,7 +5,7 @@ import ical from "node-ical";
 import type { VEvent } from "node-ical";
 import icalGenerator from "ical-generator";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { createDAVClient, type DAVCalendar, type DAVCalendarObject } from "tsdav";
 import { loadPersonalAssistantRuntime } from "../shared/config.js";
 import { ensureDir, getPaCalendarCacheDir } from "../shared/storage.js";
@@ -249,7 +249,7 @@ export async function createCalendarEventForContext(
 	const runtime = await loadPersonalAssistantRuntime(ctx);
 	const icloud = runtime.personalAssistantAuth?.calendar?.icloud;
 	if (!icloud?.email || !icloud.appPassword) {
-		throw new Error("iCloud calendar writing is not configured.");
+		throw new Error("iCloud calendar writing is not configured. Add personalAssistant.calendar.icloud credentials to magpie.auth.json.");
 	}
 	const calendars = await listICloudCalendars(icloud.email, icloud.appPassword);
 	const defaultCalendar = runtime.personalAssistant?.calendar?.defaultWritableCalendar;
@@ -434,65 +434,19 @@ export default function (pi: ExtensionAPI) {
 			calendarId: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const runtime = await loadPersonalAssistantRuntime(ctx);
-			const icloud = runtime.personalAssistantAuth?.calendar?.icloud;
-			if (!icloud?.email || !icloud.appPassword) {
-				return { content: [{ type: "text", text: "iCloud calendar writing is not configured. Add personalAssistant.calendar.icloud credentials to magpie.auth.json." }], details: {}, isError: true };
-			}
 			try {
-				const calendars = await listICloudCalendars(icloud.email, icloud.appPassword);
-				const defaultCalendar = runtime.personalAssistant?.calendar?.defaultWritableCalendar;
-				const targetCalendar = selectWritableCalendar(calendars, defaultCalendar, params.calendarId);
-				if (!targetCalendar) {
-					return {
-						content: [{ type: "text", text: `No writable iCloud calendar matched the requested/default target. Available iCloud calendars: ${calendars.map((calendar) => calendar.name).join(", ") || "none"}` }],
-						details: { calendars: calendars.map((calendar) => ({ id: calendar.id, name: calendar.name })) },
-						isError: true,
-					};
-				}
-				const start = new Date(params.start);
-				const end = new Date(params.end);
-				if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
-					return { content: [{ type: "text", text: "Invalid start/end timestamps. Use ISO 8601 and ensure end is after start." }], details: {}, isError: true };
-				}
-				const uid = randomUUID();
-				const cal = icalGenerator({ prodId: "-//magpie//pi-calendar//EN" });
-				cal.createEvent({
-					id: uid,
-					start,
-					end,
-					summary: params.summary,
-					location: params.location,
-					description: params.description,
-					allDay: params.allDay ?? false,
-					stamp: new Date(),
-				});
-				const client = await getICloudClient(icloud.email, icloud.appPassword);
-				await client.createCalendarObject({
-					calendar: targetCalendar.calendar,
-					iCalString: cal.toString(),
-					filename: `${uid}.ics`,
-				});
+				const created = await createCalendarEventForContext(ctx, params);
 				return {
-					content: [{ type: "text", text: `Created event \"${params.summary}\" in ${targetCalendar.name}.` }],
-					details: {
-						event: {
-							id: uid,
-							calendarId: targetCalendar.id,
-							summary: params.summary,
-							start: start.toISOString(),
-							end: end.toISOString(),
-							allDay: params.allDay ?? false,
-							location: params.location,
-							description: params.description,
-							sourceType: "icloud",
-						},
-						targetCalendar: { id: targetCalendar.id, name: targetCalendar.name },
-					},
+					content: [{ type: "text", text: `Created event \"${params.summary}\" in ${created.targetCalendar.name}.` }],
+					details: created,
 				};
 			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message.startsWith("iCloud calendar writing is not configured") || message.startsWith("Invalid start/end timestamps") || message.startsWith("No writable iCloud calendar")) {
+					return { content: [{ type: "text", text: message }], details: {}, isError: true };
+				}
 				icloudClientPromise = null;
-				return { content: [{ type: "text", text: `iCloud calendar write failed: ${(error as Error).message}` }], details: {}, isError: true };
+				return { content: [{ type: "text", text: `iCloud calendar write failed: ${message}` }], details: {}, isError: true };
 			}
 		},
 	});

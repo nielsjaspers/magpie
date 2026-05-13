@@ -82,7 +82,7 @@ export const DEFAULT_CONFIG: MagpieConfig = {
 	memory: {
 		rootDir: "~/.pi/agent/magpie-memory",
 		autodream: {
-			enabled: true,
+			enabled: false,
 			schedule: "0 4 * * *",
 		},
 	},

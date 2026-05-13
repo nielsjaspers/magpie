@@ -17,10 +17,11 @@ export async function createWorkspaceArchiveFromDir(cwd: string, options: Worksp
 	const args = ["-czf", "-"];
 	for (const pattern of options.excludes ?? []) args.push(`--exclude=${pattern}`);
 	args.push("-C", cwd, ".");
-	const { stdout } = await execFileAsync("tar", args, { encoding: "buffer", maxBuffer: options.maxBytes ?? 1024 * 1024 * 1024 });
+	const maxBuffer = options.maxBytes ? Math.max(options.maxBytes * 2, options.maxBytes + 1024 * 1024) : 1024 * 1024 * 1024;
+	const { stdout } = await execFileAsync("tar", args, { encoding: "buffer", maxBuffer });
 	const archive = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout as any);
 	if (options.maxBytes && archive.byteLength > options.maxBytes) {
-		throw new Error(`Workspace archive exceeds maxTarSize (${archive.byteLength} > ${options.maxBytes})`);
+		throw new Error(`Workspace archive exceeds maxBytes (${archive.byteLength} > ${options.maxBytes})`);
 	}
 	return archive;
 }

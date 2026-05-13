@@ -11,15 +11,22 @@ if (firstAlias) {
 }
 
 const bot = createBot(config);
+let shuttingDown = false;
 
-function shutdown() {
+async function shutdown() {
+	if (shuttingDown) return;
+	shuttingDown = true;
 	console.log("\nShutting down...");
-	bot.stop();
+	await bot.stop();
 	process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => {
+	void shutdown();
+});
+process.on("SIGTERM", () => {
+	void shutdown();
+});
 
 console.log("Starting Magpie-backed Telegram bot...");
 await bot.start();

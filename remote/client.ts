@@ -1,6 +1,7 @@
 import type { DispatchPayload, FetchPayload } from "./types.js";
 import type { SerializedSessionBundle } from "./transport.js";
 import { deserializeSessionBundle } from "./transport.js";
+import { readJsonResponse } from "../shared/http.js";
 
 function withAuth(options: RequestInit | undefined, deviceToken?: string): RequestInit | undefined {
 	if (!deviceToken) return options;
@@ -14,12 +15,9 @@ function withAuth(options: RequestInit | undefined, deviceToken?: string): Reque
 }
 
 async function requestJson<T>(baseUrl: string, path: string, options?: RequestInit, deviceToken?: string): Promise<T> {
-	const response = await fetch(new URL(path, baseUrl), withAuth(options, deviceToken));
-	const json = await response.json();
-	if (!response.ok) {
-		throw new Error(typeof json?.error === "string" ? json.error : `Request failed: ${response.status}`);
-	}
-	return json as T;
+	const url = new URL(path, baseUrl);
+	const response = await fetch(url, withAuth(options, deviceToken));
+	return await readJsonResponse<T>(response, `for ${url.toString()}`);
 }
 
 export async function exportHostedSession(baseUrl: string, sessionId: string, modelRef?: string) {
