@@ -2,6 +2,10 @@ import { parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import type { HostedSessionSnapshot, HostedSessionSummary } from "../runtime/session-host-types.js";
 import { readJsonResponse } from "../shared/http.js";
 
+function assistantSessionId(threadId: string): string {
+	return `telegram:${threadId}`;
+}
+
 export function describeHostFetchError(url: URL, error: unknown) {
 	const reason = error instanceof Error ? error.message : String(error);
 	return `Could not reach Magpie assistant host at ${url.toString()}: ${reason}. Ensure the webui/assistant host is running and telegram.hostUrl points to it from this machine.`;
@@ -38,10 +42,10 @@ export async function postJson<T>(baseUrl: string, path: string, body: Record<st
 
 export async function queueTelegramReset(hostUrl: string, threadId: string) {
 	setTimeout(() => {
-		void fetch(new URL("/api/v1/assistant/reset", hostUrl), {
+		void fetch(new URL(`/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/reset`, hostUrl), {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ channel: "telegram", threadId }),
+			body: JSON.stringify({}),
 		}).catch(() => {
 			// best-effort reset after dream response is delivered
 		});
@@ -66,9 +70,7 @@ export async function resolveDreamTarget(hostUrl: string, explicitThreadId: stri
 }
 
 export async function getAssistantSnapshot(hostUrl: string, threadId: string, limit = 200) {
-	return await getJson<HostedSessionSnapshot>(hostUrl, "/api/v1/assistant/snapshot", {
-		channel: "telegram",
-		threadId,
+	return await getJson<HostedSessionSnapshot>(hostUrl, `/api/v1/sessions/${encodeURIComponent(assistantSessionId(threadId))}/snapshot`, {
 		limit,
 	});
 }
