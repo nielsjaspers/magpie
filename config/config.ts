@@ -83,11 +83,23 @@ export function getProjectAuthPath(cwd: string): string {
 	return resolve(cwd, ".pi/magpie.auth.json");
 }
 
-async function readJson(path: string): Promise<any | undefined> {
+export class MagpieConfigParseError extends Error {
+	readonly path: string;
+	readonly cause: unknown;
+
+	constructor(path: string, cause: unknown) {
+		super(`Failed to parse Magpie config JSON at ${path}. Repair the file or move it aside before retrying.`);
+		this.name = "MagpieConfigParseError";
+		this.path = path;
+		this.cause = cause;
+	}
+}
+
+async function readJson(path: string): Promise<any> {
 	try {
 		return JSON.parse(await readFile(path, "utf8"));
-	} catch {
-		return undefined;
+	} catch (error) {
+		throw new MagpieConfigParseError(path, error);
 	}
 }
 

@@ -13,6 +13,7 @@ import {
 	getProjectConfigPath,
 	loadAuthConfig,
 	loadConfig,
+	MagpieConfigParseError,
 	resolveModel,
 	resolvePromptText,
 	resolveSubagentModel,
@@ -78,6 +79,15 @@ describe("config loading and resolution", () => {
 
 		expect(auth.telegram?.botToken).toBe("project-token");
 		expect(auth.remote?.hosts?.home?.deviceToken).toBe("global-device");
+	});
+
+	test("fails loudly for invalid config or auth JSON instead of falling back to defaults", async () => {
+		await writeFile(resolve(projectDir, ".pi/magpie.json"), "{ invalid", "utf8");
+		await expect(loadConfig(projectDir)).rejects.toBeInstanceOf(MagpieConfigParseError);
+
+		await writeFile(resolve(projectDir, ".pi/magpie.json"), "{}", "utf8");
+		await writeFile(resolve(projectDir, ".pi/magpie.auth.json"), "{ invalid", "utf8");
+		await expect(loadAuthConfig(projectDir)).rejects.toBeInstanceOf(MagpieConfigParseError);
 	});
 
 	test("resolves modes, subagent models, prompt files, and model refs", async () => {
