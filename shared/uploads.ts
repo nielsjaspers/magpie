@@ -1,7 +1,8 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export function sanitizeUploadedFilename(name: string, fallback = "upload.bin"): string {
-	const safe = name
+	const basename = name.split(/[\\/]+/).filter(Boolean).at(-1) ?? "";
+	const safe = basename
 		.replace(/[^a-zA-Z0-9._-]+/g, "-")
 		.replace(/^-+|-+$/g, "");
 	if (!safe || safe === "." || safe === "..") return fallback;
