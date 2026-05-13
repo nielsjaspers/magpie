@@ -10,21 +10,22 @@ import type { SubagentCoreAPI } from "../subagents/types.js";
 import { loadConfig } from "../config/config.js";
 import { isAnyToolDisabledInActiveMode, isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import { runQuestionnaire } from "./questionnaire.js";
+import {
+	completePlanExecutionState,
+	disablePlanState,
+	enablePlanState,
+	executePlanState,
+	finalizePlanState,
+	hydratePlanState,
+	initialPlanState,
+	PLAN_STATE_TYPE,
+	type PlanState,
+} from "./state.js";
 import { extractTodoItems, isPlanPath, isSafeCommand, markCompletedSteps, randomName, slugify, type TodoItem } from "./utils.js";
 
-const PLAN_STATE_TYPE = "magpie:plan-state";
 const PLAN_TOOLS = ["read", "bash", "grep", "find", "ls", "write", "edit", "web_search", "web_fetch", "session_query", "plan_subagent", "user_question", "plan_exit"];
 const PLAN_ONLY_TOOLS = ["plan_subagent", "user_question", "plan_exit"];
 const MAX_STRICT_LOOP_VIOLATIONS = 3;
-
-type PlanState = {
-	enabled: boolean;
-	executing: boolean;
-	pendingApproval: boolean;
-	todos: TodoItem[];
-	planFile?: string;
-	planSlug?: string;
-};
 
 function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
 	return (message as any).role === "assistant" && Array.isArray((message as any).content);
@@ -46,6 +47,24 @@ export default function (pi: ExtensionAPI) {
 	let lastToolNameInTurn: string | undefined;
 	let strictLoopViolations = 0;
 	let normalTools = ["read", "bash", "edit", "write", "grep", "find", "ls", "web_search", "web_fetch", "session_query"];
+
+	const currentState = (): PlanState => ({
+		enabled: planModeEnabled,
+		executing: executionMode,
+		pendingApproval,
+		todos: todoItems,
+		planFile: activePlanFile,
+		planSlug,
+	});
+
+	const applyState = (state: PlanState) => {
+		planModeEnabled = state.enabled;
+		executionMode = state.executing;
+		pendingApproval = state.pendingApproval;
+		todoItems = state.todos;
+		activePlanFile = state.planFile;
+		planSlug = state.planSlug;
+	};
 
 	pi.events.on("magpie:subagent-core:register", (api: unknown) => {
 		subagentCore = api as SubagentCoreAPI;
@@ -83,12 +102,7 @@ export default function (pi: ExtensionAPI) {
 
 	const persistState = () => {
 		pi.appendEntry(PLAN_STATE_TYPE, {
-			enabled: planModeEnabled,
-			executing: executionMode,
-			pendingApproval,
-			todos: todoItems,
-			planFile: activePlanFile,
-			planSlug,
+			...currentState(),
 		} satisfies PlanState);
 	};
 
@@ -104,17 +118,11 @@ export default function (pi: ExtensionAPI) {
 
 	const setPlanMode = async (ctx: ExtensionContext, enabled: boolean, seed?: string) => {
 		latestCtx = ctx;
-		planModeEnabled = enabled;
-		executionMode = false;
-		pendingApproval = false;
-		todoItems = [];
+		applyState(enabled ? enablePlanState(currentState(), { planSlug: seed?.trim() ? slugify(seed) : planSlug }) : disablePlanState(currentState()));
 		lastToolNameInTurn = undefined;
 		strictLoopViolations = 0;
 		if (enabled) {
-			if (seed?.trim()) {
-				planSlug = slugify(seed);
-				activePlanFile = undefined;
-			}
+			if (seed?.trim()) activePlanFile = undefined;
 			const file = await getPlanPath(ctx.cwd, seed);
 			applyTools(PLAN_TOOLS);
 			ctx.ui.notify(`Plan mode enabled. Plan file: ${relative(ctx.cwd, file)}`, "info");
@@ -264,8 +272,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: `Plan file not found: ${relative(ctx.cwd, activePlanFile)}` }], details: {}, isError: true };
 			}
 			if (!content.trim()) return { content: [{ type: "text", text: "Plan file is empty." }], details: {}, isError: true };
-			todoItems = extractTodoItems(content);
-			pendingApproval = true;
+			applyState(finalizePlanState(currentState(), activePlanFile, extractTodoItems(content)));
 			persistState();
 			updateStatus(ctx);
 			return { content: [{ type: "text", text: `Plan finalized at ${relative(ctx.cwd, activePlanFile)}.` }], details: { planFile: activePlanFile, steps: todoItems.length } };
@@ -341,8 +348,7 @@ export default function (pi: ExtensionAPI) {
 		latestCtx = ctx;
 		if (executionMode && todoItems.length > 0 && todoItems.every((item) => item.completed)) {
 			pi.sendMessage({ customType: "magpie:plan-complete", content: [{ type: "text", text: "Plan complete." }], display: true }, { triggerTurn: false });
-			executionMode = false;
-			todoItems = [];
+			applyState(completePlanExecutionState(currentState()));
 			applyTools(normalTools);
 			persistState();
 			updateStatus(ctx);
@@ -362,11 +368,10 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		if (!pendingApproval || !ctx.hasUI) return;
-		pendingApproval = false;
+		applyState({ ...currentState(), pendingApproval: false });
 		const choice = await ctx.ui.select("Plan complete. What next?", ["Execute the plan", "Stay in plan mode", "Refine the plan"]);
 		if (choice?.startsWith("Execute")) {
-			planModeEnabled = false;
-			executionMode = true;
+			applyState(executePlanState(currentState()));
 			applyTools(normalTools);
 			persistState();
 			updateStatus(ctx);
@@ -388,12 +393,7 @@ export default function (pi: ExtensionAPI) {
 			.filter((entry) => entry.type === "custom" && entry.customType === PLAN_STATE_TYPE)
 			.pop();
 		if (stateEntry?.data) {
-			planModeEnabled = stateEntry.data.enabled;
-			executionMode = stateEntry.data.executing;
-			pendingApproval = stateEntry.data.pendingApproval;
-			todoItems = stateEntry.data.todos ?? [];
-			activePlanFile = stateEntry.data.planFile;
-			planSlug = stateEntry.data.planSlug;
+			applyState(hydratePlanState(stateEntry.data));
 		}
 		if (planModeEnabled && !activePlanFile) await getPlanPath(ctx.cwd);
 		if (executionMode && todoItems.length > 0 && activePlanFile && existsSync(activePlanFile)) {
