@@ -12,6 +12,8 @@ import {
 	sendSessionMessageRoute,
 } from "../webui/routes/session.js";
 import { readBody, RequestBodyTooLargeError, getSessionIdFromRequestPath } from "../webui/request.js";
+import { isPublicWebUiPath } from "../webui/routes/auth.js";
+import { ownerForAssistantChannel } from "../webui/routes/assistant-legacy.js";
 import { createStaticAssetRoutes } from "../webui/routes/assets.js";
 import type { HostedSessionHandle, HostedSessionMetadata, HostedSessionStatus, SessionHost } from "../runtime/session-host-types.js";
 import { parseMultipartFormData, sanitizeUploadedFilename } from "../webui/uploads.js";
@@ -102,6 +104,14 @@ describe("webui session route parsing", () => {
 			["/assets/app.js", "text/javascript; charset=utf-8"],
 			["/assets/css/style.css", "text/css; charset=utf-8"],
 		]);
+	});
+
+	test("declares public auth and enrollment paths", () => {
+		expect(isPublicWebUiPath("/health")).toBe(true);
+		expect(isPublicWebUiPath("/api/v1/enroll")).toBe(true);
+		expect(isPublicWebUiPath("/api/v1/sessions")).toBe(false);
+		expect(ownerForAssistantChannel("h1", "web")).toMatchObject({ kind: "remote_web" });
+		expect(ownerForAssistantChannel("h1", "telegram")).toMatchObject({ kind: "system" });
 	});
 });
 

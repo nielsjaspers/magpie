@@ -4,40 +4,35 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { expandHomePath, getPersonalAssistantStorageDir, getTelegramConfig, getWebUiConfig, loadConfig } from "../config/config.js";
-import { AssistantSessionHost, createAssistantThreadKey, parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
+import { AssistantSessionHost, parseAssistantThreadKey } from "../runtime/assistant-session-host.js";
 import { CodingSessionHost } from "../runtime/coding-session-host.js";
 import { createRemoteServerRuntime } from "../remote/server.js";
 import type { DeviceRecord } from "../remote/types.js";
+import { createRemoteAuthStore } from "../remote/auth.js";
 import {
-	authenticateRequest,
-	consumeEnrollmentCode,
-	createEnrollmentCode,
-	createRemoteAuthStore,
-	isLoopbackRequest,
-} from "../remote/auth.js";
-import { serializeSessionBundle } from "../remote/transport.js";
-import {
-	getRequestIp,
 	getSessionIdFromRequestPath,
 	readBody,
-	recordRateLimit,
 	sendJson,
-	sendSseEvent,
-	startSse,
 } from "./request.js";
+import {
+	handleAssistantLegacyRoute,
+	ownerForAssistantChannel,
+} from "./routes/assistant-legacy.js";
+import {
+	authenticateWebUiRequest,
+	handleEnrollmentRoute,
+} from "./routes/auth.js";
 import {
 	createSessionRoute,
 	getSessionSnapshotRoute,
 	getSessionStatusRoute,
 	listSessionRoute,
-	normalizeAssistantChannel,
 	parseCreateSessionInput,
 	parseSessionFilter,
 } from "./routes/session.js";
+import { handleSessionMemberRoute } from "./routes/session-api.js";
 import { createStaticAssetRoutes, serveStaticAsset } from "./routes/assets.js";
 import type { WebUiRouteRegistration, WebUiServerConfig } from "./types.js";
-import { parseMultipartFormData, saveAssistantSessionFiles, saveWorkspaceFiles } from "./uploads.js";
-import type { SessionMessageRequest } from "./protocol.js";
 
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
@@ -64,16 +59,6 @@ function resolveModel(ref: string) {
 	const model = modelRegistry.find(parsed.provider, parsed.modelId);
 	if (!model) throw new Error(`Model not found: ${ref}`);
 	return model;
-}
-
-function ownerForAssistantChannel(hostId: string, channel?: "telegram" | "web" | "internal") {
-	if (channel === "web") {
-		return { kind: "remote_web" as const, hostId, displayName: "Remote web assistant session" };
-	}
-	if (channel === "telegram") {
-		return { kind: "system" as const, hostId, displayName: "Telegram assistant session" };
-	}
-	return { kind: "system" as const, hostId, displayName: "Assistant session" };
 }
 
 async function tryReadText(path: string): Promise<string | undefined> {
@@ -259,34 +244,9 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 	const server = createServer(async (req, res) => {
 		try {
 			const requestUrl = new URL(req.url || "/", hostUrl);
-			let authenticatedDevice: DeviceRecord | undefined;
-			const isPublicPath = requestUrl.pathname === "/health"
-				|| requestUrl.pathname === "/enroll"
-				|| requestUrl.pathname === "/assets/css/style.css"
-				|| requestUrl.pathname === "/api/v1/enroll"
-				|| requestUrl.pathname === "/api/v1/enroll/code"
-				|| requestUrl.pathname === "/api/v1/enroll/claim";
-			if ((requestUrl.pathname === "/api/v1/enroll" || requestUrl.pathname === "/api/v1/enroll/claim" || requestUrl.pathname === "/api/v1/enroll/code") && req.method === "POST") {
-				const ip = getRequestIp(req);
-				if (!recordRateLimit(enrollmentLimiter, ip, 10, 60 * 60 * 1000)) {
-					return sendJson(res, 429, { error: "Too many enrollment attempts. Try again later." });
-				}
-			}
-			if (!isPublicPath && !isLoopbackRequest(req)) {
-				authenticatedDevice = await authenticateRequest(auth, req);
-				if (!authenticatedDevice) {
-					if (requestUrl.pathname === "/" || requestUrl.pathname.startsWith("/assets/")) {
-						res.statusCode = 302;
-						res.setHeader("location", "/enroll");
-						res.end();
-						return;
-					}
-					return sendJson(res, 401, { error: "Unauthorized" });
-				}
-				if (!recordRateLimit(deviceRequestLimiter, authenticatedDevice.id, 100, 60 * 1000)) {
-					return sendJson(res, 429, { error: "Rate limit exceeded. Try again later." });
-				}
-			}
+			const authResult = await authenticateWebUiRequest({ auth, req, res, requestUrl, enrollmentLimiter, deviceRequestLimiter });
+			if (authResult.handled) return;
+			const authenticatedDevice = authResult.device;
 			if (req.method === "GET" && requestUrl.pathname === "/health") {
 				return sendJson(res, 200, { ok: true, hostId: host.hostId, hostRole: host.hostRole });
 			}
@@ -297,42 +257,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					return;
 				}
 			}
-			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/code") {
-				if (!isLoopbackRequest(req)) {
-					const device = await authenticateRequest(auth, req);
-					if (!device) return sendJson(res, 401, { error: "Unauthorized" });
-				}
-				const result = await createEnrollmentCode(auth);
-				return sendJson(res, 201, { code: result.code, expiresAt: result.expiresAt });
-			}
-			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll") {
-				const body = await readBody(req);
-				const result = await consumeEnrollmentCode(auth, {
-					code: String(body.code || ""),
-					deviceName: String(body.deviceName || "device"),
-					platform: String(body.platform || req.headers["user-agent"] || "web"),
-				});
-				const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
-				const isSecure = requestUrl.protocol === "https:" || forwardedProto === "https";
-				res.setHeader("set-cookie", [
-					`magpie_token=${encodeURIComponent(result.token)}`,
-					"Path=/",
-					"HttpOnly",
-					"SameSite=Lax",
-					"Max-Age=31536000",
-					...(isSecure ? ["Secure"] : []),
-				].join("; "));
-				return sendJson(res, 200, { ok: true, device: result.device });
-			}
-			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/claim") {
-				const body = await readBody(req);
-				const result = await consumeEnrollmentCode(auth, {
-					code: String(body.code || ""),
-					deviceName: String(body.deviceName || "device"),
-					platform: String(body.platform || req.headers["user-agent"] || "cli"),
-				});
-				return sendJson(res, 200, { ok: true, token: result.token, device: result.device });
-			}
+			if (await handleEnrollmentRoute({ auth, req, res, requestUrl })) return;
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/models") {
 				const models = modelRegistry.getAll();
 				return sendJson(res, 200, { models, defaultModel: defaultModelRef });
@@ -377,191 +302,28 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				return sendJson(res, 201, { sessionId: session.metadata.sessionId, metadata: session.metadata, created: true });
 			}
 
-			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
-			if (sessionPath && req.method === "GET" && sessionPath.suffix === "/stream") {
-				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				const status = await getSessionStatusAny(sessionPath.sessionId, modelRef);
-				if (!status) return sendJson(res, 404, { error: "Session not found" });
-				startSse(res);
-				const unsubscribe = await subscribeAny(sessionPath.sessionId, async (event: unknown) => {
-					sendSseEvent(res, event);
-				}, buildWatchersForRequest(sessionPath.sessionId, authenticatedDevice), modelRef);
-				const keepAlive = setInterval(() => {
-					res.write(": keepalive\n\n");
-				}, 15000);
-				req.on("close", () => {
-					clearInterval(keepAlive);
-					unsubscribe();
-					if (!res.writableEnded) res.end();
-				});
-				return;
-			}
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/export") {
-				const body = await readBody(req);
-				const modelRef = typeof body.modelRef === "string" && body.modelRef.trim() ? body.modelRef : defaultModelRef;
-				try {
-					const session = await getSessionAny(sessionPath.sessionId, modelRef);
-					if (!session) return sendJson(res, 404, { error: "Session not found" });
-					const bundle = await session.export(modelRef);
-					return sendJson(res, 200, serializeSessionBundle(bundle));
-				} catch {
-					return sendJson(res, 404, { error: "Session not found" });
-				}
-			}
-			if (sessionPath && req.method === "GET" && (sessionPath.suffix === "" || sessionPath.suffix === "/status")) {
-				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				const status = await getSessionStatusAny(sessionPath.sessionId, modelRef);
-				if (!status) return sendJson(res, 404, { error: "Session not found" });
-				return sendJson(res, 200, status);
-			}
-			if (sessionPath && req.method === "GET" && sessionPath.suffix === "/snapshot") {
-				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				const limit = Number(requestUrl.searchParams.get("limit") || 20);
-				const snapshot = await getSessionSnapshotAny(sessionPath.sessionId, modelRef, limit);
-				if (!snapshot) return sendJson(res, 404, { error: "Session not found" });
-				return sendJson(res, 200, snapshot);
-			}
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/files") {
-				try {
-					const parts = await parseMultipartFormData(req);
-					const fileParts = parts.filter((p) => p.filename);
-					if (fileParts.length === 0) return sendJson(res, 400, { error: "No files uploaded" });
+			if (await handleSessionMemberRoute({
+				req,
+				res,
+				requestUrl,
+				defaultModelRef,
+				authenticatedDevice,
+				getSessionAny,
+				getSessionStatusAny,
+				getSessionSnapshotAny,
+				subscribeAny,
+				buildWatchersForRequest,
+				promptAny,
+				interruptAny,
+				resetAssistantSession: async (sessionId) => await host.resetSession(sessionId),
+				getCodingSession: async (sessionId) => await codingHost.getSession(sessionId),
+				getAssistantSession: async (sessionId) => await host.getSession(sessionId),
+			})) return;
 
-					const codingSession = await codingHost.getSession(sessionPath.sessionId);
-					if (!codingSession) {
-						const assistantSession = await host.getSession(sessionPath.sessionId);
-						if (!assistantSession?.metadata.sourceSessionPath) return sendJson(res, 404, { error: "Session not found" });
-						const results = await saveAssistantSessionFiles(
-							assistantSession.metadata.sourceSessionPath,
-							sessionPath.sessionId,
-							fileParts.map((part) => ({ filename: part.filename, data: part.data })),
-						);
-						return sendJson(res, 200, { ok: true, files: results });
-					}
-
-					const workspaceDir = codingSession.metadata.cwd;
-					const results = await saveWorkspaceFiles(
-						workspaceDir,
-						fileParts.map((part) => ({ filename: part.filename!, data: part.data })),
-					);
-
-					return sendJson(res, 200, { ok: true, files: results });
-				} catch (err) {
-					const statusCode = (err as { statusCode?: number }).statusCode;
-					if (statusCode === 413) return sendJson(res, 413, { error: (err as Error).message });
-					return sendJson(res, 500, { error: (err as Error).message });
-				}
-			}
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
-				const body = await readBody(req) as unknown as Partial<SessionMessageRequest>;
-				const text = String(body.text || "");
-				const modelRef = String(body.modelRef || defaultModelRef);
-				if (!text) return sendJson(res, 400, { error: "text is required" });
-				const result = await promptAny(sessionPath.sessionId, text, modelRef);
-				return sendJson(res, 200, {
-					text: result.text,
-					sessionId: sessionPath.sessionId,
-					accepted: result.accepted,
-					toolEvents: result.toolEvents,
-				});
-			}
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/interrupt") {
-				const body = await readBody(req);
-				const modelRef = String(body.modelRef || defaultModelRef);
-				await interruptAny(sessionPath.sessionId, modelRef);
-				return sendJson(res, 200, { ok: true });
-			}
-			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/reset") {
-				await host.resetSession(sessionPath.sessionId);
-				return sendJson(res, 200, { ok: true });
-			}
-
-			if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/status") {
-				const channel = requestUrl.searchParams.get("channel") || "telegram";
-				const threadId = requestUrl.searchParams.get("threadId") || "";
-				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
-				const threadKey = createAssistantThreadKey(channel, threadId);
-				return sendJson(res, 200, await host.getThreadStatus(threadKey, modelRef));
-			}
-			if (req.method === "GET" && requestUrl.pathname === "/api/v1/assistant/snapshot") {
-				const channel = requestUrl.searchParams.get("channel") || "telegram";
-				const threadId = requestUrl.searchParams.get("threadId") || "";
-				const modelRef = requestUrl.searchParams.get("modelRef") || defaultModelRef;
-				const limit = Number(requestUrl.searchParams.get("limit") || 20);
-				if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
-				const threadKey = createAssistantThreadKey(channel, threadId);
-				return sendJson(res, 200, await host.getThreadSnapshot(threadKey, modelRef, limit));
-			}
+			if (await handleAssistantLegacyRoute({ host, defaultModelRef, req, res, requestUrl })) return;
 
 			if (req.method !== "POST" || !req.url) {
 				return sendJson(res, 404, { error: "Not found" });
-			}
-
-			if (req.url === "/api/v1/assistant/resolve") {
-				const body = await readBody(req);
-				const channel = normalizeAssistantChannel(String(body.channel || "telegram")) || "telegram";
-				const threadId = String(body.threadId || "");
-				const modelRef = String(body.modelRef || defaultModelRef);
-				const title = typeof body.title === "string" ? body.title : undefined;
-				if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
-				const resolved = await host.resolveAssistantSession({
-					kind: "assistant",
-					origin: "assistant",
-					assistantChannel: channel,
-					assistantThreadId: threadId,
-					workspaceMode: "none",
-					title,
-					modelRef,
-					owner: ownerForAssistantChannel(host.hostId, channel),
-				});
-				return sendJson(res, 200, {
-					sessionId: resolved.sessionId,
-					created: resolved.created,
-					sessionFile: resolved.sessionFile,
-					metadata: resolved.metadata,
-				});
-			}
-
-			if (req.url === "/api/v1/assistant/message") {
-				const body = await readBody(req);
-				const channel = normalizeAssistantChannel(String(body.channel || "telegram")) || "telegram";
-				const threadId = String(body.threadId || "");
-				const text = String(body.text || "");
-				const modelRef = String(body.modelRef || defaultModelRef);
-				if (!threadId || !text) return sendJson(res, 400, { error: "threadId and text are required" });
-				const threadKey = createAssistantThreadKey(channel, threadId);
-				await host.resolveAssistantSession({
-					kind: "assistant",
-					origin: "assistant",
-					assistantChannel: channel,
-					assistantThreadId: threadId,
-					workspaceMode: "none",
-					modelRef,
-					owner: ownerForAssistantChannel(host.hostId, channel),
-				});
-				await host.claimOwnership(threadKey, ownerForAssistantChannel(host.hostId, channel));
-				const toolEvents: Array<{ type: "start" | "end"; toolName: string; args?: unknown; result?: string; isError?: boolean }> = [];
-				const { accepted, result } = await host.promptSession(threadKey, { text, modelRef }, (event) => {
-					if (event.type === "start") toolEvents.push({ type: "start", toolName: event.toolName, args: event.args });
-					else toolEvents.push({ type: "end", toolName: event.toolName, result: event.result, isError: event.isError });
-				});
-				return sendJson(res, 200, {
-					text: result.text || "",
-					sessionId: threadKey,
-					accepted,
-					toolEvents,
-				});
-			}
-
-			if (req.url === "/api/v1/assistant/reset") {
-				const body = await readBody(req);
-				const channel = normalizeAssistantChannel(String(body.channel || "telegram")) || "telegram";
-				const threadId = String(body.threadId || "");
-				if (!threadId) return sendJson(res, 400, { error: "threadId is required" });
-				const threadKey = createAssistantThreadKey(channel, threadId);
-				await host.resetThread(threadKey);
-				return sendJson(res, 200, { ok: true });
 			}
 
 			return sendJson(res, 404, { error: "Not found" });
