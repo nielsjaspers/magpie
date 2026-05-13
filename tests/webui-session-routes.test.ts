@@ -12,6 +12,7 @@ import {
 	sendSessionMessageRoute,
 } from "../webui/routes/session.js";
 import { readBody, RequestBodyTooLargeError, getSessionIdFromRequestPath } from "../webui/request.js";
+import { createStaticAssetRoutes } from "../webui/routes/assets.js";
 import type { HostedSessionHandle, HostedSessionMetadata, HostedSessionStatus, SessionHost } from "../runtime/session-host-types.js";
 import { parseMultipartFormData, sanitizeUploadedFilename } from "../webui/uploads.js";
 import type { IncomingMessage } from "node:http";
@@ -91,6 +92,16 @@ describe("webui session route parsing", () => {
 		].join("\r\n");
 		const req = requestFromBody(body, { "content-type": "multipart/form-data; boundary=x" });
 		await expect(parseMultipartFormData(req, 8)).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+	});
+
+	test("declares static asset routes with expected content types", () => {
+		const routes = createStaticAssetRoutes("/client");
+		expect(routes.map((route) => [route.pathname, route.contentType])).toEqual([
+			["/", "text/html; charset=utf-8"],
+			["/enroll", "text/html; charset=utf-8"],
+			["/assets/app.js", "text/javascript; charset=utf-8"],
+			["/assets/css/style.css", "text/css; charset=utf-8"],
+		]);
 	});
 });
 

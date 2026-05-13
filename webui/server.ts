@@ -34,8 +34,10 @@ import {
 	parseCreateSessionInput,
 	parseSessionFilter,
 } from "./routes/session.js";
+import { createStaticAssetRoutes, serveStaticAsset } from "./routes/assets.js";
 import type { WebUiRouteRegistration, WebUiServerConfig } from "./types.js";
 import { parseMultipartFormData, saveAssistantSessionFiles, saveWorkspaceFiles } from "./uploads.js";
+import type { SessionMessageRequest } from "./protocol.js";
 
 export interface WebUiServerRuntime {
 	host: AssistantSessionHost;
@@ -165,6 +167,7 @@ export async function loadWebUiServerRuntime(cwd: string, config?: WebUiServerCo
 export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistrations: WebUiRouteRegistration[] = []): Server {
 	const { host, codingHost, remote, auth, defaultModelRef, hostUrl } = runtime;
 	const clientDir = resolve(import.meta.dirname, "client");
+	const staticAssetRoutes = createStaticAssetRoutes(clientDir);
 	const deviceRequestLimiter = new Map<string, number[]>();
 	const enrollmentLimiter = new Map<string, number[]>();
 
@@ -287,11 +290,12 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 			if (req.method === "GET" && requestUrl.pathname === "/health") {
 				return sendJson(res, 200, { ok: true, hostId: host.hostId, hostRole: host.hostRole });
 			}
-			if (req.method === "GET" && requestUrl.pathname === "/enroll") {
-				res.statusCode = 200;
-				res.setHeader("content-type", "text/html; charset=utf-8");
-				res.end(await readFile(resolve(clientDir, "enroll.html"), "utf8"));
-				return;
+			if (req.method === "GET") {
+				const staticRoute = staticAssetRoutes.find((route) => route.pathname === requestUrl.pathname);
+				if (staticRoute) {
+					await serveStaticAsset(res, staticRoute);
+					return;
+				}
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/enroll/code") {
 				if (!isLoopbackRequest(req)) {
@@ -329,25 +333,6 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				});
 				return sendJson(res, 200, { ok: true, token: result.token, device: result.device });
 			}
-			if (req.method === "GET" && requestUrl.pathname === "/") {
-				res.statusCode = 200;
-				res.setHeader("content-type", "text/html; charset=utf-8");
-				res.end(await readFile(resolve(clientDir, "index.html"), "utf8"));
-				return;
-			}
-			if (req.method === "GET" && requestUrl.pathname === "/assets/app.js") {
-				res.statusCode = 200;
-				res.setHeader("content-type", "text/javascript; charset=utf-8");
-				res.end(await readFile(resolve(clientDir, "app.js"), "utf8"));
-				return;
-			}
-			if (req.method === "GET" && requestUrl.pathname === "/assets/css/style.css") {
-				res.statusCode = 200;
-				res.setHeader("content-type", "text/css; charset=utf-8");
-				res.end(await readFile(resolve(clientDir, "css/style.css"), "utf8"));
-				return;
-			}
-
 			if (req.method === "GET" && requestUrl.pathname === "/api/v1/models") {
 				const models = modelRegistry.getAll();
 				return sendJson(res, 200, { models, defaultModel: defaultModelRef });
@@ -389,7 +374,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 					origin: input.origin === "assistant" ? "remote" : input.origin,
 					owner: { kind: "remote_web", hostId: codingHost.hostId, displayName: "Remote web session" },
 				});
-				return sendJson(res, 201, { sessionId: session.metadata.sessionId, metadata: session.metadata });
+				return sendJson(res, 201, { sessionId: session.metadata.sessionId, metadata: session.metadata, created: true });
 			}
 
 			const sessionPath = getSessionIdFromRequestPath(requestUrl.pathname);
@@ -468,7 +453,7 @@ export function createWebUiServer(runtime: WebUiServerRuntime, routeRegistration
 				}
 			}
 			if (sessionPath && req.method === "POST" && sessionPath.suffix === "/message") {
-				const body = await readBody(req);
+				const body = await readBody(req) as unknown as Partial<SessionMessageRequest>;
 				const text = String(body.text || "");
 				const modelRef = String(body.modelRef || defaultModelRef);
 				if (!text) return sendJson(res, 400, { error: "text is required" });
