@@ -6,6 +6,9 @@ import { isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 
 type HandoffMode = "default" | "plan";
+type NewSessionOptions = NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>;
+type NewSessionWithSession = NonNullable<NewSessionOptions["withSession"]>;
+type ReplacementContext = Parameters<NewSessionWithSession>[0];
 
 function getBranchMessages(ctx: ExtensionContext) {
 	return ctx.sessionManager.getBranch()
@@ -47,23 +50,6 @@ function buildFinalPrompt(goal: string, generated: string, parentSession: string
 	].filter(Boolean).join("\n\n");
 }
 
-async function switchToNewSession(ctx: ExtensionContext): Promise<boolean> {
-	const parentSession = ctx.sessionManager.getSessionFile();
-	const officialNewSession = (ctx as unknown as {
-		newSession?: (input: { parentSession?: string }) => Promise<{ cancelled?: boolean }>;
-	}).newSession;
-	if (typeof officialNewSession === "function") {
-		const result = await officialNewSession.call(ctx, { parentSession });
-		return !result?.cancelled;
-	}
-
-	const legacyNewSession = (ctx.sessionManager as unknown as {
-		newSession?: (input: { parentSession?: string }) => unknown;
-	}).newSession;
-	if (typeof legacyNewSession !== "function") return false;
-	legacyNewSession.call(ctx.sessionManager, { parentSession });
-	return true;
-}
 
 export default function (pi: ExtensionAPI) {
 	let subagentCore: SubagentCoreAPI | null = null;
@@ -107,28 +93,41 @@ export default function (pi: ExtensionAPI) {
 		const draft = buildFinalPrompt(goal, generated.output, parentSession);
 		const edited = await ctx.ui.editor("Edit handoff prompt", draft);
 		if (edited === undefined) return;
-		const result = await ctx.newSession({ parentSession });
+		const result = await ctx.newSession({
+			parentSession,
+			withSession: async (newCtx: ReplacementContext) => {
+				newCtx.ui.setEditorText(edited);
+				newCtx.ui.notify(
+					mode === "plan"
+						? "Handoff ready. Run /plan if needed, then submit when ready."
+						: "Handoff ready. Submit when ready.",
+					"info",
+				);
+			},
+		});
 		if (result.cancelled) return;
-		if (mode === "plan") pi.events.emit("magpie:handoff:set-mode", { mode: "plan" });
-		else pi.events.emit("magpie:handoff:set-mode", { mode: "default" });
-		ctx.ui.setEditorText(edited);
-		ctx.ui.notify("Handoff ready. Submit when ready.", "info");
 	};
 
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!pendingToolHandoff) return;
 		const pending = pendingToolHandoff;
 		pendingToolHandoff = null;
-		const switched = await switchToNewSession(ctx);
-		if (!switched) {
+		const parentSession = ctx.sessionManager.getSessionFile();
+		const newSession = (ctx as unknown as ExtensionCommandContext).newSession;
+		if (typeof newSession !== "function") {
 			ctx.ui.notify("Automatic handoff session switch unavailable.", "warning");
 			return;
 		}
 		handoffTimestamp = Date.now();
-		setTimeout(() => {
-			pi.events.emit("magpie:handoff:set-mode", { mode: pending.mode });
-			pi.sendUserMessage(pending.prompt);
-		}, 0);
+		await newSession.call(ctx, {
+			parentSession,
+			withSession: async (newCtx: ReplacementContext) => {
+				if (pending.mode === "plan") {
+					newCtx.ui.notify("Handoff requested plan mode; run /plan in the new session if needed.", "info");
+				}
+				await newCtx.sendUserMessage(pending.prompt);
+			},
+		});
 	});
 
 	pi.on("context", (event) => {
