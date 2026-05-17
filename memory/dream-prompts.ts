@@ -134,7 +134,7 @@ export function buildDreamOrchestratorPrompt(input: {
 		"Tell phase 2 to move processed inbox items itself using shell/file tools.",
 		"Handoff is file-based. Verify the required artifact exists and is non-empty before moving on.",
 		"If a phase fails, retry that phase up to 3 total attempts with a short corrective task. Fail loudly if the third attempt still fails.",
-		"Do not use search_subagent, oracle_subagent, or librarian_subagent. They are not available here.",
+		"Use memory_subagent for phase delegation; do not delegate the phase work through unrelated tools.",
 		"Do not require JSON or structured outputs from the phase agents. All artifacts must be freeform markdown.",
 		"For phase 3, if the artifact includes concrete calendar events to create now, create them yourself with calendar_create_event, then update the digest file so it mentions what was created or what failed.",
 		"If calendar creation fails for any event, preserve that failure in the digest and review note when appropriate.",

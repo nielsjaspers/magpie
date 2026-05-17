@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
-import { getGlobalConfigPath, getMode, getProjectConfigPath, loadConfig } from "../config/config.js";
+import { getConfiguredModeNames, getGlobalConfigPath, getMode, getProjectConfigPath, loadConfig } from "../config/config.js";
 import type { MagpieConfig, ResolvedMode } from "../config/types.js";
 import { MODE_STATE_TYPE, normalizeMagpieModeName } from "../pa/shared/mode.js";
 
@@ -16,10 +16,35 @@ const DEFAULT_TOOLS = [
 	"session_query",
 	"commit",
 	"btw",
-	"web_search",
 	"web_fetch",
 	"handoff",
 ];
+
+const OFF_BY_DEFAULT_TOOLS = new Set([
+	"web_search",
+	"save_preference",
+	"recall_preferences",
+	"remember",
+	"read_memory",
+	"write_memory",
+	"memory_subagent",
+	"recall_memory",
+	"dream",
+	"remote_send",
+	"remote_status",
+	"schedule",
+	"calendar_list_calendars",
+	"calendar_upcoming",
+	"calendar_get_event",
+	"calendar_create_event",
+	"email_search",
+	"email_list_unread",
+	"email_fetch",
+	"email_threads",
+	"email_conversation_history",
+	"email_draft_context",
+	"email_save_draft",
+]);
 
 function defaultConfigText() {
 	return JSON.stringify(DEFAULT_CONFIG, null, 2);
@@ -99,7 +124,7 @@ export default function (pi: ExtensionAPI) {
 			await reload(ctx);
 			const raw = args?.trim();
 			if (!raw) {
-				const modes = ["default", ...Object.keys(currentConfig.modes ?? {}).sort()].join(", ");
+				const modes = ["default", ...getConfiguredModeNames(currentConfig).sort()].join(", ");
 				ctx.ui.notify(`Current mode: ${activeMode}\nAvailable: ${modes}`, "info");
 				return;
 			}
@@ -157,7 +182,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		await reload(ctx);
-		baseTools = pi.getActiveTools().filter((name) => !["plan_subagent", "user_question", "plan_exit", "search_subagent", "oracle_subagent", "librarian_subagent"].includes(name));
+		baseTools = pi.getActiveTools().filter((name) => !OFF_BY_DEFAULT_TOOLS.has(name));
 		await setMode(ctx, "default", { notify: false });
 	});
 

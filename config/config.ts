@@ -164,13 +164,26 @@ function normalizeModeConfig(name: string, mode: ModeConfig | undefined): Resolv
 	return { name, ...mode };
 }
 
+function isCurrentModeConfig(mode: unknown): mode is ModeConfig {
+	if (!isObject(mode)) return false;
+	const legacyKeys = ["model", "thinkingLevel", "prompt", "disableTools", "planBehavior", "subagents"];
+	return !legacyKeys.some((key) => key in mode);
+}
+
+export function getConfiguredModeNames(config: MagpieConfig): string[] {
+	return Object.entries(config.modes ?? {})
+		.filter(([, mode]) => isCurrentModeConfig(mode))
+		.map(([name]) => name);
+}
+
 export function getMode(config: MagpieConfig, name: string): ResolvedMode | undefined {
 	const normalized = name.trim().toLowerCase();
 	if (normalized === "default" || normalized === "off" || normalized === "build") return { name: "default" };
 	const builtIn = BUILT_IN_MODES[normalized];
 	const user = config.modes?.[normalized];
-	if (!builtIn && !user) return undefined;
-	return normalizeModeConfig(normalized, deepMerge(builtIn ?? {}, user ?? {}));
+	const currentUser = isCurrentModeConfig(user) ? user : undefined;
+	if (!builtIn && !currentUser) return undefined;
+	return normalizeModeConfig(normalized, deepMerge(builtIn ?? {}, currentUser ?? {}));
 }
 
 export function resolveSubagentModelRef(ref: WorkerModelRef | undefined): ResolvedSubagentModel | undefined {
