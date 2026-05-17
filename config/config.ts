@@ -16,7 +16,7 @@ import type {
 	RemoteConfig,
 	WebUiConfig,
 	ResolvedSubagentModel,
-	SubagentModelRef,
+	WorkerModelRef,
 } from "./types.js";
 import type { SubagentRole } from "../subagents/types.js";
 
@@ -121,39 +121,15 @@ async function loadLegacyConfig(cwd: string): Promise<Partial<MagpieConfig>> {
 	let config: Partial<MagpieConfig> = {};
 	for (const paths of scopePairs) {
 		const modesJson = existsSync(paths.modes) ? await readJson(paths.modes) : undefined;
-		if (modesJson) {
-			config = deepMerge(config, {
-				aliases: modesJson.aliases,
-				modes: modesJson.modes,
-			});
-		}
-		const planJson = existsSync(paths.plan) ? await readJson(paths.plan) : undefined;
-		if (planJson?.subagentModels) {
-			config = deepMerge(config, {
-				subagents: {
-					default: planJson.subagentModels.default,
-					plan: {
-						explore: planJson.subagentModels.explore,
-						design: planJson.subagentModels.design,
-						risk: planJson.subagentModels.risk,
-						custom: planJson.subagentModels.custom,
-					},
-				},
-			});
+		if (modesJson?.modes) {
+			config = deepMerge(config, { modes: modesJson.modes });
 		}
 		const handoffJson = existsSync(paths.handoff) ? await readJson(paths.handoff) : undefined;
 		if (handoffJson) {
-			config = deepMerge(config, {
-				subagents: {
-					handoff: handoffJson.model,
-				},
-			});
+			config = deepMerge(config, { handoff: { model: handoffJson.model } });
 			if (handoffJson.modeModels?.plan) {
 				config = deepMerge(config, {
-					subagents: {
-						handoff: handoffJson.modeModels.plan,
-					},
-					handoff: { defaultMode: "plan" },
+					handoff: { defaultMode: "plan", model: handoffJson.modeModels.plan },
 				});
 			}
 		}
@@ -185,28 +161,19 @@ export async function loadAuthConfig(cwd: string): Promise<MagpieAuthConfig> {
 
 function normalizeModeConfig(name: string, mode: ModeConfig | undefined): ResolvedMode | undefined {
 	if (!mode) return undefined;
-	return {
-		name,
-		...mode,
-		statusLabel: mode.statusLabel ?? name,
-		planBehavior: mode.planBehavior ?? "none",
-	};
+	return { name, ...mode };
 }
 
 export function getMode(config: MagpieConfig, name: string): ResolvedMode | undefined {
 	const normalized = name.trim().toLowerCase();
-	const alias = config.aliases?.[normalized];
-	const resolved = alias ?? normalized;
-	if (resolved === "default" || resolved === "off" || resolved === "build") {
-		return normalizeModeConfig("smart", deepMerge(BUILT_IN_MODES.smart, config.modes.smart));
-	}
-	const builtIn = BUILT_IN_MODES[resolved];
-	const user = config.modes[resolved];
+	if (normalized === "default" || normalized === "off" || normalized === "build") return { name: "default" };
+	const builtIn = BUILT_IN_MODES[normalized];
+	const user = config.modes?.[normalized];
 	if (!builtIn && !user) return undefined;
-	return normalizeModeConfig(resolved, deepMerge(builtIn ?? {}, user ?? {}));
+	return normalizeModeConfig(normalized, deepMerge(builtIn ?? {}, user ?? {}));
 }
 
-export function resolveSubagentModelRef(ref: SubagentModelRef | undefined): ResolvedSubagentModel | undefined {
+export function resolveSubagentModelRef(ref: WorkerModelRef | undefined): ResolvedSubagentModel | undefined {
 	if (!ref) return undefined;
 	if (typeof ref === "string") return { model: ref };
 	return { model: ref.model, thinkingLevel: ref.thinkingLevel, prompt: ref.prompt };
@@ -228,9 +195,8 @@ export function getResearchResolverSubagent(config: MagpieConfig): ResolvedSubag
 	return resolveSubagentModelRef(config.research?.resolverSubagent);
 }
 
-export function getStartupMode(config: MagpieConfig): string {
-	const configured = config.startupMode?.trim();
-	return configured ? configured : "smart";
+export function getStartupMode(_config: MagpieConfig): string {
+	return "default";
 }
 
 export function getPersonalAssistantConfig(config: MagpieConfig): PersonalAssistantConfig | undefined {
@@ -271,20 +237,16 @@ export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined
 export function resolveSubagentModel(
 	config: MagpieConfig,
 	role: SubagentRole,
-	planSubRole?: "explore" | "design" | "risk" | "custom",
-	activeMode?: string,
+	_planSubRole?: "explore" | "design" | "risk" | "custom",
+	_activeMode?: string,
 ): ResolvedSubagentModel | undefined {
-	const modeOverride = activeMode ? getMode(config, activeMode)?.subagents : undefined;
-	if (role === "plan") {
-		return resolveSubagentModelRef(
-			(planSubRole ? config.subagents.plan?.[planSubRole] : undefined) ?? config.subagents.default,
-		);
-	}
-	if (role === "search" || role === "oracle" || role === "librarian" || role === "commit") {
-		const modeRoleOverride = role === "commit" ? modeOverride?.commit : modeOverride?.[role];
-		return resolveSubagentModelRef(modeRoleOverride ?? config.subagents[role] ?? config.subagents.default);
-	}
-	return resolveSubagentModelRef(config.subagents[role] ?? config.subagents.default);
+	if (role === "handoff") return resolveSubagentModelRef(config.handoff?.model);
+	if (role === "session") return resolveSubagentModelRef(config.sessions?.model);
+	if (role === "commit") return resolveSubagentModelRef(config.commit?.model);
+	if (role === "memory") return resolveSubagentModelRef(config.memory?.model);
+	if (role === "schedule") return resolveSubagentModelRef(config.schedule?.model);
+	if (role === "custom") return resolveSubagentModelRef(config.btw?.model ?? config.delegate);
+	return resolveSubagentModelRef(config.delegate);
 }
 
 export async function resolvePromptText(

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { convertToLlm, getMarkdownTheme, serializeConversation } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import { loadConfig, getMode } from "../config/config.js";
+import { loadConfig, resolveSubagentModelRef } from "../config/config.js";
 import type { SubagentCoreAPI, SubagentResult } from "../subagents/types.js";
 
 const BTW_MESSAGE_TYPE = "magpie:btw-result";
@@ -74,7 +74,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const config = await loadConfig(ctx.cwd);
-			const selectedMode = getMode(config, mode ?? "rush") ?? getMode(config, "rush");
+			const btwModel = resolveSubagentModelRef(config.btw?.model);
 			const branch = ctx.sessionManager.getBranch();
 			const messages = branch
 				.filter((entry): entry is SessionEntry & { type: "message" } => entry.type === "message")
@@ -95,16 +95,16 @@ export default function (pi: ExtensionAPI) {
 					task: taskWithContext,
 					context: [
 						"You are running as a background /btw subagent.",
-						selectedMode ? `Selected btw mode: ${selectedMode.name}.` : "Selected btw mode: rush.",
+						mode ? `Requested mode label: ${mode}.` : undefined,
 						"Do not hand off or spawn further subagents.",
-					].join("\n"),
-					model: model ?? selectedMode?.model,
-					thinkingLevel: selectedMode?.thinkingLevel,
+					].filter(Boolean).join("\n"),
+					model: model ?? btwModel?.model,
+					thinkingLevel: btwModel?.thinkingLevel,
 					tools: "full",
 				},
 				undefined,
 				(progress) => {
-					ctx.ui.setWidget(widgetKey, renderProgress(task, { spec: { role: "custom", label: "btw", task }, output: progress.partialOutput, displayItems: progress.toolCalls.map((call) => ({ type: "toolCall" as const, name: call.name, args: call.args })), exitCode: -1, usage: progress.usage, model: model ?? selectedMode?.model ?? "", stopReason: undefined }), { placement: "aboveEditor" });
+					ctx.ui.setWidget(widgetKey, renderProgress(task, { spec: { role: "custom", label: "btw", task }, output: progress.partialOutput, displayItems: progress.toolCalls.map((call) => ({ type: "toolCall" as const, name: call.name, args: call.args })), exitCode: -1, usage: progress.usage, model: model ?? btwModel?.model ?? "", stopReason: undefined }), { placement: "aboveEditor" });
 				},
 			)
 				.then((result) => {

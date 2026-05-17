@@ -71,18 +71,14 @@ export async function resolveScheduleRuntimeOptions(
 	const cwd = resolve(input.cwd?.trim() || ctx.cwd);
 	const [config, auth] = await Promise.all([loadConfig(cwd), loadAuthConfig(cwd)]);
 	const modeName = input.mode?.trim() || getActiveModeName(ctx, config);
-	const mode = getMode(config, modeName) ?? getMode(config, "smart");
-	const baseDir = getConfigBaseDir(getActiveConfigScope(cwd), cwd);
-	const modePromptText = mode?.prompt ? await resolvePromptText(baseDir, mode.prompt) : undefined;
-	const promptParts = [modePromptText?.trim(), SCHEDULE_BACKGROUND_PROMPT].filter(Boolean) as string[];
+	const mode = getMode(config, modeName) ?? getMode(config, "default");
 	return {
 		cwd,
 		mode: mode?.name ?? modeName,
-		model: input.model ?? mode?.model,
-		thinkingLevel: mode?.thinkingLevel,
-		systemPrompt: promptParts.length === 0 ? undefined : {
-			strategy: mode?.prompt?.strategy ?? "append",
-			text: promptParts.join("\n\n"),
+		model: input.model,
+		systemPrompt: {
+			strategy: "append",
+			text: SCHEDULE_BACKGROUND_PROMPT,
 		},
 		notifier: resolveScheduleNotifier(config, auth, input.notify !== false, input.preferredNotifier),
 		sessionRootDir: resolve(store.baseDir, "sessions", id),

@@ -38,7 +38,8 @@
       "pa/calendar/index.ts",
       "pa/mail/index.ts"
     ],
-    "prompts": ["prompts"]
+    "prompts": ["prompts"],
+    "skills": ["skills"]
   },
   "dependencies": {
     "chrono-node": "^2.9.0",

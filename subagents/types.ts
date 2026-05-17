@@ -1,4 +1,5 @@
 export type SubagentRole =
+	| "delegate"
 	| "search"
 	| "oracle"
 	| "librarian"
@@ -9,6 +10,7 @@ export type SubagentRole =
 	| "titling"
 	| "lookAt"
 	| "commit"
+	| "schedule"
 	| "custom";
 
 export interface SubagentSpec {

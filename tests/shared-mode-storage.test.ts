@@ -18,14 +18,13 @@ describe("shared mode, storage, and subagent headers", () => {
 	test("normalizes and resolves active modes and disabled tools", () => {
 		const config = {
 			...DEFAULT_CONFIG,
-			startupMode: "smart",
 			modes: {
 				...DEFAULT_CONFIG.modes,
-				quiet: { disableTools: ["web_search"] },
+				quiet: { hideTools: ["web_search"] },
 			},
 		};
 
-		expect(normalizeMagpieModeName(" default ")).toBe("smart");
+		expect(normalizeMagpieModeName(" default ")).toBe("default");
 		expect(getActiveModeName(context("quiet"), config)).toBe("quiet");
 		expect(getActiveModeConfig(context("quiet"), config)).toMatchObject({ name: "quiet" });
 		expect(isToolDisabledInMode(config, "quiet", "web_search")).toBe(true);

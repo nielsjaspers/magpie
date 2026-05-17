@@ -99,7 +99,7 @@ export async function handleScheduleCommand(
 		return;
 	}
 	const config = await loadConfig(ctx.cwd);
-	const scheduleModel = resolveSubagentModelRef(config.subagents.schedule);
+	const scheduleModel = resolveSubagentModelRef(config.schedule?.model);
 	const widgetKey = `magpie-schedule-${Date.now()}`;
 	ctx.ui.setWidget(widgetKey, ["⏳ schedule: interpreting request"], { placement: "aboveEditor" });
 	void subagentCore.runSubagent(ctx, config, {

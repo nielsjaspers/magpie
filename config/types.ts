@@ -1,6 +1,5 @@
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type PromptStrategy = "append" | "replace";
-export type PlanBehavior = "none" | "enter-plan";
 export type HandoffDefaultMode = "default" | "plan";
 
 export interface PromptConfig {
@@ -9,33 +8,25 @@ export interface PromptConfig {
 	file?: string;
 }
 
-export type SubagentModelRef = string | {
-	model: string;
-	thinkingLevel?: ThinkingLevel;
-	prompt?: PromptConfig;
-};
-
-export type ModePromptConfig = PromptConfig;
-
-export interface ModeConfig {
-	statusLabel?: string;
+export interface WorkerModelConfig {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	prompt?: PromptConfig;
+}
+
+export type WorkerModelRef = string | WorkerModelConfig;
+export type SubagentModelRef = WorkerModelRef;
+
+export interface ModeConfig {
+	skills?: string[];
 	tools?: string[];
-	disableTools?: string[];
-	prompt?: ModePromptConfig;
-	planBehavior?: PlanBehavior;
-	subagents?: {
-		search?: SubagentModelRef;
-		oracle?: SubagentModelRef;
-		librarian?: SubagentModelRef;
-		commit?: SubagentModelRef;
-	};
+	hideTools?: string[];
+	statusLabel?: string;
 }
 
 export interface ResearchConfig {
 	papersDir?: string;
-	resolverSubagent?: SubagentModelRef;
+	resolverSubagent?: WorkerModelRef;
 }
 
 export interface PersonalAssistantConfig {
@@ -92,6 +83,7 @@ export interface ScheduleConfig {
 		botToken?: string;
 		chatId?: string;
 	};
+	model?: WorkerModelRef;
 }
 
 export interface PreferencesConfig {
@@ -107,6 +99,7 @@ export interface MemoryConfig {
 		enabled?: boolean;
 		schedule?: string;
 	};
+	model?: WorkerModelRef;
 }
 
 export interface ProviderAuthConfig {
@@ -144,43 +137,30 @@ export interface MagpieAuthConfig {
 }
 
 export interface MagpieConfig {
-	startupMode?: string;
-	modes: Record<string, ModeConfig | undefined>;
-	aliases?: Record<string, string>;
-	subagents: {
-		default?: SubagentModelRef;
-		search?: SubagentModelRef;
-		oracle?: SubagentModelRef;
-		librarian?: SubagentModelRef;
-		plan?: {
-			explore?: SubagentModelRef;
-			design?: SubagentModelRef;
-			risk?: SubagentModelRef;
-			custom?: SubagentModelRef;
-		};
-		handoff?: SubagentModelRef;
-		session?: SubagentModelRef;
-		memory?: SubagentModelRef;
-		titling?: SubagentModelRef;
-		lookAt?: SubagentModelRef;
-		commit?: SubagentModelRef;
-		schedule?: SubagentModelRef;
-		custom?: SubagentModelRef;
-	};
+	modes?: Record<string, ModeConfig | undefined>;
+	delegate?: WorkerModelRef;
 	handoff?: {
 		defaultMode?: HandoffDefaultMode;
+		model?: WorkerModelRef;
 	};
 	sessions?: {
 		autoIndex?: boolean;
 		maxIndexEntries?: number;
+		model?: WorkerModelRef;
 	};
-	preferences?: PreferencesConfig;
-	memory?: MemoryConfig;
+	commit?: {
+		model?: WorkerModelRef;
+	};
+	btw?: {
+		model?: WorkerModelRef;
+	};
 	web?: {
 		searchModel?: string;
 		searchTimeout?: number;
 		fetchTimeout?: number;
 	};
+	preferences?: PreferencesConfig;
+	memory?: MemoryConfig;
 	research?: ResearchConfig;
 	personalAssistant?: PersonalAssistantConfig;
 	telegram?: TelegramConfig;
@@ -190,13 +170,12 @@ export interface MagpieConfig {
 }
 
 export interface ResolvedSubagentModel {
-	model: string;
+	model?: string;
 	thinkingLevel?: ThinkingLevel;
 	prompt?: PromptConfig;
 }
 
 export interface ResolvedMode extends ModeConfig {
 	name: string;
-	statusLabel: string;
-	planBehavior: PlanBehavior;
+	statusLabel?: string;
 }

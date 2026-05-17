@@ -41,29 +41,27 @@ describe("config loading and resolution", () => {
 
 	test("deep-merges default, global, and project config while migrating legacy memory prefs", async () => {
 		await writeFile(resolve(globalDir, "magpie.json"), JSON.stringify({
-			startupMode: "rush",
 			memory: { enabled: true, rootDir: "~/mem" },
-			modes: { custom: { prompt: { text: "global" }, model: "provider/global" } },
+			modes: { custom: { skills: ["global"], tools: ["one"] } },
 		}), "utf8");
 		await writeFile(resolve(projectDir, ".pi/magpie.json"), JSON.stringify({
-			aliases: { c: "custom" },
 			memory: { maxRetrieved: 7 },
-			modes: { custom: { model: "provider/project", disableTools: ["web_search"] } },
+			modes: { custom: { tools: ["two"], hideTools: ["web_search"] } },
 		}), "utf8");
 
 		const config = await loadConfig(projectDir);
 
-		expect(config.startupMode).toBe("rush");
 		expect(config.preferences?.enabled).toBe(true);
 		expect(config.preferences?.maxRetrieved).toBe(7);
 		expect(config.memory?.rootDir).toBe("~/mem");
-		expect(getMode(config, "c")).toMatchObject({
+		expect(getMode(config, "custom")).toMatchObject({
 			name: "custom",
-			model: "provider/project",
-			statusLabel: "custom",
-			planBehavior: "none",
-			disableTools: ["web_search"],
+			skills: ["global"],
+			tools: ["two"],
+			hideTools: ["web_search"],
 		});
+		expect(getMode(config, "default")).toEqual({ name: "default" });
+		expect(getMode(config, "plan")?.statusLabel).toBe("plan");
 	});
 
 	test("merges auth config with project overriding global", async () => {
@@ -71,12 +69,9 @@ describe("config loading and resolution", () => {
 			telegram: { botToken: "global-token" },
 			remote: { hosts: { home: { deviceToken: "global-device" } } },
 		}), "utf8");
-		await writeFile(resolve(projectDir, ".pi/magpie.auth.json"), JSON.stringify({
-			telegram: { botToken: "project-token" },
-		}), "utf8");
+		await writeFile(resolve(projectDir, ".pi/magpie.auth.json"), JSON.stringify({ telegram: { botToken: "project-token" } }), "utf8");
 
 		const auth = await loadAuthConfig(projectDir);
-
 		expect(auth.telegram?.botToken).toBe("project-token");
 		expect(auth.remote?.hosts?.home?.deviceToken).toBe("global-device");
 	});
@@ -84,25 +79,16 @@ describe("config loading and resolution", () => {
 	test("fails loudly for invalid config or auth JSON instead of falling back to defaults", async () => {
 		await writeFile(resolve(projectDir, ".pi/magpie.json"), "{ invalid", "utf8");
 		await expect(loadConfig(projectDir)).rejects.toBeInstanceOf(MagpieConfigParseError);
-
 		await writeFile(resolve(projectDir, ".pi/magpie.json"), "{}", "utf8");
 		await writeFile(resolve(projectDir, ".pi/magpie.auth.json"), "{ invalid", "utf8");
 		await expect(loadAuthConfig(projectDir)).rejects.toBeInstanceOf(MagpieConfigParseError);
 	});
 
-	test("resolves modes, subagent models, prompt files, and model refs", async () => {
+	test("resolves worker models, prompt files, and model refs", async () => {
 		const promptFile = resolve(projectDir, "prompt.md");
 		await writeFile(promptFile, "from file\n", "utf8");
 		await writeFile(resolve(projectDir, ".pi/magpie.json"), JSON.stringify({
-			subagents: {
-				default: "provider/default",
-				commit: { model: "provider/commit", thinkingLevel: "low", prompt: { file: "../prompt.md", text: "inline", strategy: "replace" } },
-			},
-			modes: {
-				review: {
-					subagents: { commit: "provider/mode-commit" },
-				},
-			},
+			commit: { model: { model: "provider/commit", thinkingLevel: "low", prompt: { file: "../prompt.md", text: "inline", strategy: "replace" } } },
 		}), "utf8");
 		const config = await loadConfig(projectDir);
 
@@ -110,7 +96,7 @@ describe("config loading and resolution", () => {
 		expect(getActiveConfigScope(projectDir)).toBe("project");
 		expect(getConfigBaseDir("project", projectDir)).toBe(resolve(projectDir, ".pi"));
 		expect(resolveSubagentModelRef({ model: "provider/x", thinkingLevel: "high" })).toEqual({ model: "provider/x", thinkingLevel: "high", prompt: undefined });
-		expect(resolveSubagentModel(config, "commit", undefined, "review")).toEqual({ model: "provider/mode-commit" });
+		expect(resolveSubagentModel(config, "commit")).toEqual({ model: "provider/commit", thinkingLevel: "low", prompt: { file: "../prompt.md", text: "inline", strategy: "replace" } });
 		expect(await resolvePromptText(projectDir, { file: "prompt.md", text: "inline" })).toBe("from file\n\ninline");
 		expect(await resolveSubagentPrompt(config, projectDir, "commit")).toEqual({ strategy: "replace", text: "from file\n\ninline" });
 		expect(resolveModel({ modelRegistry: { find: (provider: string, model: string) => `${provider}:${model}` } } as any, "opencode/gpt-5-nano")).toBe("opencode:gpt-5-nano");

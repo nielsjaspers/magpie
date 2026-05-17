@@ -6,8 +6,8 @@ export const MODE_STATE_TYPE = "magpie:mode-state";
 
 export function normalizeMagpieModeName(input: string): string {
 	const normalized = input.trim().toLowerCase();
-	if (normalized === "default" || normalized === "off" || normalized === "build") return "smart";
-	return normalized;
+	if (normalized === "off" || normalized === "build") return "default";
+	return normalized || "default";
 }
 
 export function getActiveModeName(ctx: ExtensionContext, config: MagpieConfig): string {
@@ -19,12 +19,12 @@ export function getActiveModeName(ctx: ExtensionContext, config: MagpieConfig): 
 }
 
 export function getActiveModeConfig(ctx: ExtensionContext, config: MagpieConfig) {
-	return getMode(config, getActiveModeName(ctx, config)) ?? getMode(config, getStartupMode(config)) ?? getMode(config, "smart");
+	return getMode(config, getActiveModeName(ctx, config)) ?? getMode(config, "default");
 }
 
 export function isToolDisabledInMode(config: MagpieConfig, modeName: string, toolName: string): boolean {
 	const mode = getMode(config, modeName);
-	return mode?.disableTools?.includes(toolName) === true;
+	return mode?.hideTools?.includes(toolName) === true;
 }
 
 export function isToolDisabledInActiveMode(ctx: ExtensionContext, config: MagpieConfig, toolName: string): boolean {
