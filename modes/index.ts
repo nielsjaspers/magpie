@@ -4,9 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
-import { getConfiguredModeNames, getGlobalConfigPath, getMode, getProjectConfigPath, loadConfig } from "../config/config.js";
+import { getConfiguredModeNames, getGlobalConfigPath, getMode, getProjectConfigPath, loadConfig, normalizeModeName as normalizeMagpieModeName } from "../config/config.js";
 import type { MagpieConfig, ResolvedMode } from "../config/types.js";
-import { MODE_STATE_TYPE, normalizeMagpieModeName } from "../pa/shared/mode.js";
+
+const MODE_STATE_TYPE = "magpie:mode-state";
 
 const STATUS_KEY = "magpie-mode";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,6 +53,16 @@ function defaultConfigText() {
 
 function normalizeModeName(input: string): string {
 	return normalizeMagpieModeName(input);
+}
+
+function stripToolPromptEntries(systemPrompt: string, hiddenTools: Set<string>): string {
+	return systemPrompt
+		.split("\n")
+		.filter((line) => {
+			const toolLine = line.match(/^(-\s+)([a-zA-Z0-9_]+)(?::|$)/);
+			return !toolLine || !hiddenTools.has(toolLine[2]);
+		})
+		.join("\n");
 }
 
 async function readSkill(name: string, cwd: string): Promise<string | undefined> {
@@ -106,15 +117,15 @@ export default function (pi: ExtensionAPI) {
 	const setMode = async (ctx: ExtensionContext, rawMode: string, options?: { persist?: boolean; notify?: boolean }): Promise<boolean> => {
 		const normalized = normalizeModeName(rawMode);
 		const mode = getMode(currentConfig, normalized);
-		if (!mode) {
+		if (normalized !== "default" && !mode) {
 			ctx.ui.notify(`Unknown mode: ${rawMode}`, "error");
 			return false;
 		}
-		activeMode = mode.name;
+		activeMode = normalized;
 		applyTools(mode);
 		updateStatus(ctx);
 		if (options?.persist !== false) persistMode();
-		if (options?.notify !== false) ctx.ui.notify(`Mode switched to ${mode.name}`, "info");
+		if (options?.notify !== false) ctx.ui.notify(`Mode switched to ${normalized}`, "info");
 		return true;
 	};
 
@@ -164,9 +175,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const mode = getMode(currentConfig, activeMode);
+		applyTools(mode);
+		const activeTools = new Set(pi.getActiveTools());
+		const hiddenTools = new Set(pi.getAllTools().map((tool) => tool.name).filter((name) => !activeTools.has(name)));
 		const skillPrompt = await resolveSkillPrompt(mode, ctx.cwd);
+		const systemPrompt = stripToolPromptEntries(event.systemPrompt, hiddenTools);
 		return {
-			systemPrompt: skillPrompt ? `${event.systemPrompt}\n\n${skillPrompt}` : event.systemPrompt,
+			systemPrompt: skillPrompt ? `${systemPrompt}\n\n${skillPrompt}` : systemPrompt,
 			message: {
 				customType: "magpie:mode-context",
 				content: `[MODE: ${mode?.name ?? activeMode}]`,

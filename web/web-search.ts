@@ -22,7 +22,12 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			onUpdate?.({ content: [{ type: "text", text: `Searching web for: ${params.query}...` }], details: { query: params.query } });
 			const config = await loadConfig(ctx.cwd);
-			const command = buildWebSearchCommand(params.query, config.web?.searchModel ?? "opencode-go/mimo-v2-pro");
+			const currentModel = (ctx.model as any)?.provider && (ctx.model as any)?.id ? `${(ctx.model as any).provider}/${(ctx.model as any).id}` : undefined;
+			const model = config.web?.searchModel ?? currentModel;
+			if (!model) {
+				return { content: [{ type: "text", text: "Web search needs config.web.searchModel or an active session model." }], details: {}, isError: true };
+			}
+			const command = buildWebSearchCommand(params.query, model);
 			const result = await pi.exec(
 				command.command,
 				command.args,

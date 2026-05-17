@@ -6,21 +6,15 @@ import type { SubagentCoreAPI, SubagentResult } from "../subagents/types.js";
 
 const BTW_MESSAGE_TYPE = "magpie:btw-result";
 
-function parseFlags(input: string): { task: string; mode?: string; model?: string } {
+function parseFlags(input: string): { task: string; model?: string } {
 	let remaining = input;
-	let mode: string | undefined;
 	let model: string | undefined;
-	const modeMatch = remaining.match(/(?:^|\s)-{1,2}mode\s+(\S+)/);
-	if (modeMatch) {
-		mode = modeMatch[1];
-		remaining = remaining.replace(modeMatch[0], " ");
-	}
 	const modelMatch = remaining.match(/(?:^|\s)-{1,2}model\s+(\S+)/);
 	if (modelMatch) {
 		model = modelMatch[1];
 		remaining = remaining.replace(modelMatch[0], " ");
 	}
-	return { task: remaining.trim(), mode, model };
+	return { task: remaining.trim(), model };
 }
 
 function renderProgress(task: string, result: SubagentResult): string[] {
@@ -62,15 +56,15 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("btw", {
-		description: "Run a single background subagent (-mode <name>, -model <provider/modelId>; defaults to rush)",
+		description: "Run a single background subagent (-model <provider/modelId>)",
 		handler: async (args, ctx) => {
 			if (!subagentCore) {
 				ctx.ui.notify("Subagent core unavailable.", "error");
 				return;
 			}
-			const { task, mode, model } = parseFlags(args ?? "");
+			const { task, model } = parseFlags(args ?? "");
 			if (!task) {
-				ctx.ui.notify("Usage: /btw [-mode <name>] [-model <provider/modelId>] <prompt>", "error");
+				ctx.ui.notify("Usage: /btw [-model <provider/modelId>] <prompt>", "error");
 				return;
 			}
 			const config = await loadConfig(ctx.cwd);
@@ -95,7 +89,6 @@ export default function (pi: ExtensionAPI) {
 					task: taskWithContext,
 					context: [
 						"You are running as a background /btw subagent.",
-						mode ? `Requested mode label: ${mode}.` : undefined,
 						"Do not hand off or spawn further subagents.",
 					].filter(Boolean).join("\n"),
 					model: model ?? btwModel?.model,

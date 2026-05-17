@@ -4,14 +4,22 @@
       "statusLabel": "plan",
       "skills": ["planning"]
     },
-    "review": {
-      "statusLabel": "review",
-      "skills": ["code-review"],
-      "tools": ["grep", "find"],
-      "hideTools": ["bash"]
+    "pa": {
+      "statusLabel": "pa",
+      "tools": [
+        "calendar_upcoming",
+        "calendar_get_event",
+        "calendar_create_event",
+        "email_search",
+        "email_list_unread",
+        "email_fetch",
+        "email_save_draft"
+      ],
+      "hideTools": ["edit", "write"]
     }
   },
   "delegate": {
+    "model": "provider/model-id",
     "thinkingLevel": "medium"
   },
   "handoff": {
@@ -21,8 +29,31 @@
     "autoIndex": true,
     "maxIndexEntries": 500
   },
+  "commit": {},
+  "btw": {},
   "web": {
     "searchTimeout": 120000,
     "fetchTimeout": 30000
+  },
+  "preferences": {
+    "enabled": true
+  },
+  "memory": {
+    "rootDir": "~/.pi/agent/memory",
+    "autodream": {
+      "enabled": false
+    }
+  },
+  "personalAssistant": {
+    "timezone": "Europe/Amsterdam",
+    "storageDir": "~/.pi/agent/personal-assistant"
+  },
+  "schedule": {
+    "notifier": "macos"
+  },
+  "webui": {
+    "enabled": false,
+    "port": 8765,
+    "bind": "localhost"
   }
 }

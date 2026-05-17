@@ -24,11 +24,6 @@ export interface ModeConfig {
 	statusLabel?: string;
 }
 
-export interface ResearchConfig {
-	papersDir?: string;
-	resolverSubagent?: WorkerModelRef;
-}
-
 export interface PersonalAssistantConfig {
 	timezone?: string;
 	storageDir?: string;
@@ -127,8 +122,6 @@ export interface PersonalAssistantAuthConfig {
 }
 
 export interface MagpieAuthConfig {
-	semanticScholar?: ProviderAuthConfig;
-	exa?: ProviderAuthConfig;
 	personalAssistant?: PersonalAssistantAuthConfig;
 	telegram?: {
 		botToken?: string;
@@ -161,7 +154,6 @@ export interface MagpieConfig {
 	};
 	preferences?: PreferencesConfig;
 	memory?: MemoryConfig;
-	research?: ResearchConfig;
 	personalAssistant?: PersonalAssistantConfig;
 	telegram?: TelegramConfig;
 	remote?: RemoteConfig;

@@ -12,10 +12,43 @@ export interface WorkspaceArchiveOptions {
 	maxBytes?: number;
 }
 
+const DEFAULT_WORKSPACE_ARCHIVE_EXCLUDES = [
+	"./node_modules",
+	"./node_modules/**",
+	"node_modules",
+	"node_modules/**",
+	"./.DS_Store",
+	".DS_Store",
+	"./dist",
+	"./dist/**",
+	"dist",
+	"dist/**",
+	"./build",
+	"./build/**",
+	"build",
+	"build/**",
+	"./coverage",
+	"./coverage/**",
+	"coverage",
+	"coverage/**",
+	"./.next",
+	"./.next/**",
+	".next",
+	".next/**",
+	"./.turbo",
+	"./.turbo/**",
+	".turbo",
+	".turbo/**",
+];
+
+function uniquePatterns(patterns: string[]): string[] {
+	return [...new Set(patterns.map((pattern) => pattern.trim()).filter(Boolean))];
+}
+
 export async function createWorkspaceArchiveFromDir(cwd: string, options: WorkspaceArchiveOptions = {}): Promise<Buffer> {
 	if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}`);
 	const args = ["-czf", "-"];
-	for (const pattern of options.excludes ?? []) args.push(`--exclude=${pattern}`);
+	for (const pattern of uniquePatterns([...DEFAULT_WORKSPACE_ARCHIVE_EXCLUDES, ...(options.excludes ?? [])])) args.push(`--exclude=${pattern}`);
 	args.push("-C", cwd, ".");
 	const maxBuffer = options.maxBytes ? Math.max(options.maxBytes * 2, options.maxBytes + 1024 * 1024) : 1024 * 1024 * 1024;
 	const { stdout } = await execFileAsync("tar", args, { encoding: "buffer", maxBuffer });

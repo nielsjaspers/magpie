@@ -39,13 +39,14 @@ describe("config loading and resolution", () => {
 		expect(getProjectAuthPath(projectDir)).toBe(resolve(projectDir, ".pi/magpie.auth.json"));
 	});
 
-	test("deep-merges default, global, and project config while migrating legacy memory prefs", async () => {
+	test("deep-merges default, global, and project config without legacy migrations", async () => {
 		await writeFile(resolve(globalDir, "magpie.json"), JSON.stringify({
-			memory: { enabled: true, rootDir: "~/mem" },
+			preferences: { enabled: true },
+			memory: { rootDir: "~/mem" },
 			modes: { custom: { skills: ["global"], tools: ["one"] } },
 		}), "utf8");
 		await writeFile(resolve(projectDir, ".pi/magpie.json"), JSON.stringify({
-			memory: { maxRetrieved: 7 },
+			preferences: { maxRetrieved: 7 },
 			modes: { custom: { tools: ["two"], hideTools: ["web_search"] } },
 		}), "utf8");
 
@@ -60,7 +61,7 @@ describe("config loading and resolution", () => {
 			tools: ["two"],
 			hideTools: ["web_search"],
 		});
-		expect(getMode(config, "default")).toEqual({ name: "default" });
+		expect(getMode(config, "default")).toBeUndefined();
 		expect(getMode(config, "plan")?.statusLabel).toBe("plan");
 	});
 

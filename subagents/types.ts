@@ -1,9 +1,5 @@
 export type SubagentRole =
 	| "delegate"
-	| "search"
-	| "oracle"
-	| "librarian"
-	| "plan"
 	| "handoff"
 	| "session"
 	| "memory"
@@ -15,7 +11,6 @@ export type SubagentRole =
 
 export interface SubagentSpec {
 	role: SubagentRole;
-	planSubRole?: "explore" | "design" | "risk" | "custom";
 	label: string;
 	task: string;
 	systemPrompt?: string;

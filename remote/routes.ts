@@ -1,4 +1,6 @@
 import type { WebUiRouteRegistration } from "../webui/types.js";
+
+const DISPATCH_BODY_LIMIT_BYTES = 100 * 1024 * 1024;
 import { buildRemoteBundleSnapshot } from "./snapshot.js";
 import { acceptDispatch, createRemoteServerRuntime, deleteRemoteSession, getStoredRemoteBundle, listRemoteSessions, prepareFetch } from "./server.js";
 import { deserializeSessionBundle } from "./transport.js";
@@ -18,7 +20,7 @@ export function buildRemoteWebUiRoutes(): WebUiRouteRegistration[] {
 				return true;
 			}
 			if (req.method === "POST" && requestUrl.pathname === "/api/v1/dispatch") {
-				const body = await readBody(req);
+				const body = await readBody(req, DISPATCH_BODY_LIMIT_BYTES);
 				sendJson(res, 201, await acceptDispatch(webRuntime.remote, webRuntime.codingHost, webRuntime.defaultModelRef, {
 					payload: body.payload as any,
 					bundle: body.bundle as any,

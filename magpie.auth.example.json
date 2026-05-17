@@ -1,32 +1,26 @@
 {
-  "semanticScholar": {
-    "apiKey": "your-semantic-scholar-api-key"
-  },
-  "exa": {
-    "apiKey": "your-exa-api-key"
+  "telegram": {
+    "botToken": "123456:ABC-DEF..."
   },
   "personalAssistant": {
     "calendar": {
       "icloud": {
-        "email": "user@icloud.com",
-        "appPassword": "xxxx-xxxx-xxxx-xxxx"
+        "email": "you@example.com",
+        "appPassword": "app-specific-password"
       },
       "icsFeeds": [
         {
           "id": "school",
           "name": "School",
-          "url": "https://example.edu/calendar.ics"
+          "url": "webcal://example.edu/calendar.ics"
         }
       ]
     },
     "mail": {
       "gmail": {
-        "address": "magpie-inbox@gmail.com",
-        "appPassword": "xxxxxxxxxxxxxxxx"
+        "address": "you@gmail.com",
+        "appPassword": "app-specific-password"
       }
     }
-  },
-  "telegram": {
-    "botToken": "123456:ABC-DEF..."
   }
 }

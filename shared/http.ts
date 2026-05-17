@@ -55,7 +55,9 @@ export async function readJsonResponse<T>(response: Response, context?: string):
 		const status = parsed.statusText
 			? `${parsed.status} ${parsed.statusText}`
 			: String(parsed.status);
-		throw new Error(context ? `Expected JSON response ${context}: ${status}` : `Expected JSON response: ${status}`);
+		const body = truncateBody(parsed.text);
+		const suffix = body ? `: ${body}` : " (empty body)";
+		throw new Error(context ? `Expected JSON response ${context}: ${status}${suffix}` : `Expected JSON response: ${status}${suffix}`);
 	}
 	return parsed.json as T;
 }

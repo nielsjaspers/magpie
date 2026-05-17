@@ -14,7 +14,7 @@ export interface WebUiRequestContext {
 	res: ServerResponse;
 	requestUrl: URL;
 	runtime: unknown;
-	readBody: (req: IncomingMessage) => Promise<Record<string, unknown>>;
+	readBody: (req: IncomingMessage, maxBytes?: number) => Promise<Record<string, unknown>>;
 	sendJson: (res: ServerResponse, status: number, body: unknown) => void;
 	getSessionIdFromRequestPath: (pathname: string) => { sessionId: string; suffix: string } | undefined;
 }

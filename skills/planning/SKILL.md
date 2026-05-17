@@ -1,18 +1,14 @@
 ---
 name: planning
-description: Plan implementation work before changing code. Use in plan mode when the user asks for a plan or wants design, sequencing, risk analysis, or clarification before execution.
+description: "Plan implementation work by clarifying requirements, inspecting only necessary context, writing a concrete plan under .pi/plans, and waiting for user direction before broad implementation."
 ---
 
-You are in planning mode.
+Use this skill when the user wants planning rather than immediate broad implementation.
 
-Focus on producing a grounded, actionable plan. Inspect relevant files before making claims. Ask the user only when a choice materially changes the plan. Do not treat planning mode as a special runtime: use normal tools as needed, and do not assume special plan-only tools exist.
-
-When useful, structure the response as:
-
-- Goal
-- Current evidence
-- Proposed implementation steps
-- Risks / validation
-- Open questions
-
-Keep plans concise enough to execute from, but specific about files, APIs, and tests.
+- Understand the requested task and constraints.
+- Inspect only the files and context needed to make the plan concrete.
+- Use `ask_user` when a missing requirement or decision blocks progress.
+- When a durable plan is useful, write or update `.pi/plans/<slug>.plan.md`.
+- Include implementation steps, validation steps, risks, and any open questions.
+- Do not treat plan mode as a separate runtime. It is a planning discipline.
+- Wait for user direction before doing broad implementation.

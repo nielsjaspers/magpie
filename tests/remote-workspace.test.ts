@@ -23,17 +23,23 @@ describe("remote workspace archive helpers", () => {
 		expect(await readFile(resolve(target, "nested", "file.txt"), "utf8")).toBe("hello");
 	});
 
-	test("honors exclude patterns and max archive size", async () => {
+	test("honors default excludes, custom exclude patterns, and max archive size", async () => {
 		const source = await mkdtemp(resolve(tmpdir(), "magpie-workspace-source-"));
 		const target = await mkdtemp(resolve(tmpdir(), "magpie-workspace-target-"));
+		await mkdir(resolve(source, "node_modules", "pkg"), { recursive: true });
+		await mkdir(resolve(source, ".git", "objects"), { recursive: true });
 		await writeFile(resolve(source, "keep.txt"), "keep", "utf8");
 		await writeFile(resolve(source, "secret.txt"), "secret", "utf8");
+		await writeFile(resolve(source, "node_modules", "pkg", "index.js"), "module", "utf8");
+		await writeFile(resolve(source, ".git", "config"), "git", "utf8");
 
 		const archive = await createWorkspaceArchiveFromDir(source, { excludes: ["secret.txt"] });
 		await extractWorkspaceArchiveToDir(archive, target);
 
 		expect(await readFile(resolve(target, "keep.txt"), "utf8")).toBe("keep");
 		expect(readFile(resolve(target, "secret.txt"), "utf8")).rejects.toThrow();
+		expect(readFile(resolve(target, "node_modules", "pkg", "index.js"), "utf8")).rejects.toThrow();
+		expect(await readFile(resolve(target, ".git", "config"), "utf8")).toBe("git");
 		await expect(createWorkspaceArchiveFromDir(source, { maxBytes: 1 })).rejects.toThrow("Workspace archive exceeds maxBytes");
 	});
 

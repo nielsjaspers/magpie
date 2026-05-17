@@ -2,7 +2,6 @@ import { convertToLlm, serializeConversation, type ExtensionAPI, type ExtensionC
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { loadConfig } from "../config/config.js";
-import { isToolDisabledInActiveMode } from "../pa/shared/mode.js";
 import type { SubagentCoreAPI } from "../subagents/types.js";
 
 type HandoffMode = "default" | "plan";
@@ -54,6 +53,7 @@ function buildFinalPrompt(goal: string, generated: string, parentSession: string
 export default function (pi: ExtensionAPI) {
 	let subagentCore: SubagentCoreAPI | null = null;
 	let pendingToolHandoff: { prompt: string; goal: string; mode: HandoffMode } | null = null;
+	const pendingManualHandoffs = new Map<string, { prompt: string; goal: string; mode: HandoffMode; parentSession?: string }>();
 	let handoffTimestamp: number | null = null;
 
 	pi.events.on("magpie:subagent-core:register", (api: unknown) => {
@@ -99,7 +99,7 @@ export default function (pi: ExtensionAPI) {
 				newCtx.ui.setEditorText(edited);
 				newCtx.ui.notify(
 					mode === "plan"
-						? "Handoff ready. Run /plan if needed, then submit when ready."
+						? "Handoff ready. Use /mode plan if needed, then submit when ready."
 						: "Handoff ready. Submit when ready.",
 					"info",
 				);
@@ -115,7 +115,10 @@ export default function (pi: ExtensionAPI) {
 		const parentSession = ctx.sessionManager.getSessionFile();
 		const newSession = (ctx as unknown as ExtensionCommandContext).newSession;
 		if (typeof newSession !== "function") {
-			ctx.ui.notify("Automatic handoff session switch unavailable.", "warning");
+			const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+			pendingManualHandoffs.set(id, { ...pending, parentSession });
+			ctx.ui.setEditorText(`/handoff-continue ${id}`);
+			ctx.ui.notify("Handoff is ready. Because it was started by a tool call, Magpie needs one confirmation step before switching sessions. Press Enter to run the prepared /handoff-continue command; it will open a new session and paste the handoff prompt there.", "warning");
 			return;
 		}
 		handoffTimestamp = Date.now();
@@ -123,7 +126,7 @@ export default function (pi: ExtensionAPI) {
 			parentSession,
 			withSession: async (newCtx: ReplacementContext) => {
 				if (pending.mode === "plan") {
-					newCtx.ui.notify("Handoff requested plan mode; run /plan in the new session if needed.", "info");
+					newCtx.ui.notify("Handoff requested plan mode; run /mode plan in the new session if needed.", "info");
 				}
 				await newCtx.sendUserMessage(pending.prompt);
 			},
@@ -139,14 +142,36 @@ export default function (pi: ExtensionAPI) {
 		handoffTimestamp = null;
 	});
 
+	pi.registerCommand("handoff-continue", {
+		description: "Continue a prepared handoff from the handoff tool",
+		handler: async (args, ctx) => {
+			const id = args?.trim();
+			const pending = id ? pendingManualHandoffs.get(id) : undefined;
+			if (!id || !pending) {
+				ctx.ui.notify("No prepared handoff found. Run the handoff tool again.", "error");
+				return;
+			}
+			pendingManualHandoffs.delete(id);
+			handoffTimestamp = Date.now();
+			const result = await ctx.newSession({
+				parentSession: pending.parentSession,
+				withSession: async (newCtx: ReplacementContext) => {
+					newCtx.ui.setEditorText(pending.prompt);
+					newCtx.ui.notify(
+						pending.mode === "plan"
+							? "Handoff ready. Use /mode plan if needed, then submit when ready."
+							: "Handoff ready. Submit when ready.",
+						"info",
+					);
+				},
+			});
+			if (result.cancelled) pendingManualHandoffs.set(id, pending);
+		},
+	});
+
 	pi.registerCommand("handoff", {
 		description: "Transfer context to a new focused session (-mode <plan|default>, -model <provider/id>)",
 		handler: async (args, ctx) => {
-			const config = await loadConfig(ctx.cwd);
-			if (isToolDisabledInActiveMode(ctx, config, "handoff")) {
-				ctx.ui.notify("Handoff is disabled in the current mode. Switch modes if you want coding workflow tools.", "warning");
-				return;
-			}
 			const raw = args?.trim() ?? "";
 			const modeMatch = raw.match(/(?:^|\s)-mode\s+(\S+)/);
 			const modelMatch = raw.match(/(?:^|\s)-model\s+(\S+)/);

@@ -41,29 +41,6 @@ function deepMerge<T>(base: T, override: unknown): T {
 	return result as T;
 }
 
-function normalizeLegacyMemoryConfig(config: unknown): unknown {
-	if (!isObject(config)) return config;
-	const next: Record<string, unknown> = { ...config };
-	const memory = isObject(next.memory) ? { ...next.memory } : undefined;
-	if (!memory) return next;
-
-	const legacyPreferenceKeys = ["enabled", "maxRetrieved", "storePath", "autoExtract"] as const;
-	const legacyPreferences: Record<string, unknown> = {};
-	for (const key of legacyPreferenceKeys) {
-		if (key in memory) {
-			legacyPreferences[key] = memory[key];
-			delete memory[key];
-		}
-	}
-
-	if (Object.keys(legacyPreferences).length > 0) {
-		next.preferences = deepMerge((isObject(next.preferences) ? next.preferences : {}) as Record<string, unknown>, legacyPreferences);
-	}
-
-	if (Object.keys(memory).length > 0) next.memory = memory;
-	else delete next.memory;
-	return next;
-}
 
 export function getGlobalConfigPath(): string {
 	const baseDir = process.env.PI_CODING_AGENT_DIR ?? resolve(homedir(), ".pi/agent");
@@ -103,51 +80,11 @@ async function readJson(path: string): Promise<any> {
 	}
 }
 
-async function loadLegacyConfig(cwd: string): Promise<Partial<MagpieConfig>> {
-	const baseDir = process.env.PI_CODING_AGENT_DIR ?? resolve(homedir(), ".pi/agent");
-	const scopePairs = [
-		{
-			modes: resolve(baseDir, "custom-modes.json"),
-			plan: resolve(baseDir, "plan-mode.json"),
-			handoff: resolve(baseDir, "handoff.json"),
-		},
-		{
-			modes: resolve(cwd, ".pi/custom-modes.json"),
-			plan: resolve(cwd, ".pi/plan-mode.json"),
-			handoff: resolve(cwd, ".pi/handoff.json"),
-		},
-	] as const;
-
-	let config: Partial<MagpieConfig> = {};
-	for (const paths of scopePairs) {
-		const modesJson = existsSync(paths.modes) ? await readJson(paths.modes) : undefined;
-		if (modesJson?.modes) {
-			config = deepMerge(config, { modes: modesJson.modes });
-		}
-		const handoffJson = existsSync(paths.handoff) ? await readJson(paths.handoff) : undefined;
-		if (handoffJson) {
-			config = deepMerge(config, { handoff: { model: handoffJson.model } });
-			if (handoffJson.modeModels?.plan) {
-				config = deepMerge(config, {
-					handoff: { defaultMode: "plan", model: handoffJson.modeModels.plan },
-				});
-			}
-		}
-	}
-	return config;
-}
-
 export async function loadConfig(cwd: string): Promise<MagpieConfig> {
 	const globalPath = getGlobalConfigPath();
 	const projectPath = getProjectConfigPath(cwd);
-	const globalConfig = normalizeLegacyMemoryConfig(existsSync(globalPath) ? await readJson(globalPath) : undefined);
-	const projectConfig = normalizeLegacyMemoryConfig(existsSync(projectPath) ? await readJson(projectPath) : undefined);
-
-	if (!globalConfig && !projectConfig) {
-		const legacy = await loadLegacyConfig(cwd);
-		return deepMerge(DEFAULT_CONFIG, legacy);
-	}
-
+	const globalConfig = existsSync(globalPath) ? await readJson(globalPath) : undefined;
+	const projectConfig = existsSync(projectPath) ? await readJson(projectPath) : undefined;
 	return deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);
 }
 
@@ -164,24 +101,28 @@ function normalizeModeConfig(name: string, mode: ModeConfig | undefined): Resolv
 	return { name, ...mode };
 }
 
-function isCurrentModeConfig(mode: unknown): mode is ModeConfig {
-	if (!isObject(mode)) return false;
-	const legacyKeys = ["model", "thinkingLevel", "prompt", "disableTools", "planBehavior", "subagents"];
-	return !legacyKeys.some((key) => key in mode);
+function isModeConfig(mode: unknown): mode is ModeConfig {
+	return isObject(mode);
 }
 
 export function getConfiguredModeNames(config: MagpieConfig): string[] {
 	return Object.entries(config.modes ?? {})
-		.filter(([, mode]) => isCurrentModeConfig(mode))
+		.filter(([, mode]) => isModeConfig(mode))
 		.map(([name]) => name);
 }
 
+export function normalizeModeName(input: string): string {
+	const normalized = input.trim().toLowerCase();
+	if (!normalized || normalized === "off" || normalized === "build") return "default";
+	return normalized;
+}
+
 export function getMode(config: MagpieConfig, name: string): ResolvedMode | undefined {
-	const normalized = name.trim().toLowerCase();
-	if (normalized === "default" || normalized === "off" || normalized === "build") return { name: "default" };
+	const normalized = normalizeModeName(name);
+	if (normalized === "default") return undefined;
 	const builtIn = BUILT_IN_MODES[normalized];
 	const user = config.modes?.[normalized];
-	const currentUser = isCurrentModeConfig(user) ? user : undefined;
+	const currentUser = isModeConfig(user) ? user : undefined;
 	if (!builtIn && !currentUser) return undefined;
 	return normalizeModeConfig(normalized, deepMerge(builtIn ?? {}, currentUser ?? {}));
 }
@@ -198,14 +139,6 @@ export function expandHomePath(path: string): string {
 	if (trimmed === "~") return homedir();
 	if (trimmed.startsWith("~/")) return resolve(homedir(), trimmed.slice(2));
 	return trimmed;
-}
-
-export function getResearchPapersDir(config: MagpieConfig): string {
-	return expandHomePath(config.research?.papersDir?.trim() || "~/magpie-papers");
-}
-
-export function getResearchResolverSubagent(config: MagpieConfig): ResolvedSubagentModel | undefined {
-	return resolveSubagentModelRef(config.research?.resolverSubagent);
 }
 
 export function getStartupMode(_config: MagpieConfig): string {
@@ -250,8 +183,6 @@ export function resolveModel(ctx: ExtensionContext, modelRef: string | undefined
 export function resolveSubagentModel(
 	config: MagpieConfig,
 	role: SubagentRole,
-	_planSubRole?: "explore" | "design" | "risk" | "custom",
-	_activeMode?: string,
 ): ResolvedSubagentModel | undefined {
 	if (role === "handoff") return resolveSubagentModelRef(config.handoff?.model);
 	if (role === "session") return resolveSubagentModelRef(config.sessions?.model);
@@ -293,10 +224,8 @@ export async function resolveSubagentPrompt(
 	config: MagpieConfig,
 	cwd: string,
 	role: SubagentRole,
-	planSubRole?: "explore" | "design" | "risk" | "custom",
-	activeMode?: string,
 ): Promise<{ strategy: "append" | "replace"; text: string } | undefined> {
-	const resolved = resolveSubagentModel(config, role, planSubRole, activeMode);
+	const resolved = resolveSubagentModel(config, role);
 	const prompt = resolved?.prompt;
 	if (!prompt) return undefined;
 	const baseDir = getConfigBaseDir(getActiveConfigScope(cwd), cwd);
